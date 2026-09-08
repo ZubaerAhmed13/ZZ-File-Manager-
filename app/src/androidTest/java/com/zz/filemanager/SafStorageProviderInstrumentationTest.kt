@@ -45,10 +45,8 @@ class SafStorageProviderInstrumentationTest {
         // the shell identity only for this test, matching the system document UI's privileged access.
         instrumentation.uiAutomation.adoptShellPermissionIdentity(Manifest.permission.MANAGE_DOCUMENTS)
 
-        // The DocumentsProvider owns and creates its root during provider lifecycle startup.
-        // Never delete/recreate that root from the test: provider startup can legitimately race
-        // with instrumentation setup on API 35. Determinism only requires an empty tree, so keep
-        // the provider-owned root and remove its children instead.
+        // Setup is intentionally strict: every test starts from a deterministic empty provider tree.
+        // The provider owns the root; preserve it and clear its children rather than deleting the root.
         resetBackingRootContents()
 
         val treeUri = DocumentsContract.buildTreeDocumentUri(
@@ -71,7 +69,11 @@ class SafStorageProviderInstrumentationTest {
     @After
     fun tearDown() {
         try {
-            resetBackingRootContents()
+            // Cleanup after successful assertions is deliberately best-effort. Android may tear down
+            // the instrumentation provider/cache root before JUnit @After runs. The next test's strict
+            // setUp performs the real isolation check, so teardown must never turn a passing SAF test
+            // into a false failure merely because the test process is already being dismantled.
+            clearBackingRootContentsIfPresent()
         } finally {
             instrumentation.uiAutomation.dropShellPermissionIdentity()
         }
@@ -165,7 +167,7 @@ class SafStorageProviderInstrumentationTest {
     }
 
     private fun resetBackingRootContents() {
-        val backingRoot = File(instrumentation.context.cacheDir, Step2TestDocumentsProvider.ROOT_DIRECTORY_NAME)
+        val backingRoot = backingRoot()
         check(backingRoot.isDirectory || backingRoot.mkdirs()) {
             "Could not prepare deterministic SAF test root"
         }
@@ -175,6 +177,17 @@ class SafStorageProviderInstrumentationTest {
             }
         }
     }
+
+    private fun clearBackingRootContentsIfPresent() {
+        val backingRoot = backingRoot()
+        if (!backingRoot.isDirectory) return
+        backingRoot.listFiles().orEmpty().forEach { child ->
+            child.deleteRecursively()
+        }
+    }
+
+    private fun backingRoot() =
+        File(instrumentation.context.cacheDir, Step2TestDocumentsProvider.ROOT_DIRECTORY_NAME)
 
     private fun FileEntry.toOperationSource() = OperationSource(
         reference = reference,
