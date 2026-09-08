@@ -52,8 +52,7 @@ class FileOperationController(
             )
         }
         val operation = FileOperation(id, FileOperationType.BATCH_RENAME, FileOperationState.QUEUED, items, parent, createdAtMillis = timestamp)
-        submit(operation, "batch:${sources.joinToString { it.reference.opaqueId }}:${proposedNames.values.joinToString()}")
-        return operation.id
+        return submit(operation, "batch:${sources.joinToString { it.reference.opaqueId }}:${proposedNames.values.joinToString()}")
     }
 
     suspend fun enqueueCreateDirectory(destination: BrowserLocation, name: String): String = enqueueCreate(FileOperationType.CREATE_DIRECTORY, destination, name, null)
@@ -154,25 +153,26 @@ class FileOperationController(
     private suspend fun enqueueCreate(type: FileOperationType, destination: BrowserLocation, name: String, mimeType: String?): String {
         val timestamp = now(); val id = UUID.randomUUID().toString()
         val operation = FileOperation(id, type, FileOperationState.QUEUED, emptyList(), destination, targetName = name, targetMimeType = mimeType, createdAtMillis = timestamp)
-        submit(operation, "$type:${destination.identity}:$name")
-        return id
+        return submit(operation, "$type:${destination.identity}:$name")
     }
 
     private suspend fun enqueue(type: FileOperationType, sources: List<OperationSource>, destination: BrowserLocation?, targetName: String? = null, signature: String): String {
         val timestamp = now(); val id = UUID.randomUUID().toString()
         val items = sources.mapIndexed { index, source -> OperationItem(id = "$id:$index", source = source, requestedName = if (type == FileOperationType.RENAME) targetName else null, destinationRelativePath = source.name) }
         val operation = FileOperation(id, type, FileOperationState.QUEUED, items, destination, targetName = targetName, createdAtMillis = timestamp)
-        submit(operation, signature)
-        return operation.id
+        return submit(operation, signature)
     }
 
-    private suspend fun submit(operation: FileOperation, signature: String) = submitMutex.withLock {
+    private suspend fun submit(operation: FileOperation, signature: String): String = submitMutex.withLock {
         val timestamp = now()
         val previous = lastSubmission
-        if (previous != null && previous.first == signature && timestamp - previous.second.first < DOUBLE_SUBMIT_WINDOW_MILLIS) return@withLock
+        if (previous != null && previous.first == signature && timestamp - previous.second.first < DOUBLE_SUBMIT_WINDOW_MILLIS) {
+            return@withLock previous.second.second
+        }
         store.enqueue(operation)
         lastSubmission = signature to (timestamp to operation.id)
         executionHost.requestExecution()
+        operation.id
     }
 
     companion object { private const val DOUBLE_SUBMIT_WINDOW_MILLIS = 750L }
