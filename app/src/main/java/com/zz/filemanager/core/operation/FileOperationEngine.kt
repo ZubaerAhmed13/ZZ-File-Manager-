@@ -225,7 +225,7 @@ class FileOperationEngine(
                 try {
                     sourceProvider.delete(item.source.scoped)
                     operation = markItemCompleted(operation, item.copy(resultReference = item.resultReference))
-                } catch (error: Throwable) {
+                } catch (_: Throwable) {
                     operation = markItemWarning(operation, item, "Folder was copied, but the original folder could not be removed.")
                 }
             }
@@ -241,6 +241,8 @@ class FileOperationEngine(
     ): FileOperation {
         var operation = input
         var item = originalItem
+        val destination = operation.destination
+            ?: return markItemFailed(operation, item, OperationFailure(OperationFailureCode.DESTINATION_MISSING, "Destination folder is missing.", item.source.name))
         item.resultReference?.let { existingRef ->
             if (providers.providerFor(existingRef.reference.providerId).exists(existingRef.reference)) {
                 return if (markComplete) markItemCompleted(operation, item) else operation
@@ -264,7 +266,7 @@ class FileOperationEngine(
                 }
                 CollisionPolicy.MERGE -> {
                     if (!existing.isDirectory) return waitForCollision(operation, collision.copy(allowedPolicies = setOf(CollisionPolicy.SKIP, CollisionPolicy.KEEP_BOTH)))
-                    val updated = item.copy(resultReference = ScopedFileReference(existing.reference, operation.destination!!.rootReference, operation.destination.storageId))
+                    val updated = item.copy(resultReference = ScopedFileReference(existing.reference, destination.rootReference, destination.storageId))
                     operation = replaceItem(operation, updated)
                     return if (markComplete) markItemCompleted(operation, updated) else saveAndReturn(operation)
                 }
@@ -273,7 +275,7 @@ class FileOperationEngine(
         }
         return try {
             val created = destinationProvider.createDirectory(parent, leafName(item.destinationRelativePath))
-            val updated = item.copy(resultReference = ScopedFileReference(created.reference, operation.destination!!.rootReference, operation.destination.storageId))
+            val updated = item.copy(resultReference = ScopedFileReference(created.reference, destination.rootReference, destination.storageId))
             operation = replaceItem(operation, updated)
             if (markComplete) markItemCompleted(operation, updated) else saveAndReturn(operation)
         } catch (error: Throwable) {
@@ -289,6 +291,8 @@ class FileOperationEngine(
     ): FileOperation {
         var operation = input
         var item = originalItem
+        val destination = operation.destination
+            ?: return markItemFailed(operation, item, OperationFailure(OperationFailureCode.DESTINATION_MISSING, "Destination folder is missing.", item.source.name))
         if (item.source.isSymbolicLink) {
             return markItemFailed(operation, item, OperationFailure(OperationFailureCode.SYMBOLIC_LINK_UNSUPPORTED, "Symbolic links are not followed during file operations.", item.source.name))
         }
@@ -320,7 +324,7 @@ class FileOperationEngine(
                 }
                 CollisionPolicy.REPLACE -> {
                     if (existing.isDirectory) return waitForCollision(operation, collision.copy(allowedPolicies = setOf(CollisionPolicy.SKIP, CollisionPolicy.KEEP_BOTH)))
-                    try { destinationProvider.delete(ScopedFileReference(existing.reference, operation.destination!!.rootReference, operation.destination.storageId)) }
+                    try { destinationProvider.delete(ScopedFileReference(existing.reference, destination.rootReference, destination.storageId)) }
                     catch (error: Throwable) { return markItemFailed(operation, item, mapFailure(error, item.source.name)) }
                     existing = null
                 }
@@ -328,12 +332,12 @@ class FileOperationEngine(
             }
         }
 
-        if (move && item.source.reference.providerId == operation.destination!!.providerId && parent.identity == operation.destination.identity && depth(item.destinationRelativePath) == 1) {
+        if (move && item.source.reference.providerId == destination.providerId && parent.identity == destination.identity && depth(item.destinationRelativePath) == 1) {
             val writableSource = providers.writableProviderFor(item.source.reference.providerId)
             if (writableSource != null && existing == null) {
                 val native = runCatching { writableSource.moveNative(item.source.scoped, parent, finalName) }.getOrNull()
                 if (native != null) {
-                    return markItemCompleted(operation, item.copy(resultReference = ScopedFileReference(native.reference, operation.destination.rootReference, operation.destination.storageId), processedBytes = item.source.sizeBytes ?: 0L))
+                    return markItemCompleted(operation, item.copy(resultReference = ScopedFileReference(native.reference, destination.rootReference, destination.storageId), processedBytes = item.source.sizeBytes ?: 0L))
                 }
             }
         }
@@ -343,7 +347,7 @@ class FileOperationEngine(
         val outputName = if (canFinalizeByRename) uniqueTemporaryName(destinationProvider, parent, operation.id, item.id) else finalName
         val outputEntry = try { destinationProvider.createFile(parent, outputName, item.source.mimeType) }
         catch (error: Throwable) { return markItemFailed(operation, item, mapFailure(error, item.source.name)) }
-        val outputRef = ScopedFileReference(outputEntry.reference, operation.destination!!.rootReference, operation.destination.storageId)
+        val outputRef = ScopedFileReference(outputEntry.reference, destination.rootReference, destination.storageId)
         item = item.copy(state = OperationItemState.RUNNING, partialOutput = outputRef, processedBytes = 0L)
         operation = replaceItem(operation.copy(currentItemName = item.source.name), item)
         save(recalculate(operation))
@@ -391,7 +395,7 @@ class FileOperationEngine(
             item = item.copy(
                 processedBytes = written,
                 state = OperationItemState.COMPLETED,
-                resultReference = ScopedFileReference(finalEntry.reference, operation.destination.rootReference, operation.destination.storageId),
+                resultReference = ScopedFileReference(finalEntry.reference, destination.rootReference, destination.storageId),
                 partialOutput = null,
             )
             operation = replaceItem(operation, item)
@@ -421,7 +425,6 @@ class FileOperationEngine(
 
     private suspend fun executeDelete(input: FileOperation): FileOperation {
         var operation = input
-        val ordered = operation.items.sortedWith(compareBy<OperationItem> { !it.source.isDirectory || it.source.isSymbolicLink }.thenByDescending { depth(it.destinationRelativePath) }).reversed()
         val files = operation.items.filter { !it.source.isDirectory || it.source.isSymbolicLink }
         val directories = operation.items.filter { it.source.isDirectory && !it.source.isSymbolicLink }.sortedByDescending { depth(it.destinationRelativePath) }
         for (snapshot in files + directories) {
@@ -661,7 +664,6 @@ class FileOperationEngine(
 
     private suspend fun finishFromItems(input: FileOperation) {
         val failed = input.items.count { it.state == OperationItemState.FAILED }
-        val completed = input.items.count { it.state == OperationItemState.COMPLETED }
         val warnings = input.warningCount + input.items.count { it.state == OperationItemState.SKIPPED }.toLong()
         val state = when {
             failed == input.items.size && input.items.isNotEmpty() -> FileOperationState.FAILED
