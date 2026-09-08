@@ -7,6 +7,7 @@ import com.zz.filemanager.core.model.FileEntryType
 import com.zz.filemanager.core.model.FileReference
 import com.zz.filemanager.core.model.ScopedFileReference
 import com.zz.filemanager.core.storage.ProviderCapabilities
+import com.zz.filemanager.core.storage.StorageAccessException
 import com.zz.filemanager.core.storage.StorageCapability
 import com.zz.filemanager.core.storage.StorageProvider
 import com.zz.filemanager.core.storage.StorageProviderRegistry
@@ -189,6 +190,145 @@ class FileOperationEngineTest {
     }
 
     @Test
+    fun queuedCancellationNeverCreatesDestination() = runBlocking {
+        val provider = FakeWritableProvider().apply {
+            directory("/src")
+            directory("/dest")
+            file("/src/queued.bin", byteArrayOf(4, 5, 6))
+        }
+        val store = MemoryOperationStore()
+        val controller = FileOperationController(store, OperationExecutionHost {})
+        val id = controller.enqueueCopy(listOf(provider.source("/src/queued.bin")), provider.location("/dest"))
+
+        controller.cancel(id)
+        FileOperationEngine(store, provider).runAvailable()
+
+        assertEquals(FileOperationState.CANCELLED, store.get(id)?.state)
+        assertTrue(provider.has("/src/queued.bin"))
+        assertFalse(provider.has("/dest/queued.bin"))
+    }
+
+    @Test
+    fun destinationDisappearsDuringCopyFailsAndKeepsPartialTracked() = runBlocking {
+        val provider = FakeWritableProvider().apply {
+            directory("/src")
+            directory("/dest")
+            file("/src/large.bin", ByteArray(64) { it.toByte() })
+        }
+        val store = MemoryOperationStore()
+        val controller = FileOperationController(store, OperationExecutionHost {})
+        val id = controller.enqueueCopy(listOf(provider.source("/src/large.bin")), provider.location("/dest"))
+        provider.onWrite = { provider.unavailable = true }
+
+        FileOperationEngine(store, provider, bufferSize = 8, progressIntervalMillis = 0L).runAvailable()
+
+        val failed = store.get(id)
+        assertEquals(FileOperationState.FAILED, failed?.state)
+        assertTrue(provider.has("/src/large.bin"))
+        assertFalse(provider.has("/dest/large.bin"))
+        assertTrue(provider.hasPartialOutput())
+        assertNotNull(failed?.items?.single()?.partialOutput)
+        assertEquals(OperationFailureCode.PROVIDER_UNAVAILABLE, failed?.items?.single()?.failure?.code)
+    }
+
+    @Test
+    fun staleClipboardSourceDeletedBeforePasteFailsSafely() = runBlocking {
+        val provider = FakeWritableProvider().apply {
+            directory("/src")
+            directory("/dest")
+            file("/src/stale.txt", "stale".encodeToByteArray())
+        }
+        val staleSnapshot = provider.source("/src/stale.txt")
+        provider.forceRemove("/src/stale.txt")
+        val store = MemoryOperationStore()
+        val controller = FileOperationController(store, OperationExecutionHost {})
+        val id = controller.enqueueCopy(listOf(staleSnapshot), provider.location("/dest"))
+
+        FileOperationEngine(store, provider).runAvailable()
+
+        val failed = store.get(id)
+        assertEquals(FileOperationState.FAILED, failed?.state)
+        assertEquals(OperationFailureCode.SOURCE_MISSING, failed?.items?.single()?.failure?.code)
+        assertFalse(provider.has("/dest/stale.txt"))
+    }
+
+    @Test
+    fun queuedOperationsCompleteInSubmissionOrder() = runBlocking {
+        val provider = FakeWritableProvider().apply {
+            directory("/src")
+            directory("/dest")
+            file("/src/a.bin", byteArrayOf(1))
+            file("/src/b.bin", byteArrayOf(2))
+            file("/src/c.bin", byteArrayOf(3))
+        }
+        val store = MemoryOperationStore()
+        var tick = 0L
+        val controller = FileOperationController(store, OperationExecutionHost {}, now = { ++tick })
+        val a = controller.enqueueCopy(listOf(provider.source("/src/a.bin")), provider.location("/dest"))
+        val b = controller.enqueueCopy(listOf(provider.source("/src/b.bin")), provider.location("/dest"))
+        val c = controller.enqueueCopy(listOf(provider.source("/src/c.bin")), provider.location("/dest"))
+
+        FileOperationEngine(store, provider, now = { ++tick }).runAvailable()
+
+        assertEquals(listOf(a, b, c), store.terminalOrder)
+        assertArrayEquals(byteArrayOf(1), provider.bytes("/dest/a.bin"))
+        assertArrayEquals(byteArrayOf(2), provider.bytes("/dest/b.bin"))
+        assertArrayEquals(byteArrayOf(3), provider.bytes("/dest/c.bin"))
+    }
+
+    @Test
+    fun secondOperationQueuedAsFirstCompletesIsPickedUpBySameRun() = runBlocking {
+        val provider = FakeWritableProvider().apply {
+            directory("/src")
+            directory("/dest")
+            file("/src/first.bin", byteArrayOf(1, 1))
+            file("/src/second.bin", byteArrayOf(2, 2))
+        }
+        val store = MemoryOperationStore()
+        var tick = 0L
+        val controller = FileOperationController(store, OperationExecutionHost {}, now = { ++tick })
+        val firstId = controller.enqueueCopy(listOf(provider.source("/src/first.bin")), provider.location("/dest"))
+        val secondId = "second-operation"
+        val secondSource = provider.source("/src/second.bin")
+        val second = FileOperation(
+            id = secondId,
+            type = FileOperationType.COPY,
+            state = FileOperationState.QUEUED,
+            items = listOf(OperationItem("$secondId:0", secondSource, destinationRelativePath = secondSource.name)),
+            destination = provider.location("/dest"),
+            createdAtMillis = 100L,
+        )
+        store.onTerminal = { completed ->
+            if (completed.id == firstId && secondId !in store.operations.value.map { it.id }) {
+                store.enqueueDirect(second)
+            }
+        }
+
+        FileOperationEngine(store, provider, now = { ++tick }).runAvailable()
+
+        assertEquals(listOf(firstId, secondId), store.terminalOrder)
+        assertEquals(FileOperationState.COMPLETED, store.get(secondId)?.state)
+        assertArrayEquals(byteArrayOf(2, 2), provider.bytes("/dest/second.bin"))
+    }
+
+    @Test
+    fun folderCannotBeCopiedIntoItself() = runBlocking {
+        val provider = FakeWritableProvider().apply {
+            directory("/src")
+            directory("/src/project")
+            file("/src/project/a.txt", byteArrayOf(1))
+        }
+        val store = MemoryOperationStore()
+        val controller = FileOperationController(store, OperationExecutionHost {})
+        val id = controller.enqueueCopy(listOf(provider.source("/src/project")), provider.location("/src/project"))
+
+        FileOperationEngine(store, provider).runAvailable()
+
+        assertEquals(FileOperationState.FAILED, store.get(id)?.state)
+        assertEquals(OperationFailureCode.DESCENDANT_TARGET, store.get(id)?.failure?.code)
+    }
+
+    @Test
     fun folderCannotBeCopiedIntoItsDescendant() = runBlocking {
         val provider = FakeWritableProvider().apply {
             directory("/src")
@@ -205,6 +345,26 @@ class FileOperationEngineTest {
         val result = store.get(id)
         assertEquals(FileOperationState.FAILED, result?.state)
         assertEquals(OperationFailureCode.DESCENDANT_TARGET, result?.failure?.code)
+    }
+
+    @Test
+    fun fileCopyOntoItselfStopsAtSameResourceCollision() = runBlocking {
+        val provider = FakeWritableProvider().apply {
+            directory("/src")
+            file("/src/report.pdf", byteArrayOf(7, 8, 9))
+        }
+        val original = provider.bytes("/src/report.pdf").copyOf()
+        val store = MemoryOperationStore()
+        val controller = FileOperationController(store, OperationExecutionHost {})
+        val id = controller.enqueueCopy(listOf(provider.source("/src/report.pdf")), provider.location("/src"))
+
+        FileOperationEngine(store, provider).runAvailable()
+
+        val waiting = store.get(id)
+        assertEquals(FileOperationState.WAITING_FOR_USER, waiting?.state)
+        assertEquals(CollisionKind.SAME_RESOURCE, waiting?.pendingCollision?.kind)
+        assertArrayEquals(original, provider.bytes("/src/report.pdf"))
+        assertFalse(provider.hasPartialOutput())
     }
 
     @Test
@@ -247,6 +407,8 @@ class FileOperationEngineTest {
 
 private class MemoryOperationStore : OperationStore {
     private val state = MutableStateFlow<List<FileOperation>>(emptyList())
+    val terminalOrder = mutableListOf<String>()
+    var onTerminal: ((FileOperation) -> Unit)? = null
     override val operations: StateFlow<List<FileOperation>> = state
     override suspend fun initialize() = Unit
     override suspend fun enqueue(operation: FileOperation) { state.value = state.value + operation }
@@ -255,6 +417,10 @@ private class MemoryOperationStore : OperationStore {
         state.value = state.value.toMutableList().apply {
             val index = indexOfFirst { it.id == operation.id }
             if (index >= 0) set(index, operation) else add(operation)
+        }
+        if (operation.state.isTerminal && operation.id !in terminalOrder) {
+            terminalOrder += operation.id
+            onTerminal?.invoke(operation)
         }
     }
     override suspend fun nextRunnable(): FileOperation? = state.value.firstOrNull { it.state == FileOperationState.QUEUED }
@@ -265,6 +431,10 @@ private class MemoryOperationStore : OperationStore {
             if (operation.id == id) operation.copy(state = operationState) else operation
         }
     }
+
+    fun enqueueDirect(operation: FileOperation) {
+        state.value = state.value + operation
+    }
 }
 
 private class FakeWritableProvider : WritableStorageProvider, StorageProviderRegistry {
@@ -272,6 +442,7 @@ private class FakeWritableProvider : WritableStorageProvider, StorageProviderReg
     private val nodes = linkedMapOf<String, Node>()
     var freeSpace: Long? = Long.MAX_VALUE
     var failWrites: Boolean = false
+    var unavailable: Boolean = false
     var onWrite: (() -> Unit)? = null
     override val id: String = "fake"
 
@@ -281,6 +452,7 @@ private class FakeWritableProvider : WritableStorageProvider, StorageProviderReg
     fun file(path: String, data: ByteArray) { nodes[normalize(path)] = Node(normalize(path), false, data) }
     fun has(path: String): Boolean = normalize(path) in nodes
     fun bytes(path: String): ByteArray = nodes.getValue(normalize(path)).data
+    fun forceRemove(path: String) { nodes.remove(normalize(path)) }
     fun hasPartialOutput(): Boolean = nodes.keys.any { it.substringAfterLast('/').startsWith(".zzpart-") }
     fun location(path: String): BrowserLocation {
         val normalized = normalize(path)
@@ -295,34 +467,51 @@ private class FakeWritableProvider : WritableStorageProvider, StorageProviderReg
     override fun writableProviderFor(providerId: String): WritableStorageProvider? = this.takeIf { providerId == id }
 
     override suspend fun listChildren(location: BrowserLocation): List<FileEntry> {
+        ensureAvailable()
         val parent = normalize(location.reference)
         return nodes.values.filter { it.path != parent && parentOf(it.path) == parent }.map(::entry)
     }
-    override suspend fun getMetadata(item: FileReference): FileEntry? = node(item)?.let(::entry)
-    override suspend fun openInputStream(item: FileReference): InputStream = ByteArrayInputStream(node(item)?.data ?: error("missing source"))
-    override suspend fun exists(item: FileReference): Boolean = node(item) != null
+    override suspend fun getMetadata(item: FileReference): FileEntry? {
+        ensureAvailable()
+        return node(item)?.let(::entry)
+    }
+    override suspend fun openInputStream(item: FileReference): InputStream {
+        ensureAvailable()
+        return ByteArrayInputStream(node(item)?.data ?: error("missing source"))
+    }
+    override suspend fun exists(item: FileReference): Boolean {
+        ensureAvailable()
+        return node(item) != null
+    }
     override suspend fun resolveParent(location: BrowserLocation): BrowserLocation? = if (normalize(location.reference) == "/") null else location(parentOf(location.reference))
     override suspend fun breadcrumbs(location: BrowserLocation): List<Breadcrumb> = listOf(Breadcrumb(location.displayName, location))
-    override suspend fun capabilities(location: BrowserLocation) = ProviderCapabilities(StorageCapability.entries.toSet())
+    override suspend fun capabilities(location: BrowserLocation): ProviderCapabilities {
+        ensureAvailable()
+        return ProviderCapabilities(StorageCapability.entries.toSet())
+    }
 
     override suspend fun createDirectory(parent: BrowserLocation, name: String): FileEntry {
+        ensureAvailable()
         val path = childPath(parent.reference, name)
         check(path !in nodes)
         directory(path)
         return entry(nodes.getValue(path))
     }
     override suspend fun createFile(parent: BrowserLocation, name: String, mimeType: String?): FileEntry {
+        ensureAvailable()
         val path = childPath(parent.reference, name)
         check(path !in nodes)
         file(path, ByteArray(0))
         return entry(nodes.getValue(path))
     }
     override suspend fun delete(item: ScopedFileReference): Boolean {
+        ensureAvailable()
         val path = normalize(item.reference.path ?: item.reference.opaqueId.removePrefix("fake:"))
         if (nodes.values.any { parentOf(it.path) == path }) error("directory not empty")
         return nodes.remove(path) != null
     }
     override suspend fun rename(item: ScopedFileReference, newName: String): FileEntry {
+        ensureAvailable()
         val oldPath = normalize(item.reference.path ?: item.reference.opaqueId.removePrefix("fake:"))
         val node = nodes.remove(oldPath) ?: error("missing")
         val newPath = childPath(parentOf(oldPath), newName)
@@ -335,6 +524,7 @@ private class FakeWritableProvider : WritableStorageProvider, StorageProviderReg
         return entry(node)
     }
     override suspend fun openOutputStream(item: ScopedFileReference, truncate: Boolean): OutputStream {
+        ensureAvailable()
         if (failWrites) error("simulated write failure")
         val node = node(item.reference) ?: error("missing destination")
         return object : ByteArrayOutputStream() {
@@ -352,15 +542,28 @@ private class FakeWritableProvider : WritableStorageProvider, StorageProviderReg
             }
         }
     }
-    override suspend fun findChild(parent: BrowserLocation, name: String): FileEntry? = nodes[childPath(parent.reference, name)]?.let(::entry)
-    override suspend fun freeBytes(location: BrowserLocation): Long? = freeSpace
+    override suspend fun findChild(parent: BrowserLocation, name: String): FileEntry? {
+        ensureAvailable()
+        return nodes[childPath(parent.reference, name)]?.let(::entry)
+    }
+    override suspend fun freeBytes(location: BrowserLocation): Long? {
+        ensureAvailable()
+        return freeSpace
+    }
     override suspend fun isSameOrDescendant(source: ScopedFileReference, destination: BrowserLocation): Boolean {
+        ensureAvailable()
         val sourcePath = normalize(source.reference.path ?: source.reference.opaqueId.removePrefix("fake:"))
         val destinationPath = normalize(destination.reference)
         return destinationPath == sourcePath || destinationPath.startsWith("$sourcePath/")
     }
-    override suspend fun moveNative(item: ScopedFileReference, destination: BrowserLocation, newName: String): FileEntry? = null
+    override suspend fun moveNative(item: ScopedFileReference, destination: BrowserLocation, newName: String): FileEntry? {
+        ensureAvailable()
+        return null
+    }
 
+    private fun ensureAvailable() {
+        if (unavailable) throw StorageAccessException.Unavailable()
+    }
     private fun node(reference: FileReference): Node? = nodes[normalize(reference.path ?: reference.opaqueId.removePrefix("fake:"))]
     private fun reference(node: Node) = FileReference(id, "fake:${node.path}", path = node.path)
     private fun entry(node: Node) = FileEntry(
