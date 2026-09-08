@@ -43,9 +43,9 @@ class StorageRepository(
                 type = StorageType.SAF_TREE,
                 totalBytes = null,
                 freeBytes = null,
-                readable = true,
-                writable = location.writable,
-                available = true,
+                readable = location.readable,
+                writable = location.readable && location.writable,
+                available = location.readable,
                 root = location,
             )
         }
@@ -55,7 +55,7 @@ class StorageRepository(
     suspend fun validSafLocations(): List<BrowserLocation> = withContext(Dispatchers.IO) {
         val persisted = context.contentResolver.persistedUriPermissions.filter { it.isReadPermission }.map { it.uri.toString() }.toSet()
         preferences.safLocations.first().map { location ->
-            if (location.rootReference in persisted) location.copy(readable = true) else location.copy(readable = false)
+            if (location.rootReference in persisted) location.copy(readable = true) else location.copy(readable = false, writable = false)
         }
     }
 
