@@ -37,6 +37,9 @@
     <string name="images">Images</string>
     <string name="videos">Videos</string>
     <string name="audio">Audio</string>
+    <string name="documents">Documents</string>
+    <string name="downloads">Downloads</string>
+    <string name="apks">APKs</string>
     <string name="no_viewer">No compatible app is installed to open this file.</string>
     <string name="unknown_error">Something went wrong while reading this location.</string>
     <string name="remove_location">Remove location</string>
