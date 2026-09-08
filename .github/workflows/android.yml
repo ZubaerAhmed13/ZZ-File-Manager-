@@ -1,8 +1,8 @@
-name: Android Step 1 CI
+name: Android Step 2 CI
 
 on:
   push:
-    branches: [ main, 'step1/**' ]
+    branches: [ main, 'step1/**', 'step2/**' ]
   pull_request:
     branches: [ main ]
 
