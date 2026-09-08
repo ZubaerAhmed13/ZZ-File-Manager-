@@ -10,7 +10,7 @@ enum class ViewMode { LIST, GRID }
 enum class SortField { NAME, DATE_MODIFIED, SIZE, TYPE }
 enum class SortDirection { ASCENDING, DESCENDING }
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
-enum class MediaCategory { IMAGES, VIDEOS, AUDIO }
+enum class MediaCategory { IMAGES, VIDEOS, AUDIO, DOCUMENTS, DOWNLOADS, APKS }
 
 data class SortConfiguration(
     val field: SortField = SortField.NAME,
@@ -111,5 +111,12 @@ data class HomeUiState(
     val recentLocations: List<BrowserLocation> = emptyList(),
     val safLocations: List<BrowserLocation> = emptyList(),
     val broadStorageAccess: Boolean = false,
-    val mediaCategories: List<MediaCategory> = listOf(MediaCategory.IMAGES, MediaCategory.VIDEOS, MediaCategory.AUDIO),
+    val mediaCategories: List<MediaCategory> = listOf(
+        MediaCategory.IMAGES,
+        MediaCategory.VIDEOS,
+        MediaCategory.AUDIO,
+        MediaCategory.DOCUMENTS,
+        MediaCategory.DOWNLOADS,
+        MediaCategory.APKS,
+    ),
 )
