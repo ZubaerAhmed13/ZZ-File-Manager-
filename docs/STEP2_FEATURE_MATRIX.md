@@ -26,13 +26,14 @@ Status in this file is evidence-based. `IMPLEMENTED — CI PENDING` means code/t
 | Apply to all | IMPLEMENTED — CI PENDING | Scoped to active operation and only compatible collision types. |
 | Persistent operation queue | IMPLEMENTED — CI PENDING | FIFO `OperationRepository` + durable journal. |
 | Persistent journal | IMPLEMENTED — CI PENDING | SQLite schema v1 + JSON typed snapshots + indexed state/timestamps. |
-| Background execution | IMPLEMENTED — CI PENDING | User-initiated JobScheduler strategy on modern Android + foreground-service fallback. |
+| Background execution | IMPLEMENTED — CI PENDING | User-started `dataSync` foreground service for local/SAF operations; Android 15 timeout reconciles journal to recoverable interruption. |
+| Android 14+ user-initiated JobScheduler | NOT USED FOR STEP 2 | Platform mode is for user-requested network data transfers, not local/SAF file copies. |
 | Progress | IMPLEMENTED — CI PENDING | Long byte/item counters; throttled persistence/events; indeterminate mode for unknown total. |
 | Cancel | IMPLEMENTED — CI PENDING | Cooperative state/control checks; temporary output cleanup. |
 | Pause/resume | IMPLEMENTED — CI PENDING | Cooperative in-process pause; current file restarts when seek-safe byte resume is unavailable. |
 | Process recovery | IMPLEMENTED — CI PENDING | Unsafe running states reconcile to `INTERRUPTED`; never auto-complete. |
 | File-boundary resume | IMPLEMENTED — CI PENDING | Completed items remain complete; interrupted item is re-queued. |
-| Byte-level process-death resume | NOT GENERALLY CLAIMED | Only safe if future provider-specific random-access implementation validates source/partial offset; correctness takes priority. |
+| Byte-level process-death resume | NOT GENERALLY CLAIMED | Only safe if a future provider-specific random-access implementation validates source/partial offset; correctness takes priority. |
 | Retry | IMPLEMENTED — CI PENDING | New operation ID, source/destination/permission/collision revalidation on execution. |
 | Low-space preflight | IMPLEMENTED — CI PENDING | Uses destination free capacity where reliable; unknown capacity is allowed. |
 | Large-file Long support | IMPLEMENTED — CI PENDING | `Long` counters/model persistence; >30 GiB model test; fixed 256 KiB copy buffer. |
