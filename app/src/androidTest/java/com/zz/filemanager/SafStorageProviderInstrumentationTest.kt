@@ -1,7 +1,6 @@
 package com.zz.filemanager
 
 import android.net.Uri
-import android.os.Bundle
 import android.provider.DocumentsContract
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -49,10 +48,10 @@ class SafStorageProviderInstrumentationTest {
         // A real ACTION_OPEN_DOCUMENT_TREE selection is brokered by system DocumentsUI, which
         // turns the provider's MANAGE_DOCUMENTS-protected tree into a narrow read/write URI grant
         // for the requesting app. Headless CI cannot reliably drive that picker, so the debug-only
-        // target APK issues the same narrow tree grant synchronously to its own instrumentation
-        // package. Production SafStorageProvider remains completely unchanged and still has to pass
-        // Android's normal URI-permission checks for every DocumentsContract operation.
-        grantTreeToInstrumentation()
+        // target APK issues the same fixed-tree grant to both identities Android instrumentation
+        // can use for resolver calls. Production SafStorageProvider remains completely unchanged
+        // and still passes Android's normal URI-permission checks for every DocumentsContract call.
+        grantDeterministicTree()
 
         root = BrowserLocation(
             providerId = SafStorageProvider.ID,
@@ -166,23 +165,20 @@ class SafStorageProviderInstrumentationTest {
         assertTrue(provider.listChildren(destinationLocation).none { it.name.startsWith(".zzpart-") })
     }
 
-    private fun grantTreeToInstrumentation() {
+    private fun grantDeterministicTree() {
         val instrumentationPackage = instrumentation.context.packageName
         check(instrumentationPackage == "${instrumentation.targetContext.packageName}.test") {
             "Unexpected instrumentation package: $instrumentationPackage"
-        }
-        val extras = Bundle().apply {
-            putString(Step2SafGrantProvider.EXTRA_TARGET_PACKAGE, instrumentationPackage)
         }
         val grantBrokerUri = Uri.parse("content://${Step2SafGrantProvider.AUTHORITY}")
         val result = instrumentation.context.contentResolver.call(
             grantBrokerUri,
             Step2SafGrantProvider.METHOD_GRANT,
             null,
-            extras,
+            null,
         )
         check(result?.getBoolean(Step2SafGrantProvider.RESULT_GRANTED) == true) {
-            "Debug target did not grant the deterministic SAF tree to instrumentation"
+            "Debug target did not grant the deterministic SAF tree"
         }
     }
 
