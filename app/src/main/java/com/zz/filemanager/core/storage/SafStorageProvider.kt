@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
+import com.zz.filemanager.R
 import com.zz.filemanager.core.model.Breadcrumb
 import com.zz.filemanager.core.model.BrowserLocation
 import com.zz.filemanager.core.model.FileEntry
@@ -102,7 +103,7 @@ class SafStorageProvider(private val context: Context) : StorageProvider {
     }
 
     private fun toEntry(file: DocumentFile, storageId: String): FileEntry {
-        val name = file.name ?: "Unnamed"
+        val name = file.name ?: context.getString(R.string.unnamed_item)
         val mime = file.type
         val type = FileClassifier.classify(name, mime, file.isDirectory)
         val modified = file.lastModified().takeIf { it > 0L }
