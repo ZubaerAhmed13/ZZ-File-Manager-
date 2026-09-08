@@ -52,6 +52,7 @@ class PreferencesRepository(private val context: Context) : BrowserPreferences {
     override suspend fun setSortField(value: SortField) { context.zzPreferences.edit { it[Keys.sortField] = value.name } }
     override suspend fun setSortDirection(value: SortDirection) { context.zzPreferences.edit { it[Keys.sortDirection] = value.name } }
     suspend fun setLastLocation(value: BrowserLocation) { context.zzPreferences.edit { it[Keys.lastLocation] = BrowserLocationCodec.encode(value) } }
+    suspend fun clearLastLocation() { context.zzPreferences.edit { it.remove(Keys.lastLocation) } }
 
     suspend fun addRecent(location: BrowserLocation) = context.zzPreferences.edit { prefs ->
         val current = BrowserLocationCodec.decodeList(prefs[Keys.recentLocations].orEmpty())
