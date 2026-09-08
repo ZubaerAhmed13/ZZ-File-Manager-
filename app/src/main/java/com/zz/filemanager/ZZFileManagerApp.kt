@@ -19,6 +19,7 @@ import androidx.navigation.navArgument
 import com.zz.filemanager.app.AppContainer
 import com.zz.filemanager.core.model.ThemeMode
 import com.zz.filemanager.core.util.BrowserLocationCodec
+import com.zz.filemanager.feature.browser.BrowserOperationsViewModel
 import com.zz.filemanager.feature.browser.BrowserScreen
 import com.zz.filemanager.feature.browser.BrowserViewModel
 import com.zz.filemanager.feature.home.HomeScreen
@@ -48,6 +49,7 @@ fun ZZFileManagerApp(container: AppContainer) {
         }
 
         LaunchedEffect(Unit) {
+            container.operationController.initialize()
             container.storage.restorableLastLocation()?.let(::openLocation)
         }
 
@@ -63,13 +65,22 @@ fun ZZFileManagerApp(container: AppContainer) {
                 val encoded = backStack.arguments?.getString("location").orEmpty()
                 val location = BrowserLocationCodec.decode(encoded) ?: return@composable
                 val vm: BrowserViewModel = viewModel(
-                    key = location.identity,
+                    key = "browser:${location.identity}",
                     factory = BrowserViewModel.Factory(container.storage, container.preferences),
                 )
+                val operationsVm: BrowserOperationsViewModel = viewModel(
+                    key = "operations:${location.identity}",
+                    factory = BrowserOperationsViewModel.Factory(
+                        container.operationController,
+                        container.operationClipboard,
+                        container.storage,
+                    ),
+                )
                 BrowserScreen(
-                    vm,
-                    location,
-                    container.thumbnails,
+                    viewModel = vm,
+                    operationsViewModel = operationsVm,
+                    initialLocation = location,
+                    thumbnails = container.thumbnails,
                     onExitBrowser = { nav.popBackStack() },
                     onRequestStorageAccess = ::requestBroadAccess,
                 )
