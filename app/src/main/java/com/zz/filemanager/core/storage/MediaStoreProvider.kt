@@ -5,6 +5,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
+import com.zz.filemanager.R
 import com.zz.filemanager.core.model.Breadcrumb
 import com.zz.filemanager.core.model.BrowserLocation
 import com.zz.filemanager.core.model.FileEntry
@@ -43,7 +44,7 @@ class MediaStoreProvider(private val context: Context) : StorageProvider {
                 while (cursor.moveToNext()) {
                     coroutineContext.ensureActive()
                     val rowId = cursor.getLong(idIndex)
-                    val name = cursor.getString(nameIndex) ?: "Unnamed"
+                    val name = cursor.getString(nameIndex) ?: context.getString(R.string.unnamed_item)
                     val mime = cursor.getString(mimeIndex)
                     val size = if (cursor.isNull(sizeIndex)) null else cursor.getLong(sizeIndex)
                     val modified = if (cursor.isNull(modifiedIndex)) null else cursor.getLong(modifiedIndex) * 1000L
