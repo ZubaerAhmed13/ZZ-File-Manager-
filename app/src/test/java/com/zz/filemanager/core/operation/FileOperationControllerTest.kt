@@ -121,6 +121,44 @@ class FileOperationControllerTest {
     }
 
     @Test
+    fun duplicateSubmissionWithinGuardWindowReturnsOriginalQueuedId() = runBlocking {
+        val store = ControllerStore()
+        var executionRequests = 0
+        var tick = 100L
+        val controller = FileOperationController(store, OperationExecutionHost { executionRequests++ }, now = { tick })
+        val sources = listOf(source("report.pdf"))
+        val destination = location("/dest")
+
+        val firstId = controller.enqueueCopy(sources, destination)
+        tick = 200L
+        val duplicateId = controller.enqueueCopy(sources, destination)
+
+        assertEquals(firstId, duplicateId)
+        assertEquals(1, store.operations.value.size)
+        assertNotNull(store.get(duplicateId))
+        assertEquals(1, executionRequests)
+    }
+
+    @Test
+    fun sameSubmissionAfterGuardWindowCreatesNewOperation() = runBlocking {
+        val store = ControllerStore()
+        var executionRequests = 0
+        var tick = 100L
+        val controller = FileOperationController(store, OperationExecutionHost { executionRequests++ }, now = { tick })
+        val sources = listOf(source("report.pdf"))
+        val destination = location("/dest")
+
+        val firstId = controller.enqueueCopy(sources, destination)
+        tick = 850L
+        val secondId = controller.enqueueCopy(sources, destination)
+
+        assertNotEquals(firstId, secondId)
+        assertEquals(2, store.operations.value.size)
+        assertNotNull(store.get(secondId))
+        assertEquals(2, executionRequests)
+    }
+
+    @Test
     fun tenThousandSourceCopyQueuesAllMetadataWithoutFilePayloadAllocation() = runBlocking {
         val sources = List(10_000) { index ->
             source("item-${index.toString().padStart(5, '0')}.bin")
