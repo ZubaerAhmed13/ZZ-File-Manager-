@@ -16,6 +16,7 @@ import com.zz.filemanager.R
 import com.zz.filemanager.core.model.Breadcrumb
 import com.zz.filemanager.core.model.BrowserLocation
 import com.zz.filemanager.core.model.FileEntry
+import com.zz.filemanager.core.model.FileReference
 import com.zz.filemanager.core.model.MediaCategory
 import com.zz.filemanager.core.model.OpenFileRequest
 import com.zz.filemanager.core.model.StorageLocation
@@ -29,7 +30,7 @@ import java.io.File
 class StorageRepository(
     private val context: Context,
     private val preferences: PreferencesRepository,
-) {
+) : BrowserStorage {
     private val providers: Map<String, StorageProvider> = listOf(
         LocalStorageProvider(context), SafStorageProvider(context), MediaStoreProvider(context)
     ).associateBy { it.id }
@@ -99,6 +100,9 @@ class StorageRepository(
             MediaCategory.IMAGES -> context.getString(R.string.images)
             MediaCategory.VIDEOS -> context.getString(R.string.videos)
             MediaCategory.AUDIO -> context.getString(R.string.audio)
+            MediaCategory.DOCUMENTS -> context.getString(R.string.documents)
+            MediaCategory.DOWNLOADS -> context.getString(R.string.downloads)
+            MediaCategory.APKS -> context.getString(R.string.apks)
         }
         return BrowserLocation(
             providerId = MediaStoreProvider.ID,
@@ -112,17 +116,49 @@ class StorageRepository(
         )
     }
 
-    suspend fun listChildren(location: BrowserLocation): List<FileEntry> = provider(location).listChildren(location)
-    suspend fun resolveParent(location: BrowserLocation): BrowserLocation? = provider(location).resolveParent(location)
-    suspend fun breadcrumbs(location: BrowserLocation): List<Breadcrumb> = provider(location).breadcrumbs(location)
-    suspend fun remember(location: BrowserLocation) { preferences.addRecent(location); preferences.setLastLocation(location) }
+    override suspend fun listChildren(location: BrowserLocation): List<FileEntry> = provider(location).listChildren(location)
+    override suspend fun resolveParent(location: BrowserLocation): BrowserLocation? = provider(location).resolveParent(location)
+    override suspend fun breadcrumbs(location: BrowserLocation): List<Breadcrumb> = provider(location).breadcrumbs(location)
+    override suspend fun remember(location: BrowserLocation) { preferences.addRecent(location); preferences.setLastLocation(location) }
+
+    /**
+     * Returns the last browsed location only when its provider/resource is still valid enough to reopen.
+     * A revoked SAF grant or removed local directory is intentionally rejected instead of restoring a dead screen.
+     */
+    suspend fun restorableLastLocation(): BrowserLocation? = withContext(Dispatchers.IO) {
+        val location = preferences.lastLocation.first() ?: return@withContext null
+        when (location.providerId) {
+            LocalStorageProvider.ID -> {
+                val root = runCatching { File(location.rootReference).canonicalFile }.getOrNull() ?: return@withContext null
+                val current = runCatching { File(location.reference).canonicalFile }.getOrNull() ?: return@withContext null
+                val insideRoot = current == root || current.path.startsWith(root.path + File.separator)
+                location.takeIf { insideRoot && current.exists() && current.isDirectory && current.canRead() }
+            }
+            SafStorageProvider.ID -> {
+                val grant = validSafLocations().firstOrNull { it.rootReference == location.rootReference && it.readable }
+                    ?: return@withContext null
+                if (location.reference == location.rootReference) {
+                    location.copy(readable = true, writable = grant.writable)
+                } else {
+                    val item = FileReference(
+                        providerId = SafStorageProvider.ID,
+                        opaqueId = location.id,
+                        uri = location.reference,
+                    )
+                    location.copy(readable = true, writable = grant.writable).takeIf { providers.getValue(SafStorageProvider.ID).exists(item) }
+                }
+            }
+            MediaStoreProvider.ID -> location.takeIf { runCatching { MediaCategory.valueOf(location.reference) }.isSuccess }
+            else -> null
+        }
+    }
 
     fun broadStorageAccess(): Boolean = when {
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.R -> Environment.isExternalStorageManager()
         else -> ContextCompat.checkSelfPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
     }
 
-    fun openRequest(entry: FileEntry): OpenFileRequest? {
+    override fun openRequest(entry: FileEntry): OpenFileRequest? {
         val uri = entry.reference.uri?.let(Uri::parse) ?: entry.reference.path?.let { path ->
             runCatching { FileProvider.getUriForFile(context, "${context.packageName}.files", File(path)) }.getOrNull()
         } ?: return null
