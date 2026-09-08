@@ -1,0 +1,131 @@
+package com.zz.filemanager.core.storage
+
+import android.content.Context
+import android.net.Uri
+import android.provider.DocumentsContract
+import androidx.documentfile.provider.DocumentFile
+import com.zz.filemanager.core.model.Breadcrumb
+import com.zz.filemanager.core.model.BrowserLocation
+import com.zz.filemanager.core.model.FileEntry
+import com.zz.filemanager.core.model.FileReference
+import com.zz.filemanager.core.util.FileClassifier
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
+import java.io.FileNotFoundException
+import java.io.InputStream
+import kotlin.coroutines.coroutineContext
+
+class SafStorageProvider(private val context: Context) : StorageProvider {
+    override val id: String = ID
+
+    override suspend fun listChildren(location: BrowserLocation): List<FileEntry> = withContext(Dispatchers.IO) {
+        try {
+            val directory = documentFor(location) ?: throw StorageAccessException.Unavailable()
+            if (!directory.exists()) throw StorageAccessException.Unavailable()
+            if (!directory.isDirectory) throw StorageAccessException.Io()
+            if (!directory.canRead()) throw StorageAccessException.PermissionRequired()
+            directory.listFiles().map { child ->
+                coroutineContext.ensureActive()
+                toEntry(child, location.storageId)
+            }
+        } catch (error: SecurityException) {
+            throw StorageAccessException.PermissionRequired(error)
+        }
+    }
+
+    override suspend fun getMetadata(item: FileReference): FileEntry? = withContext(Dispatchers.IO) {
+        val uri = item.uri?.let(Uri::parse) ?: return@withContext null
+        try {
+            DocumentFile.fromSingleUri(context, uri)?.takeIf { it.exists() }?.let { toEntry(it, "saf") }
+        } catch (_: SecurityException) { null }
+    }
+
+    override suspend fun openInputStream(item: FileReference): InputStream = withContext(Dispatchers.IO) {
+        val uri = item.uri?.let(Uri::parse) ?: throw StorageAccessException.Unavailable()
+        try {
+            context.contentResolver.openInputStream(uri) ?: throw FileNotFoundException(uri.toString())
+        } catch (error: SecurityException) {
+            throw StorageAccessException.PermissionRequired(error)
+        }
+    }
+
+    override suspend fun exists(item: FileReference): Boolean = withContext(Dispatchers.IO) {
+        val uri = item.uri?.let(Uri::parse) ?: return@withContext false
+        try { DocumentFile.fromSingleUri(context, uri)?.exists() == true } catch (_: SecurityException) { false }
+    }
+
+    override suspend fun resolveParent(location: BrowserLocation): BrowserLocation? = withContext(Dispatchers.IO) {
+        if (location.reference == location.rootReference) return@withContext null
+        val tree = Uri.parse(location.rootReference)
+        val current = Uri.parse(location.reference)
+        val rootDocId = runCatching { DocumentsContract.getTreeDocumentId(tree) }.getOrNull() ?: return@withContext null
+        val currentDocId = runCatching { DocumentsContract.getDocumentId(current) }.getOrNull() ?: return@withContext null
+        if (currentDocId == rootDocId || !currentDocId.startsWith("$rootDocId/")) return@withContext null
+        val parentDocId = currentDocId.substringBeforeLast('/')
+        if (parentDocId.length < rootDocId.length) return@withContext null
+        if (parentDocId == rootDocId) return@withContext location.copy(
+            id = "saf:$rootDocId", displayName = rootName(location), reference = location.rootReference
+        )
+        val parentUri = DocumentsContract.buildDocumentUriUsingTree(tree, parentDocId)
+        val label = parentDocId.substringAfterLast('/').substringAfterLast(':')
+        location.copy(id = "saf:$parentDocId", displayName = label, reference = parentUri.toString())
+    }
+
+    override suspend fun breadcrumbs(location: BrowserLocation): List<Breadcrumb> = withContext(Dispatchers.IO) {
+        val tree = Uri.parse(location.rootReference)
+        val rootDocId = runCatching { DocumentsContract.getTreeDocumentId(tree) }.getOrNull()
+            ?: return@withContext listOf(Breadcrumb(rootName(location), location))
+        val rootLocation = location.copy(id = "saf:$rootDocId", displayName = rootName(location), reference = location.rootReference)
+        val result = mutableListOf(Breadcrumb(rootName(location), rootLocation))
+        if (location.reference == location.rootReference) return@withContext result
+        val currentDocId = runCatching { DocumentsContract.getDocumentId(Uri.parse(location.reference)) }.getOrNull()
+            ?: return@withContext result
+        if (!currentDocId.startsWith("$rootDocId/")) return@withContext result
+        val relative = currentDocId.removePrefix("$rootDocId/")
+        var docId = rootDocId
+        relative.split('/').filter { it.isNotBlank() }.forEach { segment ->
+            docId += "/$segment"
+            val uri = DocumentsContract.buildDocumentUriUsingTree(tree, docId)
+            result += Breadcrumb(segment, location.copy(id = "saf:$docId", displayName = segment, reference = uri.toString()))
+        }
+        result
+    }
+
+    private fun documentFor(location: BrowserLocation): DocumentFile? {
+        val uri = Uri.parse(location.reference)
+        return if (location.reference == location.rootReference) {
+            DocumentFile.fromTreeUri(context, uri)
+        } else {
+            DocumentFile.fromSingleUri(context, uri)
+        }
+    }
+
+    private fun toEntry(file: DocumentFile, storageId: String): FileEntry {
+        val name = file.name ?: "Unnamed"
+        val mime = file.type
+        val type = FileClassifier.classify(name, mime, file.isDirectory)
+        val modified = file.lastModified().takeIf { it > 0L }
+        val size = if (file.isFile) file.length().takeIf { it >= 0L } else null
+        return FileEntry(
+            id = "saf:${file.uri}",
+            reference = FileReference(ID, "saf:${file.uri}", uri = file.uri.toString()),
+            name = name,
+            extension = FileClassifier.extensionFor(name),
+            mimeType = mime,
+            type = type,
+            sizeBytes = size,
+            modifiedAtMillis = modified,
+            createdAtMillis = null,
+            isHidden = name.startsWith('.'),
+            isReadable = file.canRead(),
+            isWritable = file.canWrite(),
+            childCount = null,
+            storageId = storageId,
+            thumbnailKey = if (file.isFile) "${file.uri}:${modified ?: 0L}:${size ?: -1L}" else null,
+        )
+    }
+
+    private fun rootName(location: BrowserLocation): String = location.storageId.removePrefix("saf:").ifBlank { location.displayName }
+    companion object { const val ID = "saf" }
+}
