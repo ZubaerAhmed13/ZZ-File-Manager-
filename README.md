@@ -42,8 +42,8 @@ The project may study common file-manager workflows and navigation patterns, but
 - retry with a new operation identity
 - operation details/progress sheet in the browser
 - dedicated Android file-operation notification channel and controls
-- user-initiated background execution host separated from operation logic
-- API 34+ user-initiated JobScheduler strategy with foreground-service fallback
+- user-started foreground-service execution host separated from operation logic
+- Android 15 `dataSync` timeout reconciliation to a safe interrupted/recoverable journal state
 - local + SAF writable provider capability layer
 - basic properties and Android-standard one/multiple file sharing through content URIs
 - automatic browser refresh after terminal operations
@@ -68,10 +68,10 @@ FileOperationEngine
         ↑
 OperationExecutionHost
         ↑
-JobScheduler user-initiated job / Foreground service
+User-started dataSync Foreground Service
 ```
 
-This keeps transfer correctness testable independently from Compose and Android process infrastructure.
+Android 14+ user-initiated JobScheduler jobs are intentionally not used for Step 2 local/SAF transfers because that API mode is for user-requested network data transfers. Keeping the Android host behind `OperationExecutionHost` lets later network-provider steps choose a different compliant host without changing the file-operation engine.
 
 ## Toolchain
 
@@ -104,7 +104,7 @@ There is no application-level 2 GB, 4 GB, 10 GB, or 30 GB ceiling. All byte quan
 
 Where safe rename is supported, data is written to tracked `.zzpart-*` output and finalized only after stream completion and expected-byte validation. Cancel/pause/failure attempts to remove partial output. A move never deletes the source before successful destination creation.
 
-Process death never becomes a false success. Unsafe running states reconcile to `INTERRUPTED`; completed file boundaries remain recorded, while an interrupted current file restarts when byte-level resume cannot be proven safe for the provider.
+Process death or an Android foreground-service timeout never becomes a false success. Unsafe running states reconcile to `INTERRUPTED`; completed file boundaries remain recorded, while an interrupted current file restarts when byte-level resume cannot be proven safe for the provider.
 
 ## Storage access and security
 
