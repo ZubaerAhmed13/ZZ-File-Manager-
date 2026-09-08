@@ -60,4 +60,21 @@
     <string name="remove_location">Remove location</string>
     <string name="used_of_total">%1$s used of %2$s</string>
     <string name="available_space">%1$s available</string>
+
+    <string name="file_operations">File operations</string>
+    <string name="file_operations_channel">File operations</string>
+    <string name="file_operations_channel_description">Progress and controls for copy, move, delete and other file operations.</string>
+    <string name="preparing_operation">Preparing file operation…</string>
+    <string name="copying_files">Copying files</string>
+    <string name="moving_files">Moving files</string>
+    <string name="deleting_files">Deleting files</string>
+    <string name="renaming_files">Renaming files</string>
+    <string name="creating_item">Creating item</string>
+    <string name="waiting_for_conflict_decision">Waiting for a file conflict decision</string>
+    <string name="operation_paused">Operation paused</string>
+    <string name="pause">Pause</string>
+    <string name="resume">Resume</string>
+    <string name="cancel">Cancel</string>
+    <string name="transfer_progress_bytes">%1$s of %2$s</string>
+    <string name="transfer_progress_items">%1$d of %2$d items</string>
 </resources>
