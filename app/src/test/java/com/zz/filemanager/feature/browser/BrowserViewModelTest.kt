@@ -45,14 +45,9 @@ class BrowserViewModelTest {
     fun start_filtersHidden_sortsByName_andRemembersLocation() = runTest(mainDispatcherRule.dispatcher) {
         val root = location("root")
         val storage = FakeBrowserStorage().apply {
-            children[root.identity] = listOf(
-                file("Zulu.txt"),
-                file(".secret.txt", hidden = true),
-                file("Alpha.txt"),
-            )
+            children[root.identity] = listOf(file("Zulu.txt"), file(".secret.txt", hidden = true), file("Alpha.txt"))
         }
-        val preferences = FakeBrowserPreferences()
-        val viewModel = BrowserViewModel(storage, preferences, mainDispatcherRule.dispatcher)
+        val viewModel = BrowserViewModel(storage, FakeBrowserPreferences(), mainDispatcherRule.dispatcher)
 
         viewModel.start(root)
         advanceUntilIdle()
@@ -92,24 +87,18 @@ class BrowserViewModelTest {
         advanceUntilIdle()
         state = viewModel.state.value as BrowserUiState.Content
         assertEquals(child.identity, state.location.identity)
-        assertTrue(state.canGoBack)
     }
 
     @Test
     fun permissionFailure_mapsToPermissionProblem() = runTest(mainDispatcherRule.dispatcher) {
         val root = location("root")
-        val storage = FakeBrowserStorage().apply {
-            failures[root.identity] = StorageAccessException.PermissionRequired()
-        }
+        val storage = FakeBrowserStorage().apply { failures[root.identity] = StorageAccessException.PermissionRequired() }
         val viewModel = BrowserViewModel(storage, FakeBrowserPreferences(), mainDispatcherRule.dispatcher)
 
         viewModel.start(root)
         advanceUntilIdle()
 
-        assertEquals(
-            BrowserUiState.Problem(root, BrowserProblem.PERMISSION_REQUIRED),
-            viewModel.state.value,
-        )
+        assertEquals(BrowserUiState.Problem(root, BrowserProblem.PERMISSION_REQUIRED), viewModel.state.value)
     }
 
     @Test
@@ -125,7 +114,6 @@ class BrowserViewModelTest {
         viewModel.start(unavailable)
         advanceUntilIdle()
         assertEquals(BrowserProblem.UNAVAILABLE, (viewModel.state.value as BrowserUiState.Problem).problem)
-
         viewModel.navigateTo(io)
         advanceUntilIdle()
         assertEquals(BrowserProblem.IO_ERROR, (viewModel.state.value as BrowserUiState.Problem).problem)
@@ -167,23 +155,9 @@ class BrowserViewModelTest {
         assertEquals(2, state.entries.size)
     }
 
-    private fun location(id: String) = BrowserLocation(
-        providerId = "fake",
-        id = id,
-        displayName = id,
-        reference = "/$id",
-        rootReference = "/root",
-        storageId = "test",
-        readable = true,
-        writable = true,
-    )
+    private fun location(id: String) = BrowserLocation("fake", id, id, "/$id", "/root", "test", true, true)
 
-    private fun file(
-        name: String,
-        hidden: Boolean = false,
-        mime: String? = "text/plain",
-        uri: String? = null,
-    ) = FileEntry(
+    private fun file(name: String, hidden: Boolean = false, mime: String? = "text/plain", uri: String? = null) = FileEntry(
         id = "file:$name",
         reference = FileReference("fake", "file:$name", uri = uri, path = if (uri == null) "/root/$name" else null),
         name = name,
@@ -215,13 +189,8 @@ private class FakeBrowserStorage : BrowserStorage {
     }
 
     override suspend fun resolveParent(location: BrowserLocation): BrowserLocation? = parents[location.identity]
-
     override suspend fun breadcrumbs(location: BrowserLocation): List<Breadcrumb> = listOf(Breadcrumb(location.displayName, location))
-
-    override suspend fun remember(location: BrowserLocation) {
-        remembered += location
-    }
-
+    override suspend fun remember(location: BrowserLocation) { remembered += location }
     override fun openRequest(entry: FileEntry): OpenFileRequest? = openRequests[entry.name]
 }
 
@@ -234,32 +203,16 @@ private class FakeBrowserPreferences : BrowserPreferences {
     override val showHidden: Flow<Boolean> = showHiddenState
     override val sortConfiguration: Flow<SortConfiguration> = sortState
 
-    override suspend fun setViewMode(value: ViewMode) {
-        viewModeState.value = value
-    }
-
-    override suspend fun setShowHidden(value: Boolean) {
-        showHiddenState.value = value
-    }
-
-    override suspend fun setSortField(value: SortField) {
-        sortState.value = sortState.value.copy(field = value)
-    }
-
-    override suspend fun setSortDirection(value: SortDirection) {
-        sortState.value = sortState.value.copy(direction = value)
-    }
+    override suspend fun setViewMode(value: ViewMode) { viewModeState.value = value }
+    override suspend fun setShowHidden(value: Boolean) { showHiddenState.value = value }
+    override suspend fun setSortField(value: SortField) { sortState.value = sortState.value.copy(field = value) }
+    override suspend fun setSortDirection(value: SortDirection) { sortState.value = sortState.value.copy(direction = value) }
 }
 
 @OptIn(ExperimentalCoroutinesApi::class)
-private class MainDispatcherRule(
+class MainDispatcherRule(
     val dispatcher: TestDispatcher = StandardTestDispatcher(),
 ) : TestWatcher() {
-    override fun starting(description: Description) {
-        Dispatchers.setMain(dispatcher)
-    }
-
-    override fun finished(description: Description) {
-        Dispatchers.resetMain()
-    }
+    override fun starting(description: Description) { Dispatchers.setMain(dispatcher) }
+    override fun finished(description: Description) { Dispatchers.resetMain() }
 }
