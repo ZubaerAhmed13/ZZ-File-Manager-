@@ -73,19 +73,22 @@ class FileOperationEngine(
             if (operation.state == FileOperationState.FAILED) return
             finishFromItems(operation)
         } catch (_: PauseSignal) {
-            val current = store.get(operation.id) ?: operation
+            var current = store.get(operation.id) ?: operation
+            current = cleanupRecordedPartials(current)
             val paused = current.copy(
                 state = FileOperationState.PAUSED,
                 currentItemName = null,
                 updatedAtMillis = now(),
-                items = current.items.map { if (it.state == OperationItemState.RUNNING) it.copy(state = OperationItemState.QUEUED, processedBytes = 0L, partialOutput = null) else it },
+                items = current.items.map {
+                    if (it.state == OperationItemState.RUNNING) it.copy(state = OperationItemState.QUEUED, processedBytes = 0L)
+                    else it
+                },
             )
-            cleanupRecordedPartials(current)
             save(recalculate(paused))
             _events.tryEmit(OperationEvent.Paused(operation.id))
         } catch (_: CancelSignal) {
-            val current = store.get(operation.id) ?: operation
-            cleanupRecordedPartials(current)
+            var current = store.get(operation.id) ?: operation
+            current = cleanupRecordedPartials(current)
             val cancelled = recalculate(current.copy(
                 state = FileOperationState.CANCELLED,
                 completedAtMillis = now(),
@@ -94,7 +97,7 @@ class FileOperationEngine(
                 pendingCollision = null,
                 items = current.items.map {
                     if (it.state == OperationItemState.COMPLETED || it.state == OperationItemState.SKIPPED || it.state == OperationItemState.FAILED) it
-                    else it.copy(state = OperationItemState.CANCELLED, partialOutput = null)
+                    else it.copy(state = OperationItemState.CANCELLED)
                 },
             ))
             save(cancelled)
@@ -296,6 +299,20 @@ class FileOperationEngine(
         if (item.source.isSymbolicLink) {
             return markItemFailed(operation, item, OperationFailure(OperationFailureCode.SYMBOLIC_LINK_UNSUPPORTED, "Symbolic links are not followed during file operations.", item.source.name))
         }
+
+        // A process/service interruption can leave a recorded temporary output. Never
+        // overwrite that reference with a new temp file until the old one is proven gone.
+        item.partialOutput?.let { stalePartial ->
+            val staleProvider = providers.writableProviderFor(stalePartial.reference.providerId)
+                ?: return markItemFailed(operation, item, OperationFailure(OperationFailureCode.PROVIDER_UNAVAILABLE, "A previous partial output could not be cleaned because its storage provider is unavailable.", item.source.name))
+            if (!cleanupPartial(staleProvider, stalePartial)) {
+                return markItemFailed(operation, item, OperationFailure(OperationFailureCode.PROVIDER_UNAVAILABLE, "A previous partial output could not be cleaned. Reconnect the destination and retry.", item.source.name))
+            }
+            item = item.copy(partialOutput = null, processedBytes = 0L)
+            operation = recalculate(replaceItem(operation, item))
+            save(operation)
+        }
+
         val sourceProvider = providers.providerFor(item.source.reference.providerId)
         val metadata = sourceProvider.getMetadata(item.source.reference)
             ?: return markItemFailed(operation, item, OperationFailure(OperationFailureCode.SOURCE_MISSING, "Source item no longer exists.", item.source.name))
@@ -383,8 +400,8 @@ class FileOperationEngine(
             val finalEntry = if (canFinalizeByRename) {
                 val raced = destinationProvider.findChild(parent, finalName)
                 if (raced != null) {
-                    runCatching { destinationProvider.delete(outputRef) }
-                    item = item.copy(state = OperationItemState.QUEUED, partialOutput = null, processedBytes = 0L)
+                    val cleaned = cleanupPartial(destinationProvider, outputRef)
+                    item = item.copy(state = OperationItemState.QUEUED, partialOutput = if (cleaned) null else outputRef, processedBytes = 0L)
                     operation = replaceItem(operation, item)
                     return waitForCollision(operation, collisionFor(operation, item, raced, finalName))
                 }
@@ -408,18 +425,18 @@ class FileOperationEngine(
             }
             return markItemCompleted(operation, item)
         } catch (pause: PauseSignal) {
-            runCatching { destinationProvider.delete(outputRef) }
-            item = item.copy(state = OperationItemState.QUEUED, partialOutput = null, processedBytes = 0L)
+            val cleaned = cleanupPartial(destinationProvider, outputRef)
+            item = item.copy(state = OperationItemState.QUEUED, partialOutput = if (cleaned) null else outputRef, processedBytes = 0L)
             save(recalculate(replaceItem(operation, item)))
             throw pause
         } catch (cancel: CancelSignal) {
-            runCatching { destinationProvider.delete(outputRef) }
-            item = item.copy(state = OperationItemState.CANCELLED, partialOutput = null)
+            val cleaned = cleanupPartial(destinationProvider, outputRef)
+            item = item.copy(state = OperationItemState.CANCELLED, partialOutput = if (cleaned) null else outputRef)
             save(recalculate(replaceItem(operation, item)))
             throw cancel
         } catch (error: Throwable) {
-            runCatching { destinationProvider.delete(outputRef) }
-            return markItemFailed(operation, item.copy(partialOutput = null), mapFailure(error, item.source.name))
+            val cleaned = cleanupPartial(destinationProvider, outputRef)
+            return markItemFailed(operation, item.copy(partialOutput = if (cleaned) null else outputRef), mapFailure(error, item.source.name))
         }
     }
 
@@ -625,10 +642,22 @@ class FileOperationEngine(
         })
     }
 
-    private suspend fun cleanupRecordedPartials(operation: FileOperation) {
-        operation.items.mapNotNull { it.partialOutput }.forEach { partial ->
-            providers.writableProviderFor(partial.reference.providerId)?.let { provider -> runCatching { provider.delete(partial) } }
+    private suspend fun cleanupPartial(provider: WritableStorageProvider, partial: ScopedFileReference): Boolean = runCatching {
+        provider.delete(partial) || !providers.providerFor(partial.reference.providerId).exists(partial.reference)
+    }.getOrDefault(false)
+
+    private suspend fun cleanupRecordedPartials(operation: FileOperation): FileOperation {
+        var updated = operation
+        for (snapshot in operation.items) {
+            val partial = snapshot.partialOutput ?: continue
+            val provider = providers.writableProviderFor(partial.reference.providerId) ?: continue
+            if (cleanupPartial(provider, partial)) {
+                val current = updated.items.firstOrNull { it.id == snapshot.id } ?: snapshot
+                updated = replaceItem(updated, current.copy(partialOutput = null))
+            }
         }
+        if (updated != operation) save(updated)
+        return updated
     }
 
     private suspend fun checkControl(operationId: String) {
@@ -652,7 +681,7 @@ class FileOperationEngine(
     }
 
     private suspend fun markItemFailed(input: FileOperation, item: OperationItem, failure: OperationFailure): FileOperation {
-        val operation = recalculate(replaceItem(input, item.copy(state = OperationItemState.FAILED, failure = failure, partialOutput = null)).copy(updatedAtMillis = now()))
+        val operation = recalculate(replaceItem(input, item.copy(state = OperationItemState.FAILED, failure = failure)).copy(updatedAtMillis = now()))
         save(operation); return operation
     }
 
