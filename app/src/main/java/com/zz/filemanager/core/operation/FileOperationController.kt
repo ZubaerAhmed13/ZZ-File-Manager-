@@ -52,8 +52,9 @@ class FileOperationController(
             )
         }
         val operation = FileOperation(id, FileOperationType.BATCH_RENAME, FileOperationState.QUEUED, items, parent, createdAtMillis = timestamp)
-        val canonicalMapping = proposedNames.entries
-            .sortedBy { it.key }
+        val canonicalMapping = sources
+            .map { source -> source.reference.opaqueId to (proposedNames[source.reference.opaqueId] ?: source.name) }
+            .sortedBy { it.first }
             .joinToString(separator = "|") { (sourceId, proposedName) -> "$sourceId=$proposedName" }
         return submit(operation, "batch:${parent.identity}:$canonicalMapping")
     }
