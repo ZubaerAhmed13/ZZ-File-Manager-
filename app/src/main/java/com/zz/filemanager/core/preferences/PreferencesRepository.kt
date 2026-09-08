@@ -45,13 +45,13 @@ class PreferencesRepository(private val context: Context) : BrowserPreferences {
     val safLocations: Flow<List<BrowserLocation>> = context.zzPreferences.data.map { BrowserLocationCodec.decodeList(it[Keys.safLocations].orEmpty()) }
     val lastLocation: Flow<BrowserLocation?> = context.zzPreferences.data.map { it[Keys.lastLocation]?.let(BrowserLocationCodec::decode) }
 
-    suspend fun setTheme(value: ThemeMode) = context.zzPreferences.edit { it[Keys.theme] = value.name }
-    override suspend fun setViewMode(value: ViewMode) = context.zzPreferences.edit { it[Keys.viewMode] = value.name }
-    override suspend fun setShowHidden(value: Boolean) = context.zzPreferences.edit { it[Keys.showHidden] = value }
-    suspend fun setFoldersFirst(value: Boolean) = context.zzPreferences.edit { it[Keys.foldersFirst] = value }
-    override suspend fun setSortField(value: SortField) = context.zzPreferences.edit { it[Keys.sortField] = value.name }
-    override suspend fun setSortDirection(value: SortDirection) = context.zzPreferences.edit { it[Keys.sortDirection] = value.name }
-    suspend fun setLastLocation(value: BrowserLocation) = context.zzPreferences.edit { it[Keys.lastLocation] = BrowserLocationCodec.encode(value) }
+    suspend fun setTheme(value: ThemeMode) { context.zzPreferences.edit { it[Keys.theme] = value.name } }
+    override suspend fun setViewMode(value: ViewMode) { context.zzPreferences.edit { it[Keys.viewMode] = value.name } }
+    override suspend fun setShowHidden(value: Boolean) { context.zzPreferences.edit { it[Keys.showHidden] = value } }
+    suspend fun setFoldersFirst(value: Boolean) { context.zzPreferences.edit { it[Keys.foldersFirst] = value } }
+    override suspend fun setSortField(value: SortField) { context.zzPreferences.edit { it[Keys.sortField] = value.name } }
+    override suspend fun setSortDirection(value: SortDirection) { context.zzPreferences.edit { it[Keys.sortDirection] = value.name } }
+    suspend fun setLastLocation(value: BrowserLocation) { context.zzPreferences.edit { it[Keys.lastLocation] = BrowserLocationCodec.encode(value) } }
 
     suspend fun addRecent(location: BrowserLocation) = context.zzPreferences.edit { prefs ->
         val current = BrowserLocationCodec.decodeList(prefs[Keys.recentLocations].orEmpty())
