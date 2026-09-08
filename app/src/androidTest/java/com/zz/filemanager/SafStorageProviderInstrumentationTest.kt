@@ -1,6 +1,7 @@
 package com.zz.filemanager
 
-import android.Manifest
+import android.net.Uri
+import android.os.Bundle
 import android.provider.DocumentsContract
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -40,14 +41,19 @@ class SafStorageProviderInstrumentationTest {
 
     @Before
     fun setUp() {
-        // DocumentsProvider is correctly protected with MANAGE_DOCUMENTS. Instrumentation adopts
-        // the shell identity only for this test, matching the system document UI's privileged access.
-        instrumentation.uiAutomation.adoptShellPermissionIdentity(Manifest.permission.MANAGE_DOCUMENTS)
-
         val treeUri = DocumentsContract.buildTreeDocumentUri(
             Step2TestDocumentsProvider.AUTHORITY,
             Step2TestDocumentsProvider.ROOT_ID,
         )
+
+        // A real ACTION_OPEN_DOCUMENT_TREE selection is brokered by system DocumentsUI, which
+        // turns the provider's MANAGE_DOCUMENTS-protected tree into a narrow read/write URI grant
+        // for the requesting app. Headless CI cannot reliably drive that picker, so the debug-only
+        // target APK issues the same narrow tree grant synchronously to its own instrumentation
+        // package. Production SafStorageProvider remains completely unchanged and still has to pass
+        // Android's normal URI-permission checks for every DocumentsContract operation.
+        grantTreeToInstrumentation()
+
         root = BrowserLocation(
             providerId = SafStorageProvider.ID,
             id = "saf:${Step2TestDocumentsProvider.ROOT_ID}",
@@ -60,24 +66,17 @@ class SafStorageProviderInstrumentationTest {
         )
         provider = SafStorageProvider(instrumentation.targetContext)
 
-        // Reset through the real provider contract instead of reaching into the instrumentation
-        // APK filesystem. The DocumentsProvider owns its sandbox, and Android is free to host that
-        // provider under a context that is not the instrumentation Context. Using the production
-        // SAF provider here is deterministic, respects the provider boundary, and exercises the
-        // same DocumentsContract path used by the product.
+        // Reset strictly through the real production SAF provider contract. This guarantees each
+        // test starts from an empty tree while also proving that the narrow URI grant is effective.
         resetProviderRootContentsStrict()
     }
 
     @After
     fun tearDown() {
-        try {
-            // Post-test cleanup is best-effort only. Strict isolation is enforced by the next
-            // test's setUp through the provider API, so teardown must not turn successful product
-            // assertions into a false failure during instrumentation process shutdown.
-            clearProviderRootContentsBestEffort()
-        } finally {
-            instrumentation.uiAutomation.dropShellPermissionIdentity()
-        }
+        // Post-test cleanup is best-effort only. Strict isolation is enforced by the next test's
+        // setUp through the provider API, so teardown must not turn successful product assertions
+        // into a false failure during instrumentation process shutdown.
+        clearProviderRootContentsBestEffort()
     }
 
     @Test
@@ -165,6 +164,26 @@ class SafStorageProviderInstrumentationTest {
         assertArrayEquals(movePayload, provider.openInputStream(moved.reference).use { it.readBytes() })
         assertFalse(provider.exists(moveCreated.reference))
         assertTrue(provider.listChildren(destinationLocation).none { it.name.startsWith(".zzpart-") })
+    }
+
+    private fun grantTreeToInstrumentation() {
+        val instrumentationPackage = instrumentation.context.packageName
+        check(instrumentationPackage == "${instrumentation.targetContext.packageName}.test") {
+            "Unexpected instrumentation package: $instrumentationPackage"
+        }
+        val extras = Bundle().apply {
+            putString(Step2SafGrantProvider.EXTRA_TARGET_PACKAGE, instrumentationPackage)
+        }
+        val grantBrokerUri = Uri.parse("content://${Step2SafGrantProvider.AUTHORITY}")
+        val result = instrumentation.context.contentResolver.call(
+            grantBrokerUri,
+            Step2SafGrantProvider.METHOD_GRANT,
+            null,
+            extras,
+        )
+        check(result?.getBoolean(Step2SafGrantProvider.RESULT_GRANTED) == true) {
+            "Debug target did not grant the deterministic SAF tree to instrumentation"
+        }
     }
 
     private fun resetProviderRootContentsStrict() = runBlocking {
