@@ -21,7 +21,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.filled.AudioFile
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Settings
@@ -66,58 +69,211 @@ fun HomeScreen(viewModel: HomeViewModel, onOpenLocation: (BrowserLocation) -> Un
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var pendingCategory by remember { mutableStateOf<MediaCategory?>(null) }
-    val treeLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri -> if (uri != null) viewModel.addSafLocation(uri) }
+
+    val treeLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) viewModel.addSafLocation(uri)
+    }
     val mediaPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         val category = pendingCategory
         pendingCategory = null
         if (granted && category != null) onOpenLocation(viewModel.mediaLocation(category))
     }
-    val legacyStorageLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { viewModel.refresh() }
-    val broadSettingsLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { viewModel.refresh() }
+    val legacyStorageLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        viewModel.refresh()
+        val category = pendingCategory
+        if (category != null && viewModel.hasBroadStorageAccess()) {
+            pendingCategory = null
+            onOpenLocation(viewModel.mediaLocation(category))
+        }
+    }
+    val broadSettingsLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        viewModel.refresh()
+        val category = pendingCategory
+        if (category != null && viewModel.hasBroadStorageAccess()) {
+            pendingCategory = null
+            onOpenLocation(viewModel.mediaLocation(category))
+        }
+    }
+
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME) viewModel.refresh() }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
+
     fun requestBroadAccess() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) broadSettingsLauncher.launch(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:${context.packageName}")))
-        else legacyStorageLauncher.launch(Manifest.permission.READ_EXTERNAL_STORAGE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            broadSettingsLauncher.launch(
+                Intent(
+                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                    Uri.parse("package:${context.packageName}"),
+                ),
+            )
+        } else {
+            legacyStorageLauncher.launch(Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
     }
+
     fun openCategory(category: MediaCategory) {
+        if (category == MediaCategory.DOCUMENTS || category == MediaCategory.DOWNLOADS || category == MediaCategory.APKS) {
+            if (viewModel.hasBroadStorageAccess()) {
+                onOpenLocation(viewModel.mediaLocation(category))
+            } else {
+                pendingCategory = category
+                requestBroadAccess()
+            }
+            return
+        }
+
         val permission = when {
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && category == MediaCategory.IMAGES -> Manifest.permission.READ_MEDIA_IMAGES
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && category == MediaCategory.VIDEOS -> Manifest.permission.READ_MEDIA_VIDEO
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> Manifest.permission.READ_MEDIA_AUDIO
             else -> Manifest.permission.READ_EXTERNAL_STORAGE
         }
-        if (ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED) onOpenLocation(viewModel.mediaLocation(category))
-        else { pendingCategory = category; mediaPermissionLauncher.launch(permission) }
+        if (ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED) {
+            onOpenLocation(viewModel.mediaLocation(category))
+        } else {
+            pendingCategory = category
+            mediaPermissionLauncher.launch(permission)
+        }
     }
-    Scaffold(topBar = { TopAppBar(title = { Text(stringResource(R.string.app_name)) }, actions = { IconButton(onClick = onOpenSettings) { Icon(Icons.Default.Settings, contentDescription = stringResource(R.string.settings)) } }) }) { padding ->
-        if (state.loading) Column(Modifier.padding(padding).fillMaxWidth()) { CircularProgressIndicator(Modifier.padding(32.dp)) }
-        else LazyColumn(Modifier.padding(padding)) {
-            if (!state.broadStorageAccess) item { PermissionCard(::requestBroadAccess) }
-            item { SectionTitle(stringResource(R.string.storage)) }
-            items(state.storageLocations, key = { it.id }) { StorageCard(it, onOpenLocation) }
-            item { Button(onClick = { treeLauncher.launch(null) }, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) { Icon(Icons.Default.FolderOpen, null); Spacer(Modifier.padding(4.dp)); Text(stringResource(R.string.add_location)) } }
-            item { SectionTitle(stringResource(R.string.categories)) }
-            item { Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                CategoryButton(MediaCategory.IMAGES, R.string.images, Icons.Default.Image, ::openCategory)
-                CategoryButton(MediaCategory.VIDEOS, R.string.videos, Icons.Default.VideoFile, ::openCategory)
-                CategoryButton(MediaCategory.AUDIO, R.string.audio, Icons.Default.AudioFile, ::openCategory)
-            } }
-            if (state.recentLocations.isNotEmpty()) {
-                item { SectionTitle(stringResource(R.string.recent_locations)) }
-                items(state.recentLocations, key = { it.identity }) { location ->
-                    ListItem(headlineContent = { Text(location.displayName, maxLines = 1) }, supportingContent = { Text(location.providerId) }, leadingContent = { Icon(Icons.Default.FolderOpen, null) }, modifier = Modifier.fillMaxWidth().clickable { onOpenLocation(location) })
-                }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(stringResource(R.string.app_name)) },
+                actions = {
+                    IconButton(onClick = onOpenSettings) {
+                        Icon(Icons.Default.Settings, contentDescription = stringResource(R.string.settings))
+                    }
+                },
+            )
+        },
+    ) { padding ->
+        if (state.loading) {
+            Column(Modifier.padding(padding).fillMaxWidth()) {
+                CircularProgressIndicator(Modifier.padding(32.dp))
             }
-            item { Spacer(Modifier.height(24.dp)) }
+        } else {
+            LazyColumn(Modifier.padding(padding)) {
+                if (!state.broadStorageAccess) item { PermissionCard(::requestBroadAccess) }
+                item { SectionTitle(stringResource(R.string.storage)) }
+                items(state.storageLocations, key = { it.id }) { StorageCard(it, onOpenLocation) }
+                item {
+                    Button(
+                        onClick = { treeLauncher.launch(null) },
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    ) {
+                        Icon(Icons.Default.FolderOpen, null)
+                        Spacer(Modifier.padding(4.dp))
+                        Text(stringResource(R.string.add_location))
+                    }
+                }
+                item { SectionTitle(stringResource(R.string.categories)) }
+                item {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                    ) {
+                        CategoryButton(MediaCategory.IMAGES, R.string.images, Icons.Default.Image, ::openCategory)
+                        CategoryButton(MediaCategory.VIDEOS, R.string.videos, Icons.Default.VideoFile, ::openCategory)
+                        CategoryButton(MediaCategory.AUDIO, R.string.audio, Icons.Default.AudioFile, ::openCategory)
+                    }
+                }
+                item {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                    ) {
+                        CategoryButton(MediaCategory.DOCUMENTS, R.string.documents, Icons.Default.Description, ::openCategory)
+                        CategoryButton(MediaCategory.DOWNLOADS, R.string.downloads, Icons.Default.Download, ::openCategory)
+                        CategoryButton(MediaCategory.APKS, R.string.apks, Icons.Default.Android, ::openCategory)
+                    }
+                }
+                if (state.recentLocations.isNotEmpty()) {
+                    item { SectionTitle(stringResource(R.string.recent_locations)) }
+                    items(state.recentLocations, key = { it.identity }) { location ->
+                        ListItem(
+                            headlineContent = { Text(location.displayName, maxLines = 1) },
+                            supportingContent = { Text(location.providerId) },
+                            leadingContent = { Icon(Icons.Default.FolderOpen, null) },
+                            modifier = Modifier.fillMaxWidth().clickable { onOpenLocation(location) },
+                        )
+                    }
+                }
+                item { Spacer(Modifier.height(24.dp)) }
+            }
         }
     }
 }
 
-@Composable private fun PermissionCard(onGrant: () -> Unit) { Card(Modifier.fillMaxWidth().padding(16.dp)) { Column(Modifier.padding(16.dp)) { Row { Icon(Icons.Default.Storage, null); Spacer(Modifier.padding(4.dp)); Text(stringResource(R.string.full_storage_access), style = MaterialTheme.typography.titleMedium) }; Text(stringResource(R.string.full_storage_access_explanation), modifier = Modifier.padding(vertical = 8.dp)); Button(onClick = onGrant) { Text(stringResource(R.string.grant_access)) } } } }
-@Composable private fun StorageCard(storage: StorageLocation, onOpen: (BrowserLocation) -> Unit) { Card(onClick = { onOpen(storage.root) }, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) { Column(Modifier.padding(16.dp)) { Row { Icon(Icons.Default.Storage, null); Spacer(Modifier.padding(4.dp)); Text(storage.displayName, style = MaterialTheme.typography.titleMedium) }; val total = storage.totalBytes; val used = storage.usedBytes; val free = storage.freeBytes; if (total != null && used != null && total > 0L) { Text(stringResource(R.string.used_of_total, Formatters.bytes(used), Formatters.bytes(total)), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp)); LinearProgressIndicator(progress = { (used.toDouble() / total.toDouble()).toFloat().coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)); if (free != null) Text(stringResource(R.string.available_space, Formatters.bytes(free)), style = MaterialTheme.typography.bodySmall) } } } }
-@Composable private fun SectionTitle(text: String) { Text(text, style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(start = 16.dp, top = 20.dp, end = 16.dp, bottom = 8.dp)) }
-@Composable private fun CategoryButton(category: MediaCategory, labelRes: Int, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: (MediaCategory) -> Unit) { TextButton(onClick = { onClick(category) }) { Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(icon, null); Text(stringResource(labelRes)) } } }
+@Composable
+private fun PermissionCard(onGrant: () -> Unit) {
+    Card(Modifier.fillMaxWidth().padding(16.dp)) {
+        Column(Modifier.padding(16.dp)) {
+            Row {
+                Icon(Icons.Default.Storage, null)
+                Spacer(Modifier.padding(4.dp))
+                Text(stringResource(R.string.full_storage_access), style = MaterialTheme.typography.titleMedium)
+            }
+            Text(stringResource(R.string.full_storage_access_explanation), modifier = Modifier.padding(vertical = 8.dp))
+            Button(onClick = onGrant) { Text(stringResource(R.string.grant_access)) }
+        }
+    }
+}
+
+@Composable
+private fun StorageCard(storage: StorageLocation, onOpen: (BrowserLocation) -> Unit) {
+    Card(
+        onClick = { onOpen(storage.root) },
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Row {
+                Icon(Icons.Default.Storage, null)
+                Spacer(Modifier.padding(4.dp))
+                Text(storage.displayName, style = MaterialTheme.typography.titleMedium)
+            }
+            val total = storage.totalBytes
+            val used = storage.usedBytes
+            val free = storage.freeBytes
+            if (total != null && used != null && total > 0L) {
+                Text(
+                    stringResource(R.string.used_of_total, Formatters.bytes(used), Formatters.bytes(total)),
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+                LinearProgressIndicator(
+                    progress = { (used.toDouble() / total.toDouble()).toFloat().coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                )
+                if (free != null) Text(stringResource(R.string.available_space, Formatters.bytes(free)), style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SectionTitle(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.titleLarge,
+        modifier = Modifier.padding(start = 16.dp, top = 20.dp, end = 16.dp, bottom = 8.dp),
+    )
+}
+
+@Composable
+private fun CategoryButton(
+    category: MediaCategory,
+    labelRes: Int,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    onClick: (MediaCategory) -> Unit,
+) {
+    TextButton(onClick = { onClick(category) }) {
+        Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
+            Icon(icon, null)
+            Text(stringResource(labelRes))
+        }
+    }
+}
