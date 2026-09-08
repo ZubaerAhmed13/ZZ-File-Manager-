@@ -30,7 +30,7 @@ import java.io.File
 class StorageRepository(
     private val context: Context,
     private val preferences: PreferencesRepository,
-) : BrowserStorage {
+) : BrowserStorage, StorageProviderRegistry {
     private val providers: Map<String, StorageProvider> = listOf(
         LocalStorageProvider(context), SafStorageProvider(context), MediaStoreProvider(context)
     ).associateBy { it.id }
@@ -116,10 +116,18 @@ class StorageRepository(
         )
     }
 
-    override suspend fun listChildren(location: BrowserLocation): List<FileEntry> = provider(location).listChildren(location)
-    override suspend fun resolveParent(location: BrowserLocation): BrowserLocation? = provider(location).resolveParent(location)
-    override suspend fun breadcrumbs(location: BrowserLocation): List<Breadcrumb> = provider(location).breadcrumbs(location)
+    override suspend fun listChildren(location: BrowserLocation): List<FileEntry> = providerFor(location.providerId).listChildren(location)
+    override suspend fun resolveParent(location: BrowserLocation): BrowserLocation? = providerFor(location.providerId).resolveParent(location)
+    override suspend fun breadcrumbs(location: BrowserLocation): List<Breadcrumb> = providerFor(location.providerId).breadcrumbs(location)
     override suspend fun remember(location: BrowserLocation) { preferences.addRecent(location); preferences.setLastLocation(location) }
+
+    override fun providerFor(providerId: String): StorageProvider = providers[providerId]
+        ?: throw StorageAccessException.Unavailable()
+
+    override fun writableProviderFor(providerId: String): WritableStorageProvider? = providers[providerId] as? WritableStorageProvider
+
+    suspend fun capabilities(location: BrowserLocation): ProviderCapabilities =
+        writableProviderFor(location.providerId)?.capabilities(location) ?: ProviderCapabilities.ReadOnly
 
     suspend fun restorableLastLocation(): BrowserLocation? = withContext(Dispatchers.IO) {
         val location = preferences.lastLocation.first() ?: return@withContext null
@@ -141,7 +149,7 @@ class StorageRepository(
                         opaqueId = location.id,
                         uri = location.reference,
                     )
-                    location.copy(readable = true, writable = grant.writable).takeIf { providers.getValue(SafStorageProvider.ID).exists(item) }
+                    location.copy(readable = true, writable = grant.writable).takeIf { providerFor(SafStorageProvider.ID).exists(item) }
                 }
             }
             MediaStoreProvider.ID -> location.takeIf { runCatching { MediaCategory.valueOf(location.reference) }.isSuccess }
@@ -155,14 +163,18 @@ class StorageRepository(
     }
 
     override fun openRequest(entry: FileEntry): OpenFileRequest? {
-        val uri = entry.reference.uri?.let(Uri::parse) ?: entry.reference.path?.let { path ->
-            runCatching { FileProvider.getUriForFile(context, "${context.packageName}.files", File(path)) }.getOrNull()
-        } ?: return null
+        val uri = contentUri(entry) ?: return null
         return OpenFileRequest(uri.toString(), entry.mimeType ?: "*/*")
     }
 
-    private fun provider(location: BrowserLocation): StorageProvider = providers[location.providerId]
-        ?: throw StorageAccessException.Unavailable()
+    fun shareRequests(entries: List<FileEntry>): List<OpenFileRequest> = entries
+        .filterNot { it.isDirectory }
+        .mapNotNull { entry -> contentUri(entry)?.let { OpenFileRequest(it.toString(), entry.mimeType ?: "*/*") } }
+
+    private fun contentUri(entry: FileEntry): Uri? = entry.reference.uri?.let(Uri::parse)
+        ?: entry.reference.path?.let { path ->
+            runCatching { FileProvider.getUriForFile(context, "${context.packageName}.files", File(path)) }.getOrNull()
+        }
 
     @Suppress("DEPRECATION")
     private fun discoverLocalVolumes(): List<StorageLocation> {

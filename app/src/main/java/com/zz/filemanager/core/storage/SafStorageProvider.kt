@@ -9,15 +9,17 @@ import com.zz.filemanager.core.model.Breadcrumb
 import com.zz.filemanager.core.model.BrowserLocation
 import com.zz.filemanager.core.model.FileEntry
 import com.zz.filemanager.core.model.FileReference
+import com.zz.filemanager.core.model.ScopedFileReference
 import com.zz.filemanager.core.util.FileClassifier
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.FileNotFoundException
 import java.io.InputStream
+import java.io.OutputStream
 import kotlin.coroutines.coroutineContext
 
-class SafStorageProvider(private val context: Context) : StorageProvider {
+class SafStorageProvider(private val context: Context) : WritableStorageProvider {
     override val id: String = ID
 
     override suspend fun listChildren(location: BrowserLocation): List<FileEntry> = withContext(Dispatchers.IO) {
@@ -93,6 +95,107 @@ class SafStorageProvider(private val context: Context) : StorageProvider {
         result
     }
 
+    override suspend fun capabilities(location: BrowserLocation): ProviderCapabilities {
+        val values = mutableSetOf(StorageCapability.READ)
+        if (location.writable) {
+            values += setOf(
+                StorageCapability.WRITE,
+                StorageCapability.CREATE_FILE,
+                StorageCapability.CREATE_DIRECTORY,
+                StorageCapability.DELETE,
+                StorageCapability.RENAME,
+            )
+        }
+        return ProviderCapabilities(values)
+    }
+
+    override suspend fun createDirectory(parent: BrowserLocation, name: String): FileEntry = withContext(Dispatchers.IO) {
+        requireSafeLeafName(name)
+        val directory = documentFor(parent) ?: throw StorageAccessException.Unavailable()
+        if (!directory.canWrite()) throw StorageAccessException.ReadOnly()
+        if (directory.findFile(name) != null) throw StorageAccessException.Io(IllegalStateException("destination exists"))
+        val created = try {
+            directory.createDirectory(name) ?: throw StorageAccessException.Io()
+        } catch (error: SecurityException) {
+            throw StorageAccessException.PermissionRequired(error)
+        }
+        toEntry(created, parent.storageId)
+    }
+
+    override suspend fun createFile(parent: BrowserLocation, name: String, mimeType: String?): FileEntry = withContext(Dispatchers.IO) {
+        requireSafeLeafName(name)
+        val directory = documentFor(parent) ?: throw StorageAccessException.Unavailable()
+        if (!directory.canWrite()) throw StorageAccessException.ReadOnly()
+        if (directory.findFile(name) != null) throw StorageAccessException.Io(IllegalStateException("destination exists"))
+        val created = try {
+            directory.createFile(mimeType ?: "application/octet-stream", name) ?: throw StorageAccessException.Io()
+        } catch (error: SecurityException) {
+            throw StorageAccessException.PermissionRequired(error)
+        }
+        toEntry(created, parent.storageId)
+    }
+
+    override suspend fun delete(item: ScopedFileReference): Boolean = withContext(Dispatchers.IO) {
+        val uri = validateScopedUri(item)
+        val document = DocumentFile.fromSingleUri(context, uri) ?: throw StorageAccessException.Unavailable()
+        try {
+            if (!document.exists()) false else document.delete()
+        } catch (error: SecurityException) {
+            throw StorageAccessException.PermissionRequired(error)
+        }
+    }
+
+    override suspend fun rename(item: ScopedFileReference, newName: String): FileEntry = withContext(Dispatchers.IO) {
+        requireSafeLeafName(newName)
+        val uri = validateScopedUri(item)
+        val document = DocumentFile.fromSingleUri(context, uri) ?: throw StorageAccessException.Unavailable()
+        if (!document.canWrite()) throw StorageAccessException.ReadOnly()
+        try {
+            if (!document.renameTo(newName)) throw StorageAccessException.Io()
+            toEntry(document, item.storageId)
+        } catch (error: SecurityException) {
+            throw StorageAccessException.PermissionRequired(error)
+        }
+    }
+
+    override suspend fun openOutputStream(item: ScopedFileReference, truncate: Boolean): OutputStream = withContext(Dispatchers.IO) {
+        val uri = validateScopedUri(item)
+        try {
+            val mode = if (truncate) "rwt" else "wa"
+            context.contentResolver.openOutputStream(uri, mode)
+                ?: context.contentResolver.openOutputStream(uri, if (truncate) "w" else "wa")
+                ?: throw FileNotFoundException(uri.toString())
+        } catch (error: SecurityException) {
+            throw StorageAccessException.PermissionRequired(error)
+        }
+    }
+
+    override suspend fun findChild(parent: BrowserLocation, name: String): FileEntry? = withContext(Dispatchers.IO) {
+        requireSafeLeafName(name)
+        val directory = documentFor(parent) ?: return@withContext null
+        try {
+            directory.findFile(name)?.let { toEntry(it, parent.storageId) }
+        } catch (error: SecurityException) {
+            throw StorageAccessException.PermissionRequired(error)
+        }
+    }
+
+    override suspend fun freeBytes(location: BrowserLocation): Long? = null
+
+    private fun validateScopedUri(item: ScopedFileReference): Uri {
+        val tree = Uri.parse(item.rootReference)
+        val uri = item.reference.uri?.let(Uri::parse) ?: throw StorageAccessException.Unavailable()
+        val rootDocId = runCatching { DocumentsContract.getTreeDocumentId(tree) }
+            .getOrElse { throw StorageAccessException.PermissionRequired(it) }
+        val itemDocId = runCatching {
+            if (uri == tree) rootDocId else DocumentsContract.getDocumentId(uri)
+        }.getOrElse { throw StorageAccessException.PermissionRequired(it) }
+        if (itemDocId != rootDocId && !itemDocId.startsWith("$rootDocId/")) {
+            throw StorageAccessException.PermissionRequired()
+        }
+        return uri
+    }
+
     private fun documentFor(location: BrowserLocation): DocumentFile? {
         val uri = Uri.parse(location.reference)
         return if (location.reference == location.rootReference) {
@@ -125,6 +228,12 @@ class SafStorageProvider(private val context: Context) : StorageProvider {
             storageId = storageId,
             thumbnailKey = if (file.isFile) "${file.uri}:${modified ?: 0L}:${size ?: -1L}" else null,
         )
+    }
+
+    private fun requireSafeLeafName(name: String) {
+        if (name.isBlank() || name == "." || name == ".." || name.contains('/') || name.contains('\\') || name.indexOf('\u0000') >= 0) {
+            throw StorageAccessException.Io(IllegalArgumentException("invalid leaf name"))
+        }
     }
 
     private fun rootName(location: BrowserLocation): String = location.storageId.removePrefix("saf:").ifBlank { location.displayName }

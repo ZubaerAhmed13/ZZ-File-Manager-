@@ -25,6 +25,16 @@ data class FileReference(
     val path: String? = null,
 )
 
+/**
+ * A provider-neutral reference plus the logical root that authorized it.
+ * File-operation code must carry this scope instead of converting every URI to a path.
+ */
+data class ScopedFileReference(
+    val reference: FileReference,
+    val rootReference: String,
+    val storageId: String,
+)
+
 data class FileEntry(
     val id: String,
     val reference: FileReference,
@@ -41,6 +51,7 @@ data class FileEntry(
     val childCount: Int?,
     val storageId: String,
     val thumbnailKey: String?,
+    val isSymbolicLink: Boolean = false,
 ) {
     val isDirectory: Boolean get() = type == FileEntryType.DIRECTORY
 }
