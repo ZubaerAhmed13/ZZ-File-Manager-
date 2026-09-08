@@ -15,6 +15,7 @@ import com.zz.filemanager.core.model.ViewMode
 import com.zz.filemanager.core.preferences.BrowserPreferences
 import com.zz.filemanager.core.storage.BrowserStorage
 import com.zz.filemanager.core.storage.StorageAccessException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
@@ -26,6 +27,7 @@ import kotlinx.coroutines.test.TestDispatcher
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.Assert.assertEquals
@@ -87,6 +89,115 @@ class BrowserViewModelTest {
         advanceUntilIdle()
         state = viewModel.state.value as BrowserUiState.Content
         assertEquals(child.identity, state.location.identity)
+    }
+
+    @Test
+    fun rapidNavigation_cancelsStaleLoad_andLatestLocationWins() = runTest(mainDispatcherRule.dispatcher) {
+        val root = location("root")
+        val slow = location("slow")
+        val latest = location("latest")
+        val slowGate = CompletableDeferred<List<FileEntry>>()
+        val storage = FakeBrowserStorage().apply {
+            children[root.identity] = listOf(file("root.txt"))
+            childGates[slow.identity] = slowGate
+            children[latest.identity] = listOf(file("latest.txt"))
+        }
+        val viewModel = BrowserViewModel(storage, FakeBrowserPreferences(), mainDispatcherRule.dispatcher)
+
+        viewModel.start(root)
+        advanceUntilIdle()
+        viewModel.navigateTo(slow)
+        runCurrent()
+        viewModel.navigateTo(latest)
+        advanceUntilIdle()
+
+        var state = viewModel.state.value as BrowserUiState.Content
+        assertEquals(latest.identity, state.location.identity)
+        assertEquals(listOf("latest.txt"), state.entries.map { it.name })
+        assertFalse(storage.remembered.any { it.identity == slow.identity })
+
+        slowGate.complete(listOf(file("stale.txt")))
+        advanceUntilIdle()
+        state = viewModel.state.value as BrowserUiState.Content
+        assertEquals(latest.identity, state.location.identity)
+        assertEquals(listOf("latest.txt"), state.entries.map { it.name })
+    }
+
+    @Test
+    fun goUp_navigatesToResolvedParent_andRecordsHistory() = runTest(mainDispatcherRule.dispatcher) {
+        val root = location("root")
+        val child = location("child")
+        val storage = FakeBrowserStorage().apply {
+            children[root.identity] = listOf(file("root.txt"))
+            children[child.identity] = listOf(file("child.txt"))
+            parents[child.identity] = root
+        }
+        val viewModel = BrowserViewModel(storage, FakeBrowserPreferences(), mainDispatcherRule.dispatcher)
+
+        viewModel.start(child)
+        advanceUntilIdle()
+        viewModel.goUp()
+        advanceUntilIdle()
+
+        val state = viewModel.state.value as BrowserUiState.Content
+        assertEquals(root.identity, state.location.identity)
+        assertTrue(state.canGoBack)
+    }
+
+    @Test
+    fun delayedGoUp_cannotOverrideNewerNavigation() = runTest(mainDispatcherRule.dispatcher) {
+        val root = location("root")
+        val child = location("child")
+        val sibling = location("sibling")
+        val delayedParent = CompletableDeferred<BrowserLocation?>()
+        val storage = FakeBrowserStorage().apply {
+            children[child.identity] = listOf(file("child.txt"))
+            children[sibling.identity] = listOf(file("sibling.txt"))
+            parents[child.identity] = root
+        }
+        val viewModel = BrowserViewModel(storage, FakeBrowserPreferences(), mainDispatcherRule.dispatcher)
+
+        viewModel.start(child)
+        advanceUntilIdle()
+        storage.parentGates[child.identity] = delayedParent
+        viewModel.goUp()
+        runCurrent()
+        viewModel.navigateTo(sibling)
+        advanceUntilIdle()
+        delayedParent.complete(root)
+        advanceUntilIdle()
+
+        val state = viewModel.state.value as BrowserUiState.Content
+        assertEquals(sibling.identity, state.location.identity)
+        assertEquals(listOf("sibling.txt"), state.entries.map { it.name })
+    }
+
+    @Test
+    fun emptyDirectory_exposesEmptyState_withBackAndUpNavigation() = runTest(mainDispatcherRule.dispatcher) {
+        val root = location("root")
+        val emptyChild = location("empty")
+        val storage = FakeBrowserStorage().apply {
+            children[root.identity] = listOf(file("root.txt"))
+            children[emptyChild.identity] = emptyList()
+            parents[emptyChild.identity] = root
+        }
+        val viewModel = BrowserViewModel(storage, FakeBrowserPreferences(), mainDispatcherRule.dispatcher)
+
+        viewModel.start(root)
+        advanceUntilIdle()
+        viewModel.navigateTo(emptyChild)
+        advanceUntilIdle()
+
+        val empty = viewModel.state.value as BrowserUiState.Empty
+        assertEquals(emptyChild.identity, empty.location.identity)
+        assertTrue(empty.canGoBack)
+        assertTrue(empty.canGoUp)
+        assertFalse(empty.canGoForward)
+
+        viewModel.goUp()
+        advanceUntilIdle()
+        val parent = viewModel.state.value as BrowserUiState.Content
+        assertEquals(root.identity, parent.location.identity)
     }
 
     @Test
@@ -178,17 +289,24 @@ class BrowserViewModelTest {
 
 private class FakeBrowserStorage : BrowserStorage {
     val children = mutableMapOf<String, List<FileEntry>>()
+    val childGates = mutableMapOf<String, CompletableDeferred<List<FileEntry>>>()
     val parents = mutableMapOf<String, BrowserLocation?>()
+    val parentGates = mutableMapOf<String, CompletableDeferred<BrowserLocation?>>()
     val failures = mutableMapOf<String, StorageAccessException>()
     val remembered = mutableListOf<BrowserLocation>()
     val openRequests = mutableMapOf<String, OpenFileRequest?>()
 
     override suspend fun listChildren(location: BrowserLocation): List<FileEntry> {
         failures[location.identity]?.let { throw it }
+        childGates[location.identity]?.let { return it.await() }
         return children[location.identity].orEmpty()
     }
 
-    override suspend fun resolveParent(location: BrowserLocation): BrowserLocation? = parents[location.identity]
+    override suspend fun resolveParent(location: BrowserLocation): BrowserLocation? {
+        parentGates[location.identity]?.let { return it.await() }
+        return parents[location.identity]
+    }
+
     override suspend fun breadcrumbs(location: BrowserLocation): List<Breadcrumb> = listOf(Breadcrumb(location.displayName, location))
     override suspend fun remember(location: BrowserLocation) { remembered += location }
     override fun openRequest(entry: FileEntry): OpenFileRequest? = openRequests[entry.name]
