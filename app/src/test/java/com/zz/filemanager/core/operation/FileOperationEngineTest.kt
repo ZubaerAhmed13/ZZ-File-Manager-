@@ -107,6 +107,88 @@ class FileOperationEngineTest {
     }
 
     @Test
+    fun cancelledCollisionCannotBeRevivedByLateDecision() = runBlocking {
+        val provider = FakeWritableProvider().apply {
+            directory("/src")
+            directory("/dest")
+            file("/src/report.pdf", byteArrayOf(1))
+            file("/dest/report.pdf", byteArrayOf(2))
+        }
+        val store = MemoryOperationStore()
+        var executionRequests = 0
+        val controller = FileOperationController(store, OperationExecutionHost { executionRequests++ })
+        val id = controller.enqueueCopy(listOf(provider.source("/src/report.pdf")), provider.location("/dest"))
+        val engine = FileOperationEngine(store, provider)
+
+        engine.runAvailable()
+        assertEquals(FileOperationState.WAITING_FOR_USER, store.get(id)?.state)
+        assertNotNull(store.get(id)?.pendingCollision)
+
+        controller.cancel(id)
+        controller.resolveCollision(id, CollisionPolicy.KEEP_BOTH, applyToAll = false)
+        engine.runAvailable()
+
+        assertEquals(FileOperationState.CANCELLED, store.get(id)?.state)
+        assertEquals(null, store.get(id)?.pendingCollision)
+        assertFalse(provider.has("/dest/report (1).pdf"))
+        assertEquals(1, executionRequests)
+    }
+
+    @Test
+    fun pauseDuringCopyCleansPartialThenResumeCompletes() = runBlocking {
+        val provider = FakeWritableProvider().apply {
+            directory("/src")
+            directory("/dest")
+            file("/src/movie.bin", ByteArray(64) { it.toByte() })
+        }
+        val store = MemoryOperationStore()
+        val controller = FileOperationController(store, OperationExecutionHost {})
+        val id = controller.enqueueCopy(listOf(provider.source("/src/movie.bin")), provider.location("/dest"))
+        provider.onWrite = { store.forceState(id, FileOperationState.PAUSING) }
+        val engine = FileOperationEngine(store, provider, bufferSize = 8, progressIntervalMillis = 0L)
+
+        engine.runAvailable()
+
+        val paused = store.get(id)
+        assertEquals(FileOperationState.PAUSED, paused?.state)
+        assertTrue(provider.has("/src/movie.bin"))
+        assertFalse(provider.has("/dest/movie.bin"))
+        assertFalse(provider.hasPartialOutput())
+        assertEquals(0L, paused?.items?.single()?.processedBytes)
+
+        controller.resume(id)
+        engine.runAvailable()
+
+        assertEquals(FileOperationState.COMPLETED, store.get(id)?.state)
+        assertArrayEquals(ByteArray(64) { it.toByte() }, provider.bytes("/dest/movie.bin"))
+        assertTrue(provider.has("/src/movie.bin"))
+        assertFalse(provider.hasPartialOutput())
+    }
+
+    @Test
+    fun cancelDuringCopyCleansPartialAndPreservesSource() = runBlocking {
+        val provider = FakeWritableProvider().apply {
+            directory("/src")
+            directory("/dest")
+            file("/src/keep.bin", ByteArray(64) { (it + 1).toByte() })
+        }
+        val store = MemoryOperationStore()
+        val controller = FileOperationController(store, OperationExecutionHost {})
+        val id = controller.enqueueCopy(listOf(provider.source("/src/keep.bin")), provider.location("/dest"))
+        provider.onWrite = { store.forceState(id, FileOperationState.CANCELLING) }
+        val engine = FileOperationEngine(store, provider, bufferSize = 8, progressIntervalMillis = 0L)
+
+        engine.runAvailable()
+
+        val cancelled = store.get(id)
+        assertEquals(FileOperationState.CANCELLED, cancelled?.state)
+        assertTrue(provider.has("/src/keep.bin"))
+        assertFalse(provider.has("/dest/keep.bin"))
+        assertFalse(provider.hasPartialOutput())
+        assertTrue(cancelled?.items?.all { it.state == OperationItemState.CANCELLED } == true)
+    }
+
+    @Test
     fun folderCannotBeCopiedIntoItsDescendant() = runBlocking {
         val provider = FakeWritableProvider().apply {
             directory("/src")
@@ -177,6 +259,12 @@ private class MemoryOperationStore : OperationStore {
     }
     override suspend fun nextRunnable(): FileOperation? = state.value.firstOrNull { it.state == FileOperationState.QUEUED }
     override suspend fun prune(nowMillis: Long) = Unit
+
+    fun forceState(id: String, operationState: FileOperationState) {
+        state.value = state.value.map { operation ->
+            if (operation.id == id) operation.copy(state = operationState) else operation
+        }
+    }
 }
 
 private class FakeWritableProvider : WritableStorageProvider, StorageProviderRegistry {
@@ -184,6 +272,7 @@ private class FakeWritableProvider : WritableStorageProvider, StorageProviderReg
     private val nodes = linkedMapOf<String, Node>()
     var freeSpace: Long? = Long.MAX_VALUE
     var failWrites: Boolean = false
+    var onWrite: (() -> Unit)? = null
     override val id: String = "fake"
 
     init { directory("/") }
@@ -192,6 +281,7 @@ private class FakeWritableProvider : WritableStorageProvider, StorageProviderReg
     fun file(path: String, data: ByteArray) { nodes[normalize(path)] = Node(normalize(path), false, data) }
     fun has(path: String): Boolean = normalize(path) in nodes
     fun bytes(path: String): ByteArray = nodes.getValue(normalize(path)).data
+    fun hasPartialOutput(): Boolean = nodes.keys.any { it.substringAfterLast('/').startsWith(".zzpart-") }
     fun location(path: String): BrowserLocation {
         val normalized = normalize(path)
         return BrowserLocation(id, "fake:$normalized", normalized.substringAfterLast('/').ifBlank { "root" }, normalized, "/", "fake", true, true)
@@ -248,6 +338,14 @@ private class FakeWritableProvider : WritableStorageProvider, StorageProviderReg
         if (failWrites) error("simulated write failure")
         val node = node(item.reference) ?: error("missing destination")
         return object : ByteArrayOutputStream() {
+            override fun write(buffer: ByteArray, offset: Int, length: Int) {
+                super.write(buffer, offset, length)
+                onWrite?.let { callback ->
+                    onWrite = null
+                    callback()
+                }
+            }
+
             override fun close() {
                 node.data = toByteArray()
                 super.close()
