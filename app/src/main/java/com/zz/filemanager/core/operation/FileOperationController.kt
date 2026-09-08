@@ -52,7 +52,10 @@ class FileOperationController(
             )
         }
         val operation = FileOperation(id, FileOperationType.BATCH_RENAME, FileOperationState.QUEUED, items, parent, createdAtMillis = timestamp)
-        return submit(operation, "batch:${sources.joinToString { it.reference.opaqueId }}:${proposedNames.values.joinToString()}")
+        val canonicalMapping = proposedNames.entries
+            .sortedBy { it.key }
+            .joinToString(separator = "|") { (sourceId, proposedName) -> "$sourceId=$proposedName" }
+        return submit(operation, "batch:${parent.identity}:$canonicalMapping")
     }
 
     suspend fun enqueueCreateDirectory(destination: BrowserLocation, name: String): String = enqueueCreate(FileOperationType.CREATE_DIRECTORY, destination, name, null)
@@ -166,7 +169,14 @@ class FileOperationController(
     private suspend fun submit(operation: FileOperation, signature: String): String = submitMutex.withLock {
         val timestamp = now()
         val previous = lastSubmission
-        if (previous != null && previous.first == signature && timestamp - previous.second.first < DOUBLE_SUBMIT_WINDOW_MILLIS) {
+        val elapsed = previous?.let { timestamp - it.second.first }
+        if (
+            previous != null &&
+            previous.first == signature &&
+            elapsed != null &&
+            elapsed >= 0L &&
+            elapsed < DOUBLE_SUBMIT_WINDOW_MILLIS
+        ) {
             return@withLock previous.second.second
         }
         store.enqueue(operation)
