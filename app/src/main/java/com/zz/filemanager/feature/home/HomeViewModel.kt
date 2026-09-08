@@ -56,6 +56,7 @@ class HomeViewModel(
     }
 
     fun mediaLocation(category: MediaCategory): BrowserLocation = storage.mediaLocation(category)
+    fun hasBroadStorageAccess(): Boolean = storage.broadStorageAccess()
 
     class Factory(
         private val storage: StorageRepository,
