@@ -1,7 +1,10 @@
 package com.zz.filemanager.core.storage
 
 import android.content.Context
+import android.os.Build
+import android.os.storage.StorageManager
 import android.webkit.MimeTypeMap
+import com.zz.filemanager.R
 import com.zz.filemanager.core.model.Breadcrumb
 import com.zz.filemanager.core.model.BrowserLocation
 import com.zz.filemanager.core.model.FileEntry
@@ -63,12 +66,13 @@ class LocalStorageProvider(private val context: Context) : StorageProvider {
     override suspend fun breadcrumbs(location: BrowserLocation): List<Breadcrumb> = withContext(Dispatchers.IO) {
         val root = File(location.rootReference).canonicalFile
         val current = validated(location.reference, location.rootReference)
+        val rootLabel = rootDisplayName(location)
         val result = mutableListOf(
             Breadcrumb(
-                rootDisplayName(location),
+                rootLabel,
                 location.copy(
                     id = "local:${root.path}",
-                    displayName = rootDisplayName(location),
+                    displayName = rootLabel,
                     reference = root.path,
                     readable = root.canRead(),
                     writable = root.canWrite(),
@@ -126,8 +130,27 @@ class LocalStorageProvider(private val context: Context) : StorageProvider {
     }
 
     private fun isInside(file: File, root: File): Boolean = file == root || file.path.startsWith(root.path + File.separator)
-    private fun rootDisplayName(location: BrowserLocation): String =
-        location.displayName.takeIf { location.reference == location.rootReference } ?: location.storageId
+
+    @Suppress("DEPRECATION")
+    private fun rootDisplayName(location: BrowserLocation): String {
+        if (location.reference == location.rootReference && location.displayName.isNotBlank()) {
+            return location.displayName
+        }
+        if (location.storageId == "primary") return context.getString(R.string.internal_storage)
+
+        val root = runCatching { File(location.rootReference).canonicalFile }.getOrNull()
+        if (root != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val manager = context.getSystemService(StorageManager::class.java)
+            val volume = manager.storageVolumes.firstOrNull { storageVolume ->
+                val volumeRoot = storageVolume.directory?.let { runCatching { it.canonicalFile }.getOrNull() }
+                volumeRoot == root
+            }
+            if (volume != null) {
+                return if (volume.isPrimary) context.getString(R.string.internal_storage) else volume.getDescription(context)
+            }
+        }
+        return location.storageId.takeIf { it.isNotBlank() } ?: context.getString(R.string.internal_storage)
+    }
 
     companion object { const val ID = "local" }
 }
