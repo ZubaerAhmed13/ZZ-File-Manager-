@@ -159,6 +159,80 @@ class FileOperationControllerTest {
     }
 
     @Test
+    fun clockRollbackDoesNotSuppressLegitimateSubmission() = runBlocking {
+        val store = ControllerStore()
+        var executionRequests = 0
+        var tick = 1_000L
+        val controller = FileOperationController(store, OperationExecutionHost { executionRequests++ }, now = { tick })
+        val sources = listOf(source("report.pdf"))
+        val destination = location("/dest")
+
+        val firstId = controller.enqueueCopy(sources, destination)
+        tick = 900L
+        val secondId = controller.enqueueCopy(sources, destination)
+
+        assertNotEquals(firstId, secondId)
+        assertEquals(2, store.operations.value.size)
+        assertEquals(2, executionRequests)
+    }
+
+    @Test
+    fun batchRenameSignatureDistinguishesDifferentSourceToTargetMappings() = runBlocking {
+        val store = ControllerStore()
+        var executionRequests = 0
+        var tick = 100L
+        val controller = FileOperationController(store, OperationExecutionHost { executionRequests++ }, now = { tick })
+        val first = source("a.txt")
+        val second = source("b.txt")
+        val sources = listOf(first, second)
+        val parent = location("/dest")
+
+        val firstId = controller.enqueueBatchRename(
+            sources,
+            parent,
+            mapOf(first.reference.opaqueId to "alpha.txt", second.reference.opaqueId to "beta.txt"),
+        )
+        tick = 200L
+        val secondId = controller.enqueueBatchRename(
+            sources,
+            parent,
+            mapOf(first.reference.opaqueId to "beta.txt", second.reference.opaqueId to "alpha.txt"),
+        )
+
+        assertNotEquals(firstId, secondId)
+        assertEquals(2, store.operations.value.size)
+        assertEquals(2, executionRequests)
+    }
+
+    @Test
+    fun sameBatchRenameMappingWithDifferentMapIterationOrderDedupes() = runBlocking {
+        val store = ControllerStore()
+        var executionRequests = 0
+        var tick = 100L
+        val controller = FileOperationController(store, OperationExecutionHost { executionRequests++ }, now = { tick })
+        val first = source("a.txt")
+        val second = source("b.txt")
+        val sources = listOf(first, second)
+        val parent = location("/dest")
+
+        val firstId = controller.enqueueBatchRename(
+            sources,
+            parent,
+            linkedMapOf(first.reference.opaqueId to "alpha.txt", second.reference.opaqueId to "beta.txt"),
+        )
+        tick = 200L
+        val duplicateId = controller.enqueueBatchRename(
+            sources,
+            parent,
+            linkedMapOf(second.reference.opaqueId to "beta.txt", first.reference.opaqueId to "alpha.txt"),
+        )
+
+        assertEquals(firstId, duplicateId)
+        assertEquals(1, store.operations.value.size)
+        assertEquals(1, executionRequests)
+    }
+
+    @Test
     fun tenThousandSourceCopyQueuesAllMetadataWithoutFilePayloadAllocation() = runBlocking {
         val sources = List(10_000) { index ->
             source("item-${index.toString().padStart(5, '0')}.bin")
