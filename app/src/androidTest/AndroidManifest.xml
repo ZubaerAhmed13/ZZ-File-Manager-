@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!--
+          Deterministic SAF certification provider used only by the instrumentation APK.
+          Production code never depends on this provider. It lets API-35 CI exercise the
+          real SafStorageProvider against DocumentsContract tree/document URIs without
+          relying on interactive system-picker automation.
+        -->
+        <provider
+            android:name="com.zz.filemanager.Step2TestDocumentsProvider"
+            android:authorities="com.zz.filemanager.test.documents"
+            android:enabled="true"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
+    </application>
+</manifest>
