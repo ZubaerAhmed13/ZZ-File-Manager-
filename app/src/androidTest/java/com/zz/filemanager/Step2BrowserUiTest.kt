@@ -111,7 +111,10 @@ class Step2BrowserUiTest {
 
         composeRule.onNodeWithText("More").performClick()
         composeRule.onNodeWithText("Rename").performClick()
-        composeRule.onNodeWithText("Rename").assertExists()
+        // The rename dialog intentionally contains both a title and confirmation action
+        // labelled "Rename". Verify the dialog shape instead of using an ambiguous
+        // single-node matcher that incorrectly treats the second legitimate node as a failure.
+        assertEquals(2, composeRule.onAllNodesWithText("Rename").fetchSemanticsNodes().size)
         composeRule.onNodeWithText("Name").assertExists()
         composeRule.onNodeWithText("Cancel").performClick()
 
@@ -145,11 +148,17 @@ class Step2BrowserUiTest {
         fixture.store.seed(runningOperation(fixture.location))
         fixture.render()
 
+        val alphaNodesBeforeSheet = composeRule.onAllNodesWithText("alpha.txt").fetchSemanticsNodes().size
         composeRule.onNodeWithContentDescription("File operations").performClick()
         composeRule.onNodeWithText("File operations").assertExists()
         composeRule.onNodeWithText("Copying files").assertExists()
         composeRule.onNodeWithText("Running").assertExists()
-        composeRule.onNodeWithText("alpha.txt").assertExists()
+        // The browser already contains alpha.txt. Opening the operation sheet must add
+        // exactly one additional alpha.txt semantics node for the current operation item.
+        assertEquals(
+            alphaNodesBeforeSheet + 1,
+            composeRule.onAllNodesWithText("alpha.txt").fetchSemanticsNodes().size,
+        )
         composeRule.onNodeWithText("Pause").assertExists()
         composeRule.onNodeWithText("Cancel").assertExists()
     }
