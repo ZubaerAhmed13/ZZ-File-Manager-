@@ -120,6 +120,28 @@ class FileOperationControllerTest {
         assertTrue(cancelled.state.isTerminal)
     }
 
+    @Test
+    fun tenThousandSourceCopyQueuesAllMetadataWithoutFilePayloadAllocation() = runBlocking {
+        val sources = List(10_000) { index ->
+            source("item-${index.toString().padStart(5, '0')}.bin")
+        }
+        val store = ControllerStore()
+        var executionRequests = 0
+        var tick = 100L
+        val controller = FileOperationController(store, OperationExecutionHost { executionRequests++ }, now = { ++tick })
+
+        val id = controller.enqueueCopy(sources, location("/dest"))
+
+        val queued = store.get(id)!!
+        assertEquals(FileOperationState.QUEUED, queued.state)
+        assertEquals(10_000, queued.items.size)
+        assertEquals(10_000L, queued.totalItems)
+        assertEquals("item-00000.bin", queued.items.first().source.name)
+        assertEquals("item-09999.bin", queued.items.last().source.name)
+        assertEquals(10_000, queued.items.map { it.id }.toSet().size)
+        assertEquals(1, executionRequests)
+    }
+
     private fun source(name: String) = OperationSource(
         reference = FileReference("fake", name, path = "/src/$name"),
         rootReference = "/",
