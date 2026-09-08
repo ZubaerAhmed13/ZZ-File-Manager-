@@ -2,6 +2,9 @@ package com.zz.filemanager.core.operation
 
 import com.zz.filemanager.core.model.BrowserLocation
 import com.zz.filemanager.core.model.FileReference
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -41,8 +44,7 @@ class OperationModelTest {
     }
 
     @Test
-    fun processDeathReconciliationNeverMarksRunningOperationComplete() {
-        val store = OperationRepository(OperationJournalForTest())
+    fun hostInterruptionNeverMarksRunningOperationComplete() = runBlocking {
         val running = FileOperation(
             id = "running",
             type = FileOperationType.COPY,
@@ -59,8 +61,10 @@ class OperationModelTest {
             destination = location("/dest"),
             createdAtMillis = 1L,
         )
+        val store = RecoveryStore(running)
 
-        val reconciled = store.reconcileAfterProcessDeath(running)
+        store.markHostExecutionInterrupted(nowMillis = 20L)
+        val reconciled = store.operations.value.single()
 
         assertEquals(FileOperationState.INTERRUPTED, reconciled.state)
         assertEquals(OperationItemState.QUEUED, reconciled.items.single().state)
@@ -69,7 +73,7 @@ class OperationModelTest {
     }
 
     @Test
-    fun batchRenamePlannerDetectsDuplicatesAndPreservesExtensions() {
+    fun batchRenamePlannerPreservesExtensionsAndDetectsDuplicateOutputs() {
         val entries = listOf(
             fileEntry("IMG_001.jpg", "1"),
             fileEntry("IMG_002.jpg", "2"),
@@ -83,8 +87,9 @@ class OperationModelTest {
         assertEquals("Holiday_002_002.jpg", preview[1].proposedName)
         assertTrue(preview.all { it.valid })
 
-        val duplicates = BatchRenamePlanner.preview(entries, BatchRenameRule(find = "IMG_001", replaceWith = "same", prefix = "", suffix = ""))
-        assertTrue(duplicates.isNotEmpty())
+        val duplicateEntries = listOf(fileEntry("same.jpg", "a"), fileEntry("same.jpg", "b"))
+        val duplicates = BatchRenamePlanner.preview(duplicateEntries, BatchRenameRule())
+        assertTrue(duplicates.all { !it.valid })
     }
 
     @Test
@@ -118,9 +123,15 @@ class OperationModelTest {
     )
 }
 
-/** Minimal journal adapter used only to instantiate OperationRepository for its deterministic reconciliation policy. */
-private class OperationJournalForTest : OperationJournalContract {
-    override fun readAll(): List<FileOperation> = emptyList()
-    override fun upsert(operation: FileOperation) = Unit
-    override fun prune(nowMillis: Long) = Unit
+private class RecoveryStore(initial: FileOperation) : OperationStore {
+    private val state = MutableStateFlow(listOf(initial))
+    override val operations: StateFlow<List<FileOperation>> = state
+    override suspend fun initialize() = Unit
+    override suspend fun enqueue(operation: FileOperation) { state.value = state.value + operation }
+    override suspend fun get(id: String): FileOperation? = state.value.firstOrNull { it.id == id }
+    override suspend fun save(operation: FileOperation) {
+        state.value = state.value.map { if (it.id == operation.id) operation else it }
+    }
+    override suspend fun nextRunnable(): FileOperation? = state.value.firstOrNull { it.state == FileOperationState.QUEUED }
+    override suspend fun prune(nowMillis: Long) = Unit
 }
