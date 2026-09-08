@@ -1,32 +1,27 @@
 package com.zz.filemanager.core.operation.android
 
-import android.app.job.JobInfo
-import android.app.job.JobScheduler
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import androidx.core.content.ContextCompat
 import com.zz.filemanager.core.operation.OperationExecutionHost
 
+/**
+ * Step 2 hosts local/SAF user-started file operations in a foreground service.
+ *
+ * Android's API 34+ user-initiated JobScheduler mode is limited to network data
+ * transfers, so it is intentionally not used for local/SAF copies or moves.
+ * OperationForegroundService handles Android 15 dataSync timeouts by reconciling
+ * the persistent operation journal to an interrupted/recoverable state.
+ */
 class AndroidOperationExecutionHost(context: Context) : OperationExecutionHost {
     private val appContext = context.applicationContext
 
     override fun requestExecution() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            val scheduler = appContext.getSystemService(JobScheduler::class.java)
-            val info = JobInfo.Builder(JOB_ID, ComponentName(appContext, OperationJobService::class.java))
-                .setUserInitiated(true)
-                .build()
-            val result = runCatching { scheduler.schedule(info) }.getOrDefault(JobScheduler.RESULT_FAILURE)
-            if (result == JobScheduler.RESULT_SUCCESS) return
-        }
         runCatching {
-            ContextCompat.startForegroundService(appContext, Intent(appContext, OperationForegroundService::class.java))
+            ContextCompat.startForegroundService(
+                appContext,
+                Intent(appContext, OperationForegroundService::class.java),
+            )
         }
-    }
-
-    companion object {
-        const val JOB_ID = 0x5A5A0202
     }
 }
