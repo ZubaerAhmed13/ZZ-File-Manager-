@@ -18,5 +18,17 @@
                 <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
             </intent-filter>
         </provider>
+
+        <!--
+          Debug-only synchronous test broker. It grants only the deterministic Step 2 tree and
+          only to this app's instrumentation package, reproducing the narrow URI permission that
+          system DocumentsUI issues after ACTION_OPEN_DOCUMENT_TREE selection. Release builds do
+          not contain this component.
+        -->
+        <provider
+            android:name="com.zz.filemanager.Step2SafGrantProvider"
+            android:authorities="com.zz.filemanager.debug.safgrant"
+            android:enabled="true"
+            android:exported="true" />
     </application>
 </manifest>
