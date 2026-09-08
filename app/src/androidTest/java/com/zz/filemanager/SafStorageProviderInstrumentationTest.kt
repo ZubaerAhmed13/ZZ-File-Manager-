@@ -45,9 +45,11 @@ class SafStorageProviderInstrumentationTest {
         // the shell identity only for this test, matching the system document UI's privileged access.
         instrumentation.uiAutomation.adoptShellPermissionIdentity(Manifest.permission.MANAGE_DOCUMENTS)
 
-        val backingRoot = File(instrumentation.context.cacheDir, Step2TestDocumentsProvider.ROOT_DIRECTORY_NAME)
-        backingRoot.deleteRecursively()
-        check(backingRoot.mkdirs()) { "Could not prepare deterministic SAF test root" }
+        // The DocumentsProvider owns and creates its root during provider lifecycle startup.
+        // Never delete/recreate that root from the test: provider startup can legitimately race
+        // with instrumentation setup on API 35. Determinism only requires an empty tree, so keep
+        // the provider-owned root and remove its children instead.
+        resetBackingRootContents()
 
         val treeUri = DocumentsContract.buildTreeDocumentUri(
             Step2TestDocumentsProvider.AUTHORITY,
@@ -68,8 +70,11 @@ class SafStorageProviderInstrumentationTest {
 
     @After
     fun tearDown() {
-        File(instrumentation.context.cacheDir, Step2TestDocumentsProvider.ROOT_DIRECTORY_NAME).deleteRecursively()
-        instrumentation.uiAutomation.dropShellPermissionIdentity()
+        try {
+            resetBackingRootContents()
+        } finally {
+            instrumentation.uiAutomation.dropShellPermissionIdentity()
+        }
     }
 
     @Test
@@ -157,6 +162,18 @@ class SafStorageProviderInstrumentationTest {
         assertArrayEquals(movePayload, provider.openInputStream(moved.reference).use { it.readBytes() })
         assertFalse(provider.exists(moveCreated.reference))
         assertTrue(provider.listChildren(destinationLocation).none { it.name.startsWith(".zzpart-") })
+    }
+
+    private fun resetBackingRootContents() {
+        val backingRoot = File(instrumentation.context.cacheDir, Step2TestDocumentsProvider.ROOT_DIRECTORY_NAME)
+        check(backingRoot.isDirectory || backingRoot.mkdirs()) {
+            "Could not prepare deterministic SAF test root"
+        }
+        backingRoot.listFiles().orEmpty().forEach { child ->
+            check(child.deleteRecursively()) {
+                "Could not clear deterministic SAF test child: ${child.name}"
+            }
+        }
     }
 
     private fun FileEntry.toOperationSource() = OperationSource(
