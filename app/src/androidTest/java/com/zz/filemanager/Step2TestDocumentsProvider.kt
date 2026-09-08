@@ -23,7 +23,7 @@ class Step2TestDocumentsProvider : DocumentsProvider() {
     }
 
     override fun queryRoots(projection: Array<out String>?): Cursor {
-        val cursor = MatrixCursor(projection?.map { it }.toTypedArray() ?: ROOT_PROJECTION)
+        val cursor = MatrixCursor(projection?.map { it }?.toTypedArray() ?: ROOT_PROJECTION)
         cursor.addValues(
             mapOf(
                 DocumentsContract.Root.COLUMN_ROOT_ID to ROOT_ID,
@@ -39,7 +39,7 @@ class Step2TestDocumentsProvider : DocumentsProvider() {
     }
 
     override fun queryDocument(documentId: String, projection: Array<out String>?): Cursor {
-        val cursor = MatrixCursor(projection?.map { it }.toTypedArray() ?: DOCUMENT_PROJECTION)
+        val cursor = MatrixCursor(projection?.map { it }?.toTypedArray() ?: DOCUMENT_PROJECTION)
         includeDocument(cursor, fileForDocumentId(documentId))
         return cursor
     }
@@ -51,7 +51,7 @@ class Step2TestDocumentsProvider : DocumentsProvider() {
     ): Cursor {
         val parent = fileForDocumentId(parentDocumentId)
         if (!parent.isDirectory) throw FileNotFoundException("Not a directory: $parentDocumentId")
-        val cursor = MatrixCursor(projection?.map { it }.toTypedArray() ?: DOCUMENT_PROJECTION)
+        val cursor = MatrixCursor(projection?.map { it }?.toTypedArray() ?: DOCUMENT_PROJECTION)
         parent.listFiles().orEmpty().sortedBy { it.name.lowercase() }.forEach { includeDocument(cursor, it) }
         return cursor
     }
