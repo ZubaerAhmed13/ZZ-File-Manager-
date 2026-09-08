@@ -32,25 +32,18 @@ fun ZZFileManagerApp(container: AppContainer) {
     ZZFileManagerTheme(theme) {
         val nav = rememberNavController()
         val context = LocalContext.current
-        fun openLocation(location: com.zz.filemanager.core.model.BrowserLocation) {
-            nav.navigate("browser?location=${Uri.encode(BrowserLocationCodec.encode(location))}")
-        }
+        fun openLocation(location: com.zz.filemanager.core.model.BrowserLocation) { nav.navigate("browser?location=${Uri.encode(BrowserLocationCodec.encode(location))}") }
         fun requestBroadAccess() {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
-                context.startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:${context.packageName}")))
-            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) context.startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:${context.packageName}")))
         }
         NavHost(navController = nav, startDestination = "home") {
             composable("home") {
                 val vm: HomeViewModel = viewModel(factory = HomeViewModel.Factory(container.storage, container.preferences))
                 HomeScreen(vm, ::openLocation, onOpenSettings = { nav.navigate("settings") })
             }
-            composable(
-                route = "browser?location={location}",
-                arguments = listOf(navArgument("location") { type = NavType.StringType }),
-            ) { backStack ->
+            composable(route = "browser?location={location}", arguments = listOf(navArgument("location") { type = NavType.StringType })) { backStack ->
                 val encoded = backStack.arguments?.getString("location").orEmpty()
-                val location = BrowserLocationCodec.decode(Uri.decode(encoded)) ?: return@composable
+                val location = BrowserLocationCodec.decode(encoded) ?: return@composable
                 val vm: BrowserViewModel = viewModel(key = location.identity, factory = BrowserViewModel.Factory(container.storage, container.preferences))
                 BrowserScreen(vm, location, container.thumbnails, onExitBrowser = { nav.popBackStack() }, onRequestStorageAccess = ::requestBroadAccess)
             }

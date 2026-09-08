@@ -30,14 +30,14 @@ class PreferencesRepository(private val context: Context) {
         val lastLocation = stringPreferencesKey("last_location")
     }
 
-    val theme: Flow<ThemeMode> = context.zzPreferences.data.map { prefs -> prefs[Keys.theme]?.let(::enumOrNull) ?: ThemeMode.SYSTEM }
-    val viewMode: Flow<ViewMode> = context.zzPreferences.data.map { prefs -> prefs[Keys.viewMode]?.let(::enumOrNull) ?: ViewMode.LIST }
+    val theme: Flow<ThemeMode> = context.zzPreferences.data.map { prefs -> prefs[Keys.theme]?.let { enumOrNull<ThemeMode>(it) } ?: ThemeMode.SYSTEM }
+    val viewMode: Flow<ViewMode> = context.zzPreferences.data.map { prefs -> prefs[Keys.viewMode]?.let { enumOrNull<ViewMode>(it) } ?: ViewMode.LIST }
     val showHidden: Flow<Boolean> = context.zzPreferences.data.map { it[Keys.showHidden] ?: false }
     val foldersFirst: Flow<Boolean> = context.zzPreferences.data.map { it[Keys.foldersFirst] ?: true }
     val sortConfiguration: Flow<SortConfiguration> = context.zzPreferences.data.map { prefs ->
         SortConfiguration(
-            field = prefs[Keys.sortField]?.let(::enumOrNull) ?: SortField.NAME,
-            direction = prefs[Keys.sortDirection]?.let(::enumOrNull) ?: SortDirection.ASCENDING,
+            field = prefs[Keys.sortField]?.let { enumOrNull<SortField>(it) } ?: SortField.NAME,
+            direction = prefs[Keys.sortDirection]?.let { enumOrNull<SortDirection>(it) } ?: SortDirection.ASCENDING,
             foldersFirst = prefs[Keys.foldersFirst] ?: true,
         )
     }
@@ -76,6 +76,5 @@ class PreferencesRepository(private val context: Context) {
         prefs[Keys.safLocations] = BrowserLocationCodec.encodeList(current.filterNot { it.rootReference == rootReference })
     }
 
-    @Suppress("UNCHECKED_CAST")
     private inline fun <reified T : Enum<T>> enumOrNull(value: String): T? = enumValues<T>().firstOrNull { it.name == value }
 }
