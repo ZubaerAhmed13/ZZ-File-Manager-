@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!--
+          Debug-only deterministic DocumentsProvider used by API-35 instrumentation.
+          It lives in the target debug APK (same UID as production SafStorageProvider under test),
+          is not exported, and is absent from release builds. Production code never depends on it.
+        -->
+        <provider
+            android:name="com.zz.filemanager.Step2TestDocumentsProvider"
+            android:authorities="com.zz.filemanager.test.documents"
+            android:enabled="true"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+    </application>
+</manifest>
