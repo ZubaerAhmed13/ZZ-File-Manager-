@@ -233,6 +233,23 @@ class FileOperationControllerTest {
     }
 
     @Test
+    fun batchRenameDedupeIncludesSourcesWhenProposedMapIsEmpty() = runBlocking {
+        val store = ControllerStore()
+        var executionRequests = 0
+        var tick = 100L
+        val controller = FileOperationController(store, OperationExecutionHost { executionRequests++ }, now = { tick })
+        val parent = location("/dest")
+
+        val firstId = controller.enqueueBatchRename(listOf(source("a.txt")), parent, emptyMap())
+        tick = 200L
+        val secondId = controller.enqueueBatchRename(listOf(source("b.txt")), parent, emptyMap())
+
+        assertNotEquals(firstId, secondId)
+        assertEquals(2, store.operations.value.size)
+        assertEquals(2, executionRequests)
+    }
+
+    @Test
     fun tenThousandSourceCopyQueuesAllMetadataWithoutFilePayloadAllocation() = runBlocking {
         val sources = List(10_000) { index ->
             source("item-${index.toString().padStart(5, '0')}.bin")
