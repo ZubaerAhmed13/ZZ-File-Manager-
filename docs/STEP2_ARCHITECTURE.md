@@ -2,7 +2,7 @@
 
 ## Scope
 
-Step 2 establishes the durable professional file-operation subsystem while preserving the Step 1 browser/storage architecture. It does not implement recycle bin, global search, archives, network/cloud providers, media editing, text editing, APK management, or final physical-device certification.
+Step 2 establishes the durable professional file-operation subsystem while preserving the approved Step 1 browser/storage architecture. It does not implement recycle bin, global search, archives, network/cloud providers, media editing, text editing, APK management, or final physical-device certification.
 
 ## Data flow
 
@@ -32,11 +32,21 @@ FileOperationController
 OperationExecutionHost
     ↓
 AndroidOperationExecutionHost
-    ├─ API 34+: user-initiated JobScheduler job where available
-    └─ foreground-service fallback / API 26–33 foreground service
+    ↓
+OperationForegroundService (dataSync)
 ```
 
-The engine remains JVM-testable and has no dependency on Compose, Activity, JobService, or notification classes.
+The engine remains independently JVM-testable and has no dependency on Compose, Activity, Service, or notification classes.
+
+## Android execution policy
+
+Step 2 operations are local-filesystem and Storage Access Framework transfers initiated directly by the user. They therefore use a user-started foreground service rather than Android 14+ `JobInfo.Builder.setUserInitiated(true)`: Android's user-initiated JobScheduler mode is intended for user-requested **network data transfers**, not arbitrary local/SAF file copies.
+
+`OperationForegroundService` starts immediately from the user's operation request, posts a dedicated ongoing file-operation notification, runs the provider-neutral engine, and updates notification progress from the persistent operation store.
+
+For Android 15's time-limited `dataSync` foreground-service execution, `Service.onTimeout(startId, fgsType)` is handled explicitly. Before stopping, the persistent journal is reconciled so an operation formerly marked `RUNNING` is never left falsely running or marked successful. It becomes interrupted/recoverable and can resume correctly at a safe file boundary.
+
+The host remains replaceable behind `OperationExecutionHost`, so future Android execution-policy changes can be absorbed without rewriting the operation engine.
 
 ## Provider write architecture
 
@@ -50,7 +60,7 @@ The local provider implements create file/folder, delete, rename, output streami
 
 ### SAF provider
 
-The SAF provider implements writable tree operations through `DocumentFile`, `DocumentsContract`, and `ContentResolver`, including create, delete, rename, input/output streaming, child lookup, and scoped-tree validation. Provider capability differences remain explicit; the engine does not assume atomic rename, random access, or reliable capacity for SAF.
+The SAF provider implements writable tree operations through `DocumentFile`, `DocumentsContract`, and `ContentResolver`, including create, delete, rename, input/output streaming, child lookup, and scoped-tree validation. Provider capability differences remain explicit; the engine does not assume atomic rename, random access, or reliable free-space capacity for SAF.
 
 ## Operation model
 
@@ -89,13 +99,13 @@ Open/share/properties are immediate UI actions and do not need to enter the long
 
 Important persisted boundaries include queueing, preparation/running state, periodic progress, item completion, pause/cancel, collision wait, failure, and terminal completion.
 
-Process death never converts an unfinished operation to success. Unsafe runtime states are reconciled to `INTERRUPTED`; a running item returns to `QUEUED` with its current-file byte progress reset. Completed item boundaries remain recorded.
+Process death never converts unfinished work to success. Unsafe runtime states are reconciled to `INTERRUPTED`; a running item returns to `QUEUED` with the unsafe current-file byte offset discarded. Completed item boundaries remain recorded.
 
 ## Copy and move safety
 
-File content is copied with a fixed bounded buffer (`256 KiB` by default). No operation uses `readBytes()` or allocates memory based on the source size. All byte counters are `Long`.
+File content is copied with a fixed bounded buffer (`256 KiB` by default). No operation uses `readBytes()` or allocates memory based on source size. All byte counters are `Long`.
 
-For providers that can safely rename, a copy writes to a temporary `.zzpart-*` destination, closes/flushes it, verifies the expected byte count when source size is known, then renames to the final name. Cancellation/pause/failure attempts to remove the partial output.
+For providers that can safely rename, a copy writes to a temporary `.zzpart-*` destination, closes/flushes it, verifies the expected byte count when source size is known, then renames it to the final name. Cancellation, pause, failure, or host interruption attempts to remove tracked partial output.
 
 A cross-provider move is:
 
@@ -111,7 +121,7 @@ Same-provider local moves may use a native move only when the provider confirms 
 
 ## Directory traversal
 
-Tree preparation uses an iterative `ArrayDeque` traversal rather than unbounded recursion. Empty directories are represented as operation items and copied. Symbolic links are detected on local storage and are not recursively followed, preventing traversal loops and escapes.
+Tree preparation uses an iterative `ArrayDeque` traversal rather than unbounded recursion. Empty directories are represented as operation items and copied. Symbolic links are detected on local storage and are not recursively followed, preventing traversal loops and root escapes.
 
 Copy/move validates folder → self and folder → descendant targets before execution.
 
@@ -135,7 +145,7 @@ Supported decisions are capability/kind dependent:
 
 Keep-both naming preserves extensions (`report.pdf` → `report (1).pdf`). Directory batch operations rewrite descendant relative paths when the root directory receives a keep-both name.
 
-A collision moves the operation to `WAITING_FOR_USER`; no worker thread is blocked on a modal dialog. The pending collision is persisted and resumed by `FileOperationController.resolveCollision()`.
+A collision moves the operation to `WAITING_FOR_USER`; no worker thread is blocked on a modal wait. The pending collision is persisted and resumed through `FileOperationController.resolveCollision()`.
 
 ## Batch rename
 
@@ -145,7 +155,7 @@ Execution uses temporary names first, preventing intermediate collisions such as
 
 ## Selection and clipboard UX
 
-`BrowserOperationsViewModel` owns stable-ID selection state and reconciles it with the currently displayed entries after refresh. Selection does not duplicate full file objects in persistent UI state.
+`BrowserOperationsViewModel` owns stable-ID selection state and reconciles it with currently displayed entries after refresh. Selection does not persist large `FileEntry` objects.
 
 Long press enters selection mode. While selection mode is active, normal taps toggle selection instead of opening files. Select-all acts only on currently displayed entries. Back exits selection before directory navigation.
 
@@ -153,19 +163,19 @@ The internal copy/cut clipboard is stored in `OperationClipboardRepository` and 
 
 The paste bar is shown only while clipboard content exists. Virtual/read-only destinations do not enable Paste.
 
-## Background execution and notifications
+## Background notification UX
 
-Long operations are hosted outside Compose. Android execution components include:
+Android execution components in Step 2 are:
 
 - `AndroidOperationExecutionHost`
-- `OperationJobService`
 - `OperationForegroundService`
 - `OperationActionReceiver`
 - `OperationNotificationFactory`
+- `OperationPresentation`
 
-The manifest declares the required job/foreground-service/notification permissions and a dedicated data-sync service type. Notifications use a dedicated file-operation channel and expose pause/cancel controls where applicable.
+The manifest declares the foreground-service and notification permissions required for the file-operation channel and `dataSync` service type. Notifications expose live operation type/current item/progress plus pause and cancel actions where meaningful.
 
-The Android host is replaceable without changing the operation engine, allowing future platform execution-policy changes without rewriting file logic.
+If notification permission is denied, the operation architecture remains guarded and no storage code depends on a notification callback to preserve file correctness; final permission-behavior certification on real OEM devices remains part of Step 7.
 
 ## Progress throttling
 
@@ -173,7 +183,7 @@ The engine does not emit or persist every buffer chunk. Progress is periodically
 
 If total bytes are unknown, UI uses item progress/indeterminate progress and never fabricates a percentage.
 
-## Low-space and provider loss behavior
+## Low-space and provider-loss behavior
 
 Before known-size copy/move, free space is checked when the destination provider exposes reliable capacity. Unknown SAF capacity does not block valid work. Mid-stream write/provider failures close resources, preserve source data, clean temporary outputs where possible, and result in typed operation failure/warning state.
 
@@ -188,7 +198,7 @@ Step 2 preserves and expands Step 1 storage safety:
 - no SAF URI-to-path conversion
 - no recursive symbolic-link following
 - self/descendant copy validation
-- provider-scoped references persisted rather than Android framework objects
+- provider-scoped references persisted instead of Android framework objects
 - release UI avoids raw encoded SAF URIs
 
 ## Large-file design
