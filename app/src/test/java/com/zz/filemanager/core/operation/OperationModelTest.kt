@@ -2,11 +2,13 @@ package com.zz.filemanager.core.operation
 
 import com.zz.filemanager.core.model.BrowserLocation
 import com.zz.filemanager.core.model.FileReference
+import com.zz.filemanager.core.model.ScopedFileReference
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -44,7 +46,12 @@ class OperationModelTest {
     }
 
     @Test
-    fun hostInterruptionNeverMarksRunningOperationComplete() = runBlocking {
+    fun hostInterruptionNeverMarksRunningOperationCompleteAndKeepsPartialTracked() = runBlocking {
+        val partial = ScopedFileReference(
+            reference = FileReference("fake", "partial", path = "/dest/.zzpart-running"),
+            rootReference = "/",
+            storageId = "fake",
+        )
         val running = FileOperation(
             id = "running",
             type = FileOperationType.COPY,
@@ -56,6 +63,7 @@ class OperationModelTest {
                     state = OperationItemState.RUNNING,
                     processedBytes = 100L,
                     destinationRelativePath = "a.bin",
+                    partialOutput = partial,
                 ),
             ),
             destination = location("/dest"),
@@ -69,7 +77,44 @@ class OperationModelTest {
         assertEquals(FileOperationState.INTERRUPTED, reconciled.state)
         assertEquals(OperationItemState.QUEUED, reconciled.items.single().state)
         assertEquals(0L, reconciled.items.single().processedBytes)
+        assertNotNull(reconciled.items.single().partialOutput)
+        assertEquals("partial", reconciled.items.single().partialOutput?.reference?.opaqueId)
         assertFalse(reconciled.state.isTerminal)
+    }
+
+    @Test
+    fun cancellingHostInterruptionBecomesCancelledWithoutPretendingPartialWasDeleted() = runBlocking {
+        val partial = ScopedFileReference(
+            reference = FileReference("fake", "cancel-partial", path = "/dest/.zzpart-cancel"),
+            rootReference = "/",
+            storageId = "fake",
+        )
+        val cancelling = FileOperation(
+            id = "cancelling",
+            type = FileOperationType.COPY,
+            state = FileOperationState.CANCELLING,
+            items = listOf(
+                OperationItem(
+                    id = "cancelling:0",
+                    source = source("b.bin"),
+                    state = OperationItemState.RUNNING,
+                    processedBytes = 50L,
+                    destinationRelativePath = "b.bin",
+                    partialOutput = partial,
+                ),
+            ),
+            destination = location("/dest"),
+            createdAtMillis = 1L,
+        )
+        val store = RecoveryStore(cancelling)
+
+        store.markHostExecutionInterrupted(nowMillis = 30L)
+        val reconciled = store.operations.value.single()
+
+        assertEquals(FileOperationState.CANCELLED, reconciled.state)
+        assertEquals(OperationItemState.CANCELLED, reconciled.items.single().state)
+        assertNotNull(reconciled.items.single().partialOutput)
+        assertEquals(30L, reconciled.completedAtMillis)
     }
 
     @Test
