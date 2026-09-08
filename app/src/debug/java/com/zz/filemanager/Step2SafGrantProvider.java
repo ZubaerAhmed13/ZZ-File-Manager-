@@ -11,16 +11,15 @@ import android.provider.DocumentsContract;
 
 /**
  * Debug-only synchronous broker used by API-35 instrumentation to reproduce the narrow URI grant
- * that the system DocumentsUI would issue after ACTION_OPEN_DOCUMENT_TREE selection.
+ * that system DocumentsUI would issue after ACTION_OPEN_DOCUMENT_TREE selection.
  *
- * This component is not present in release builds. It never accepts an arbitrary URI or arbitrary
- * recipient: it can grant only this app's deterministic Step 2 test tree to the standard
- * instrumentation package for this application.
+ * This component is absent from release builds. It accepts no arbitrary URI and no arbitrary
+ * recipient: it can grant only this app's deterministic Step 2 test tree, and only to the target
+ * debug application package plus that application's standard instrumentation package.
  */
 public final class Step2SafGrantProvider extends ContentProvider {
     public static final String AUTHORITY = "com.zz.filemanager.debug.safgrant";
     public static final String METHOD_GRANT = "grantStep2SafTree";
-    public static final String EXTRA_TARGET_PACKAGE = "targetPackage";
     public static final String RESULT_GRANTED = "granted";
 
     @Override
@@ -39,22 +38,23 @@ public final class Step2SafGrantProvider extends ContentProvider {
             throw new IllegalStateException("Grant provider is not attached");
         }
 
-        String requestedPackage = extras != null
-            ? extras.getString(EXTRA_TARGET_PACKAGE)
-            : null;
-        String expectedPackage = context.getPackageName() + ".test";
-        if (!expectedPackage.equals(requestedPackage)) {
-            throw new SecurityException("Debug SAF grant recipient is not the app instrumentation package");
-        }
-
         Uri treeUri = DocumentsContract.buildTreeDocumentUri(
             Step2TestDocumentsProvider.AUTHORITY,
             Step2TestDocumentsProvider.ROOT_ID
         );
         int flags = Intent.FLAG_GRANT_READ_URI_PERMISSION
             | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION;
-        context.grantUriPermission(requestedPackage, treeUri, flags);
+            | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION
+            | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION;
+
+        // Android instrumentation can route ContentResolver calls under the target application's
+        // identity even while test code also owns a separate test-package Context. The real system
+        // picker grants the requesting app, so grant the fixed tree to the target package and also
+        // to its standard instrumentation companion. Both grants are constrained to this one tree.
+        String targetPackage = context.getPackageName();
+        String instrumentationPackage = targetPackage + ".test";
+        context.grantUriPermission(targetPackage, treeUri, flags);
+        context.grantUriPermission(instrumentationPackage, treeUri, flags);
 
         Bundle result = new Bundle();
         result.putBoolean(RESULT_GRANTED, true);
