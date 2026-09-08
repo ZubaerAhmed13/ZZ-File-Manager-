@@ -67,7 +67,7 @@ class StorageRepository(
             .recoverCatching { resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
             .getOrElse { throw StorageAccessException.PermissionRequired(it) }
         val document = DocumentFile.fromTreeUri(context, uri)
-        val label = document?.name?.takeIf { it.isNotBlank() } ?: "Folder location"
+        val label = document?.name?.takeIf { it.isNotBlank() } ?: context.getString(R.string.folder_location)
         val writable = document?.canWrite() == true
         val location = BrowserLocation(
             providerId = SafStorageProvider.ID,
@@ -121,10 +121,6 @@ class StorageRepository(
     override suspend fun breadcrumbs(location: BrowserLocation): List<Breadcrumb> = provider(location).breadcrumbs(location)
     override suspend fun remember(location: BrowserLocation) { preferences.addRecent(location); preferences.setLastLocation(location) }
 
-    /**
-     * Returns the last browsed location only when its provider/resource is still valid enough to reopen.
-     * A revoked SAF grant or removed local directory is intentionally rejected instead of restoring a dead screen.
-     */
     suspend fun restorableLastLocation(): BrowserLocation? = withContext(Dispatchers.IO) {
         val location = preferences.lastLocation.first() ?: return@withContext null
         when (location.providerId) {
