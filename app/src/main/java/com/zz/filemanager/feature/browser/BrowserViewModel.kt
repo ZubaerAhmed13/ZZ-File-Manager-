@@ -11,12 +11,15 @@ import com.zz.filemanager.core.model.OpenFileRequest
 import com.zz.filemanager.core.model.SortDirection
 import com.zz.filemanager.core.model.SortField
 import com.zz.filemanager.core.model.ViewMode
+import com.zz.filemanager.core.preferences.BrowserPreferences
 import com.zz.filemanager.core.preferences.PreferencesRepository
 import com.zz.filemanager.core.storage.BrowserHistory
+import com.zz.filemanager.core.storage.BrowserStorage
 import com.zz.filemanager.core.storage.StorageAccessException
 import com.zz.filemanager.core.storage.StorageRepository
 import com.zz.filemanager.core.util.FileSorter
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.BufferOverflow
@@ -36,8 +39,9 @@ sealed interface BrowserEvent {
 }
 
 class BrowserViewModel(
-    private val storage: StorageRepository,
-    private val preferences: PreferencesRepository,
+    private val storage: BrowserStorage,
+    private val preferences: BrowserPreferences,
+    private val sortDispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) : ViewModel() {
     private val history = BrowserHistory()
     private val _state = MutableStateFlow<BrowserUiState>(BrowserUiState.Loading)
@@ -133,7 +137,7 @@ class BrowserViewModel(
                 val parent = storage.resolveParent(location)
                 val crumbs = storage.breadcrumbs(location)
                 val raw = storage.listChildren(location)
-                val entries = withContext(Dispatchers.Default) {
+                val entries = withContext(sortDispatcher) {
                     FileSorter.sort(if (showHidden) raw else raw.filterNot { it.isHidden }, sort)
                 }
                 storage.remember(location)
