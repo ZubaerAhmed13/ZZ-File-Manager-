@@ -17,7 +17,7 @@ import kotlinx.coroutines.flow.map
 
 private val Context.zzPreferences by preferencesDataStore("zz_file_manager")
 
-class PreferencesRepository(private val context: Context) {
+class PreferencesRepository(private val context: Context) : BrowserPreferences {
     private object Keys {
         val theme = stringPreferencesKey("theme")
         val viewMode = stringPreferencesKey("view_mode")
@@ -31,10 +31,10 @@ class PreferencesRepository(private val context: Context) {
     }
 
     val theme: Flow<ThemeMode> = context.zzPreferences.data.map { prefs -> prefs[Keys.theme]?.let { enumOrNull<ThemeMode>(it) } ?: ThemeMode.SYSTEM }
-    val viewMode: Flow<ViewMode> = context.zzPreferences.data.map { prefs -> prefs[Keys.viewMode]?.let { enumOrNull<ViewMode>(it) } ?: ViewMode.LIST }
-    val showHidden: Flow<Boolean> = context.zzPreferences.data.map { it[Keys.showHidden] ?: false }
+    override val viewMode: Flow<ViewMode> = context.zzPreferences.data.map { prefs -> prefs[Keys.viewMode]?.let { enumOrNull<ViewMode>(it) } ?: ViewMode.LIST }
+    override val showHidden: Flow<Boolean> = context.zzPreferences.data.map { it[Keys.showHidden] ?: false }
     val foldersFirst: Flow<Boolean> = context.zzPreferences.data.map { it[Keys.foldersFirst] ?: true }
-    val sortConfiguration: Flow<SortConfiguration> = context.zzPreferences.data.map { prefs ->
+    override val sortConfiguration: Flow<SortConfiguration> = context.zzPreferences.data.map { prefs ->
         SortConfiguration(
             field = prefs[Keys.sortField]?.let { enumOrNull<SortField>(it) } ?: SortField.NAME,
             direction = prefs[Keys.sortDirection]?.let { enumOrNull<SortDirection>(it) } ?: SortDirection.ASCENDING,
@@ -46,11 +46,11 @@ class PreferencesRepository(private val context: Context) {
     val lastLocation: Flow<BrowserLocation?> = context.zzPreferences.data.map { it[Keys.lastLocation]?.let(BrowserLocationCodec::decode) }
 
     suspend fun setTheme(value: ThemeMode) = context.zzPreferences.edit { it[Keys.theme] = value.name }
-    suspend fun setViewMode(value: ViewMode) = context.zzPreferences.edit { it[Keys.viewMode] = value.name }
-    suspend fun setShowHidden(value: Boolean) = context.zzPreferences.edit { it[Keys.showHidden] = value }
+    override suspend fun setViewMode(value: ViewMode) = context.zzPreferences.edit { it[Keys.viewMode] = value.name }
+    override suspend fun setShowHidden(value: Boolean) = context.zzPreferences.edit { it[Keys.showHidden] = value }
     suspend fun setFoldersFirst(value: Boolean) = context.zzPreferences.edit { it[Keys.foldersFirst] = value }
-    suspend fun setSortField(value: SortField) = context.zzPreferences.edit { it[Keys.sortField] = value.name }
-    suspend fun setSortDirection(value: SortDirection) = context.zzPreferences.edit { it[Keys.sortDirection] = value.name }
+    override suspend fun setSortField(value: SortField) = context.zzPreferences.edit { it[Keys.sortField] = value.name }
+    override suspend fun setSortDirection(value: SortDirection) = context.zzPreferences.edit { it[Keys.sortDirection] = value.name }
     suspend fun setLastLocation(value: BrowserLocation) = context.zzPreferences.edit { it[Keys.lastLocation] = BrowserLocationCodec.encode(value) }
 
     suspend fun addRecent(location: BrowserLocation) = context.zzPreferences.edit { prefs ->
