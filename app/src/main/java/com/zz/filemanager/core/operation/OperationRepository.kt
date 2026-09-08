@@ -30,12 +30,10 @@ class OperationRepository(
 
     override suspend fun initialize() = mutex.withLock {
         if (initialized) return
-        withContext(ioDispatcher) {
-            val reconciled = journal.readAll().map(::reconcileAfterProcessDeath)
-            reconciled.forEach(journal::upsert)
-            _operations.value = reconciled
-            initialized = true
-        }
+        val reconciled = withContext(ioDispatcher) { journal.readAll().map(::reconcileAfterProcessDeath) }
+        withContext(ioDispatcher) { reconciled.forEach(journal::upsert) }
+        _operations.value = reconciled.sortedWith(queueComparator)
+        initialized = true
     }
 
     override suspend fun enqueue(operation: FileOperation) = mutex.withLock {
@@ -55,18 +53,13 @@ class OperationRepository(
         withContext(ioDispatcher) { journal.upsert(operation) }
         val current = _operations.value
         val index = current.indexOfFirst { it.id == operation.id }
-        _operations.value = if (index >= 0) {
-            current.toMutableList().also { it[index] = operation }
-        } else {
-            (current + operation).sortedWith(queueComparator)
-        }
+        _operations.value = if (index >= 0) current.toMutableList().also { it[index] = operation }
+        else (current + operation).sortedWith(queueComparator)
     }
 
     override suspend fun nextRunnable(): FileOperation? = mutex.withLock {
         ensureInitializedLocked()
-        _operations.value.firstOrNull {
-            it.state == FileOperationState.QUEUED || it.state == FileOperationState.INTERRUPTED
-        }
+        _operations.value.firstOrNull { it.state == FileOperationState.QUEUED }
     }
 
     override suspend fun prune(nowMillis: Long) = mutex.withLock {
@@ -94,11 +87,8 @@ class OperationRepository(
         return operation.copy(
             state = FileOperationState.INTERRUPTED,
             items = operation.items.map { item ->
-                if (item.state == OperationItemState.RUNNING) {
-                    item.copy(state = OperationItemState.QUEUED, processedBytes = 0L)
-                } else {
-                    item
-                }
+                if (item.state == OperationItemState.RUNNING) item.copy(state = OperationItemState.QUEUED, processedBytes = 0L)
+                else item
             },
             currentItemName = null,
             pendingCollision = null,

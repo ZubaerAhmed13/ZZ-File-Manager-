@@ -8,7 +8,6 @@ import org.json.JSONObject
 
 object OperationJsonCodec {
     fun encode(operation: FileOperation): String = operationToJson(operation).toString()
-
     fun decode(raw: String): FileOperation = operationFromJson(JSONObject(raw))
 
     fun encodeClipboard(clipboard: OperationClipboard): String = JSONObject().apply {
@@ -40,6 +39,7 @@ object OperationJsonCodec {
         putNullable("startedAt", operation.startedAtMillis)
         putNullable("completedAt", operation.completedAtMillis)
         put("updatedAt", operation.updatedAtMillis)
+        put("prepared", operation.prepared)
         putNullable("totalBytes", operation.totalBytes)
         put("processedBytes", operation.processedBytes)
         putNullable("totalItems", operation.totalItems)
@@ -72,6 +72,7 @@ object OperationJsonCodec {
             startedAtMillis = json.longOrNull("startedAt"),
             completedAtMillis = json.longOrNull("completedAt"),
             updatedAtMillis = json.optLong("updatedAt", json.getLong("createdAt")),
+            prepared = json.optBoolean("prepared", false),
             totalBytes = json.longOrNull("totalBytes"),
             processedBytes = json.optLong("processedBytes", 0L),
             totalItems = json.longOrNull("totalItems"),
@@ -90,6 +91,7 @@ object OperationJsonCodec {
         put("id", item.id)
         put("source", sourceToJson(item.source))
         put("state", item.state.name)
+        putNullable("rootItemId", item.rootItemId)
         putNullable("requestedName", item.requestedName)
         put("destinationRelativePath", item.destinationRelativePath)
         put("processedBytes", item.processedBytes)
@@ -102,6 +104,7 @@ object OperationJsonCodec {
         id = json.getString("id"),
         source = sourceFromJson(json.getJSONObject("source")),
         state = OperationItemState.valueOf(json.getString("state")),
+        rootItemId = json.stringOrNull("rootItemId"),
         requestedName = json.stringOrNull("requestedName"),
         destinationRelativePath = json.optString("destinationRelativePath", ""),
         processedBytes = json.optLong("processedBytes", 0L),
@@ -212,22 +215,10 @@ object OperationJsonCodec {
         writable = json.optBoolean("writable", false),
     )
 
-    private fun JSONObject.putNullable(key: String, value: Any?) {
-        put(key, value ?: JSONObject.NULL)
-    }
-
-    private fun JSONObject.stringOrNull(key: String): String? =
-        if (!has(key) || isNull(key)) null else getString(key)
-
-    private fun JSONObject.longOrNull(key: String): Long? =
-        if (!has(key) || isNull(key)) null else getLong(key)
-
-    private fun JSONObject.objectOrNull(key: String): JSONObject? =
-        if (!has(key) || isNull(key)) null else getJSONObject(key)
-
-    private fun <T> JSONArray.mapObjects(transform: (JSONObject) -> T): List<T> =
-        List(length()) { index -> transform(getJSONObject(index)) }
-
-    private fun <T> JSONArray.mapStrings(transform: (String) -> T): List<T> =
-        List(length()) { index -> transform(getString(index)) }
+    private fun JSONObject.putNullable(key: String, value: Any?) { put(key, value ?: JSONObject.NULL) }
+    private fun JSONObject.stringOrNull(key: String): String? = if (!has(key) || isNull(key)) null else getString(key)
+    private fun JSONObject.longOrNull(key: String): Long? = if (!has(key) || isNull(key)) null else getLong(key)
+    private fun JSONObject.objectOrNull(key: String): JSONObject? = if (!has(key) || isNull(key)) null else getJSONObject(key)
+    private fun <T> JSONArray.mapObjects(transform: (JSONObject) -> T): List<T> = List(length()) { transform(getJSONObject(it)) }
+    private fun <T> JSONArray.mapStrings(transform: (String) -> T): List<T> = List(length()) { transform(getString(it)) }
 }
