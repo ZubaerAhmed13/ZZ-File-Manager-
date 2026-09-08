@@ -17,7 +17,6 @@ import com.zz.filemanager.core.storage.SafStorageProvider
 import com.zz.filemanager.core.storage.StorageProvider
 import com.zz.filemanager.core.storage.StorageProviderRegistry
 import com.zz.filemanager.core.storage.WritableStorageProvider
-import java.io.File
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.runBlocking
@@ -45,10 +44,6 @@ class SafStorageProviderInstrumentationTest {
         // the shell identity only for this test, matching the system document UI's privileged access.
         instrumentation.uiAutomation.adoptShellPermissionIdentity(Manifest.permission.MANAGE_DOCUMENTS)
 
-        // Setup is intentionally strict: every test starts from a deterministic empty provider tree.
-        // The provider owns the root; preserve it and clear its children rather than deleting the root.
-        resetBackingRootContents()
-
         val treeUri = DocumentsContract.buildTreeDocumentUri(
             Step2TestDocumentsProvider.AUTHORITY,
             Step2TestDocumentsProvider.ROOT_ID,
@@ -64,16 +59,22 @@ class SafStorageProviderInstrumentationTest {
             writable = true,
         )
         provider = SafStorageProvider(instrumentation.targetContext)
+
+        // Reset through the real provider contract instead of reaching into the instrumentation
+        // APK filesystem. The DocumentsProvider owns its sandbox, and Android is free to host that
+        // provider under a context that is not the instrumentation Context. Using the production
+        // SAF provider here is deterministic, respects the provider boundary, and exercises the
+        // same DocumentsContract path used by the product.
+        resetProviderRootContentsStrict()
     }
 
     @After
     fun tearDown() {
         try {
-            // Cleanup after successful assertions is deliberately best-effort. Android may tear down
-            // the instrumentation provider/cache root before JUnit @After runs. The next test's strict
-            // setUp performs the real isolation check, so teardown must never turn a passing SAF test
-            // into a false failure merely because the test process is already being dismantled.
-            clearBackingRootContentsIfPresent()
+            // Post-test cleanup is best-effort only. Strict isolation is enforced by the next
+            // test's setUp through the provider API, so teardown must not turn successful product
+            // assertions into a false failure during instrumentation process shutdown.
+            clearProviderRootContentsBestEffort()
         } finally {
             instrumentation.uiAutomation.dropShellPermissionIdentity()
         }
@@ -166,28 +167,26 @@ class SafStorageProviderInstrumentationTest {
         assertTrue(provider.listChildren(destinationLocation).none { it.name.startsWith(".zzpart-") })
     }
 
-    private fun resetBackingRootContents() {
-        val backingRoot = backingRoot()
-        check(backingRoot.isDirectory || backingRoot.mkdirs()) {
-            "Could not prepare deterministic SAF test root"
+    private fun resetProviderRootContentsStrict() = runBlocking {
+        provider.listChildren(root).forEach { child ->
+            check(provider.delete(scope(child))) {
+                "Could not clear deterministic SAF test child through provider: ${child.name}"
+            }
         }
-        backingRoot.listFiles().orEmpty().forEach { child ->
-            check(child.deleteRecursively()) {
-                "Could not clear deterministic SAF test child: ${child.name}"
+        check(provider.listChildren(root).isEmpty()) {
+            "Could not prepare deterministic empty SAF provider tree"
+        }
+    }
+
+    private fun clearProviderRootContentsBestEffort() {
+        runCatching {
+            runBlocking {
+                provider.listChildren(root).forEach { child ->
+                    runCatching { provider.delete(scope(child)) }
+                }
             }
         }
     }
-
-    private fun clearBackingRootContentsIfPresent() {
-        val backingRoot = backingRoot()
-        if (!backingRoot.isDirectory) return
-        backingRoot.listFiles().orEmpty().forEach { child ->
-            child.deleteRecursively()
-        }
-    }
-
-    private fun backingRoot() =
-        File(instrumentation.context.cacheDir, Step2TestDocumentsProvider.ROOT_DIRECTORY_NAME)
 
     private fun FileEntry.toOperationSource() = OperationSource(
         reference = reference,
