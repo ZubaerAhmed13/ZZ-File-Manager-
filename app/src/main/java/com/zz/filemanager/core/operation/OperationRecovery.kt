@@ -15,8 +15,11 @@ suspend fun OperationStore.markHostExecutionInterrupted(nowMillis: Long = System
                     pendingCollision = null,
                     items = operation.items.map { item ->
                         if (item.state == OperationItemState.RUNNING) {
-                            if (wasCancelling) item.copy(state = OperationItemState.CANCELLED, partialOutput = null)
-                            else item.copy(state = OperationItemState.QUEUED, processedBytes = 0L, partialOutput = null)
+                            // The recovery layer has no provider handle and therefore cannot
+                            // truthfully claim a partial destination was deleted. Preserve the
+                            // reference so the engine can clean/revalidate it before a restart.
+                            if (wasCancelling) item.copy(state = OperationItemState.CANCELLED)
+                            else item.copy(state = OperationItemState.QUEUED, processedBytes = 0L)
                         } else item
                     },
                 ),
