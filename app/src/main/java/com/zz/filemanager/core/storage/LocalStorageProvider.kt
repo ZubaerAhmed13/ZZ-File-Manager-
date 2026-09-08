@@ -20,11 +20,11 @@ class LocalStorageProvider(private val context: Context) : StorageProvider {
 
     override suspend fun listChildren(location: BrowserLocation): List<FileEntry> = withContext(Dispatchers.IO) {
         val directory = validated(location.reference, location.rootReference)
-        if (!directory.exists()) throw@withContext StorageAccessException.Unavailable()
-        if (!directory.isDirectory) throw@withContext StorageAccessException.Io()
-        if (!directory.canRead()) throw@withContext StorageAccessException.PermissionRequired()
+        if (!directory.exists()) throw StorageAccessException.Unavailable()
+        if (!directory.isDirectory) throw StorageAccessException.Io()
+        if (!directory.canRead()) throw StorageAccessException.PermissionRequired()
         val children = directory.listFiles()
-            ?: if (!directory.canRead()) throw@withContext StorageAccessException.PermissionRequired() else emptyArray()
+            ?: if (!directory.canRead()) throw StorageAccessException.PermissionRequired() else emptyArray()
         children.map { file ->
             coroutineContext.ensureActive()
             toEntry(file, location.storageId)
@@ -63,19 +63,33 @@ class LocalStorageProvider(private val context: Context) : StorageProvider {
     override suspend fun breadcrumbs(location: BrowserLocation): List<Breadcrumb> = withContext(Dispatchers.IO) {
         val root = File(location.rootReference).canonicalFile
         val current = validated(location.reference, location.rootReference)
-        val result = mutableListOf(Breadcrumb(rootDisplayName(location), location.copy(
-            id = "local:${root.path}", displayName = rootDisplayName(location), reference = root.path,
-            readable = root.canRead(), writable = root.canWrite()
-        )))
+        val result = mutableListOf(
+            Breadcrumb(
+                rootDisplayName(location),
+                location.copy(
+                    id = "local:${root.path}",
+                    displayName = rootDisplayName(location),
+                    reference = root.path,
+                    readable = root.canRead(),
+                    writable = root.canWrite(),
+                ),
+            ),
+        )
         if (current == root) return@withContext result
         val relative = current.path.removePrefix(root.path).trimStart(File.separatorChar)
         var cursor = root
         relative.split(File.separatorChar).filter { it.isNotBlank() }.forEach { segment ->
             cursor = File(cursor, segment)
-            result += Breadcrumb(segment, location.copy(
-                id = "local:${cursor.path}", displayName = segment, reference = cursor.path,
-                readable = cursor.canRead(), writable = cursor.canWrite()
-            ))
+            result += Breadcrumb(
+                segment,
+                location.copy(
+                    id = "local:${cursor.path}",
+                    displayName = segment,
+                    reference = cursor.path,
+                    readable = cursor.canRead(),
+                    writable = cursor.canWrite(),
+                ),
+            )
         }
         result
     }
@@ -112,7 +126,8 @@ class LocalStorageProvider(private val context: Context) : StorageProvider {
     }
 
     private fun isInside(file: File, root: File): Boolean = file == root || file.path.startsWith(root.path + File.separator)
-    private fun rootDisplayName(location: BrowserLocation): String = location.displayName.takeIf { location.reference == location.rootReference } ?: location.storageId
+    private fun rootDisplayName(location: BrowserLocation): String =
+        location.displayName.takeIf { location.reference == location.rootReference } ?: location.storageId
 
     companion object { const val ID = "local" }
 }
