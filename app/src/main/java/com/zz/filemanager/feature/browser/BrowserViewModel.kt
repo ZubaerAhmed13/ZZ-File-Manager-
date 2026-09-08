@@ -51,6 +51,8 @@ class BrowserViewModel(
 
     private var currentLocation: BrowserLocation? = null
     private var loadJob: Job? = null
+    private var upResolutionJob: Job? = null
+    private var navigationGeneration: Long = 0L
 
     fun start(initial: BrowserLocation) {
         if (currentLocation == null) load(initial, recordHistory = false)
@@ -97,8 +99,13 @@ class BrowserViewModel(
 
     fun goUp() {
         val current = currentLocation ?: return
-        viewModelScope.launch {
-            storage.resolveParent(current)?.let { load(it, recordHistory = true) }
+        val generationAtRequest = navigationGeneration
+        upResolutionJob?.cancel()
+        upResolutionJob = viewModelScope.launch {
+            val parent = storage.resolveParent(current) ?: return@launch
+            if (navigationGeneration == generationAtRequest && currentLocation?.identity == current.identity) {
+                load(parent, recordHistory = true)
+            }
         }
     }
 
@@ -124,6 +131,7 @@ class BrowserViewModel(
     }
 
     private fun load(location: BrowserLocation, recordHistory: Boolean) {
+        val requestGeneration = ++navigationGeneration
         val previous = currentLocation
         if (recordHistory) history.recordNavigation(previous, location)
         currentLocation = location
@@ -140,7 +148,9 @@ class BrowserViewModel(
                 val entries = withContext(sortDispatcher) {
                     FileSorter.sort(if (showHidden) raw else raw.filterNot { it.isHidden }, sort)
                 }
+                if (requestGeneration != navigationGeneration || currentLocation?.identity != location.identity) return@launch
                 storage.remember(location)
+                if (requestGeneration != navigationGeneration || currentLocation?.identity != location.identity) return@launch
                 _state.value = if (entries.isEmpty()) {
                     BrowserUiState.Empty(location, crumbs, viewMode, sort, showHidden, history.canGoBack, history.canGoForward, parent != null)
                 } else {
@@ -149,15 +159,15 @@ class BrowserViewModel(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: StorageAccessException.PermissionRequired) {
-                _state.value = BrowserUiState.Problem(location, BrowserProblem.PERMISSION_REQUIRED)
+                if (requestGeneration == navigationGeneration) _state.value = BrowserUiState.Problem(location, BrowserProblem.PERMISSION_REQUIRED)
             } catch (error: StorageAccessException.Unavailable) {
-                _state.value = BrowserUiState.Problem(location, BrowserProblem.UNAVAILABLE)
+                if (requestGeneration == navigationGeneration) _state.value = BrowserUiState.Problem(location, BrowserProblem.UNAVAILABLE)
             } catch (error: StorageAccessException.Io) {
-                _state.value = BrowserUiState.Problem(location, BrowserProblem.IO_ERROR)
+                if (requestGeneration == navigationGeneration) _state.value = BrowserUiState.Problem(location, BrowserProblem.IO_ERROR)
             } catch (_: SecurityException) {
-                _state.value = BrowserUiState.Problem(location, BrowserProblem.PERMISSION_REQUIRED)
+                if (requestGeneration == navigationGeneration) _state.value = BrowserUiState.Problem(location, BrowserProblem.PERMISSION_REQUIRED)
             } catch (_: Throwable) {
-                _state.value = BrowserUiState.Problem(location, BrowserProblem.UNKNOWN)
+                if (requestGeneration == navigationGeneration) _state.value = BrowserUiState.Problem(location, BrowserProblem.UNKNOWN)
             }
         }
     }
