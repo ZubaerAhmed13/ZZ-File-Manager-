@@ -3,14 +3,20 @@
     <application>
         <!--
           Debug-only deterministic DocumentsProvider used by API-35 instrumentation.
-          It lives in the target debug APK (same UID as production SafStorageProvider under test),
-          is not exported, and is absent from release builds. Production code never depends on it.
+          Android's DocumentsProvider contract requires providers to be exported. This provider
+          remains signature-permission protected, exists only in the debug target APK, and is
+          absent from release builds. Production code never depends on it.
         -->
         <provider
             android:name="com.zz.filemanager.Step2TestDocumentsProvider"
             android:authorities="com.zz.filemanager.test.documents"
             android:enabled="true"
-            android:exported="false"
-            android:grantUriPermissions="true" />
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
     </application>
 </manifest>
