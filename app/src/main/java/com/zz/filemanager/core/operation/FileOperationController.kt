@@ -107,7 +107,11 @@ class FileOperationController(
         val retry = old.copy(
             id = newId,
             state = FileOperationState.QUEUED,
-            items = old.items.mapIndexed { index, item -> item.copy(id = "$newId:$index", state = OperationItemState.QUEUED, rootItemId = null, processedBytes = 0L, failure = null, resultReference = null, partialOutput = null) },
+            // A failed copy can deliberately retain a .zzpart reference when cleanup
+            // was impossible (for example, removable storage disappeared). Carry that
+            // reference into the retry so FileOperationEngine cleans/revalidates it
+            // before creating a new temporary destination instead of orphaning it.
+            items = old.items.mapIndexed { index, item -> item.copy(id = "$newId:$index", state = OperationItemState.QUEUED, rootItemId = null, processedBytes = 0L, failure = null, resultReference = null, partialOutput = item.partialOutput) },
             createdAtMillis = timestamp,
             startedAtMillis = null,
             completedAtMillis = null,
