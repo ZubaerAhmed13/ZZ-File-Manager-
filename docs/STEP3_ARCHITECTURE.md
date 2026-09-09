@@ -26,6 +26,8 @@ Limits are 10,000 favorites, 50 recent files, 50 searches and 100 activity entri
 
 `OperationLibrarySynchronizer` consumes authoritative Step 2 completion/failure events. It derives user-readable activity and follows reliable rename/move result references for favorites and recents. Trash records keep their logical favorite/recent relationship: status becomes `TRASHED`, and a proven restore reconnects the returned provider reference.
 
+The trash JSON payload also carries the Restore + Replace commit ledger. Because those fields live inside the existing payload column, adding them does not require a destructive SQLite migration and old records decode with safe defaults.
+
 ## Recycle backends
 
 MediaStore items use `MediaStore.createTrashRequest()` / platform confirmation on API 30+. Catalog state is written only after `RESULT_OK`. Restore and permanent delete likewise require the platform request; cancellation leaves metadata unchanged.
@@ -38,14 +40,49 @@ Trash states are explicit: `PREPARING`, `MOVING`, `COPYING`, `TRASHED`, `RESTORI
 
 Original-location restore validates that the parent still exists inside its authorized root. It uses native move when safe. Collision choices are Cancel, extension-aware Keep Both, and capability-gated atomic Replace. If the original parent is unavailable, the UI retains the payload and offers a user-selected SAF destination. Same-provider alternate restore prefers native move; cross-provider restore uses the Step 2 move transaction and clears the trash record only on its proven completion event.
 
+### Restore + Replace transaction
+
+A same-named destination is expected to exist when the user chooses Replace, so ordinary `sourceExists` reconciliation cannot prove success. Restore + Replace therefore has a dedicated durable sub-ledger:
+
+```text
+NONE
+  ↓
+STAGING
+  ↓
+STAGED
+  ↓
+COMMITTING
+  ↓
+COMMITTED
+```
+
+`STAGING` plus the unique `.zzrestore-<trashId>` name is persisted **before** the recycle payload moves out of its container. After the native stage move, the provider's stable mutation identity for that staged object is persisted with `STAGED`. `COMMITTING` is persisted before `replaceAtomically()`.
+
+`StorageProvider.mutationIdentity()` is optional and must return null when a provider cannot guarantee stable underlying-object identity across rename/atomic move. `LocalStorageProvider` implements it with `BasicFileAttributes.fileKey()`. A provider that advertises atomic replacement but cannot provide this recovery proof is not allowed to cross the irreversible Replace boundary; the stage is rolled back to the recycle container when possible.
+
+After atomic replacement, the final entry's mutation identity is compared with the pre-commit staged identity. Only an exact identity match can advance/finalize the Restore. A final filename, size, timestamp, or display name alone is never accepted as proof.
+
+This preserves the existing large-file path: same-storage payloads still use native staging and atomic replacement, without content-sized RAM allocation, full hashing, or a second 30 GiB copy.
+
 Permanent deletion walks directories iteratively, checks provider deletion results and verifies the payload no longer exists before removing catalog state. Empty Recycle Bin reports partial app-managed failures exactly and requests separate platform confirmation for MediaStore items.
 
 ## Crash recovery and reconciliation
 
 At startup and periodic maintenance, `TrashManager.reconcile()` initializes the catalog, joins linked Step 2 operations, and compares source/payload presence. It completes only provable states, marks ambiguous cases interrupted/corrupted, and never deletes uncertain data. Unknown non-empty UUID containers become preserved corrupted/orphan records; empty containers are safely cleaned. Missing payload records become corrupted rather than restorable.
 
+Restore + Replace is reconciled before the generic source/payload heuristic. Recovery inspects the planned stage, recycle-container payload, final entry and durable mutation identity:
+
+- `STAGING` + stage found + container payload absent → adopt stage and persist `STAGED`;
+- `STAGING` + container payload still present + no stage → reset to safe `TRASHED`;
+- `COMMITTING`/`COMMITTED` + final identity equals staged identity → finalize proven restore;
+- stage still present → retain/recover staged payload and report `INTERRUPTED`;
+- same-named final with missing/mismatched identity → remain `INTERRUPTED`; never guess success;
+- legacy pre-fix Replace records without a durable identity are handled conservatively and are never finalized merely from final-name existence.
+
 Retention supports Never, 7, 30, 60 and 90 days (default 30). Cleanup runs opportunistically at app startup and through unique daily WorkManager scheduling. Only expired app-managed records in the proven `TRASHED` state are eligible; MediaStore confirmation and active/interrupted states are never bypassed.
 
 ## Large-file behavior
 
 All sizes, timestamps and counters are `Long`. Native trash/restore allocate no content-sized buffers. Fallback transfers use Step 2's fixed bounded streaming buffer and tracked partial-output journal. Automated tests model a 30 GiB file with only 1 GiB free and assert both trash and restore use native moves with zero output-stream opens. Existing Step 2 tests also cover 20–30+ GiB journal values and the absence of 2/4/10/30 GB application limits.
+
+Restore + Replace recovery adds only durable metadata and provider identity lookup. It does not introduce full-file hashing, full-payload buffering, or a second-payload free-space requirement.
