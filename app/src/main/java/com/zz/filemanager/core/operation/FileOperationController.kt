@@ -75,13 +75,26 @@ class FileOperationController(
     suspend fun resume(id: String) {
         val operation = store.get(id) ?: return
         if (operation.state == FileOperationState.PAUSED || operation.state == FileOperationState.INTERRUPTED) {
-            store.save(operation.copy(state = FileOperationState.QUEUED, failure = null, updatedAtMillis = now()))
+            store.save(operation.copy(
+                state = FileOperationState.QUEUED,
+                // A failed/incomplete batch rollback carries its reason until rollback is safely
+                // completed. Ordinary retries clear transient failure as before.
+                failure = if (operation.batchRenameRollbackRequired) operation.failure else null,
+                updatedAtMillis = now(),
+            ))
             executionHost.requestExecution()
         }
     }
 
     suspend fun cancel(id: String) {
         val operation = store.get(id) ?: return
+        // Never abandon a partially rolled-back batch rename as terminal. It must re-enter the
+        // engine so the persisted transaction ledger can restore original names first.
+        if (operation.batchRenameRollbackRequired && operation.state == FileOperationState.INTERRUPTED) {
+            store.save(operation.copy(state = FileOperationState.QUEUED, updatedAtMillis = now()))
+            executionHost.requestExecution()
+            return
+        }
         val direct = operation.state in setOf(FileOperationState.QUEUED, FileOperationState.PAUSED, FileOperationState.INTERRUPTED, FileOperationState.WAITING_FOR_USER)
         val state = if (direct) FileOperationState.CANCELLED else if (!operation.state.isTerminal) FileOperationState.CANCELLING else operation.state
         store.save(operation.copy(state = state, completedAtMillis = if (direct) now() else operation.completedAtMillis, pendingCollision = if (direct) null else operation.pendingCollision, updatedAtMillis = now()))
@@ -114,7 +127,17 @@ class FileOperationController(
             // was impossible (for example, removable storage disappeared). Carry that
             // reference into the retry so FileOperationEngine cleans/revalidates it
             // before creating a new temporary destination instead of orphaning it.
-            items = old.items.mapIndexed { index, item -> item.copy(id = "$newId:$index", state = OperationItemState.QUEUED, rootItemId = null, processedBytes = 0L, failure = null, resultReference = null, partialOutput = item.partialOutput) },
+            items = old.items.mapIndexed { index, item -> item.copy(
+                id = "$newId:$index",
+                state = OperationItemState.QUEUED,
+                rootItemId = null,
+                processedBytes = 0L,
+                failure = null,
+                resultReference = null,
+                partialOutput = item.partialOutput,
+                batchRenameTemporaryName = null,
+                batchRenamePhase = BatchRenamePhase.ORIGINAL,
+            ) },
             createdAtMillis = timestamp,
             startedAtMillis = null,
             completedAtMillis = null,
@@ -129,6 +152,7 @@ class FileOperationController(
             collisionDecisions = emptyMap(),
             applyToAllCollisionPolicy = null,
             retryOfOperationId = old.id,
+            batchRenameRollbackRequired = false,
         )
         store.enqueue(retry)
         executionHost.requestExecution()
