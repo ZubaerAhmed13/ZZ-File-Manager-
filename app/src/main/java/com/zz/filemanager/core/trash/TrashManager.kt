@@ -261,7 +261,7 @@ class TrashManager(
     suspend fun empty(): EmptyTrashResult {
         var deleted = 0
         var failed = 0
-        store.trashRecords.value.filter { it.state == TrashState.TRASHED || it.state == TrashState.FAILED }.forEach {
+        store.trashRecords.value.filter { it.backend == TrashBackendType.APP_MANAGED && (it.state == TrashState.TRASHED || it.state == TrashState.FAILED) }.forEach {
             if (deletePermanently(it.id)) deleted++ else failed++
         }
         libraryManager.recordActivity(ActivityKind.TRASH_EMPTIED, "Emptied Recycle Bin: $deleted deleted, $failed failed", deleted.toLong())
@@ -273,7 +273,7 @@ class TrashManager(
         val threshold = now() - retentionMillis
         var deleted = 0
         var failed = 0
-        store.trashRecords.value.filter { it.state == TrashState.TRASHED && it.trashedAtMillis <= threshold }.forEach {
+        store.trashRecords.value.filter { it.backend == TrashBackendType.APP_MANAGED && it.state == TrashState.TRASHED && it.trashedAtMillis <= threshold }.forEach {
             if (deletePermanently(it.id)) deleted++ else failed++
         }
         return EmptyTrashResult(deleted, failed)
@@ -358,6 +358,10 @@ class TrashManager(
             containers.filter { it.isDirectory && it.reference.opaqueId !in knownContainers }.forEach { container ->
                 val containerLocation = container.asLocation(recycleLocation)
                 val payloads = runCatching { provider.listChildren(containerLocation) }.getOrDefault(emptyList())
+                if (payloads.isEmpty()) {
+                    runCatching { provider.delete(ScopedFileReference(container.reference, root.rootReference, root.storageId)) }
+                    return@forEach
+                }
                 val payload = payloads.singleOrNull()
                 val timestamp = now()
                 val containerScoped = ScopedFileReference(container.reference, root.rootReference, root.storageId)
@@ -442,7 +446,12 @@ class TrashManager(
 
     private suspend fun deleteTree(provider: WritableStorageProvider, payload: ScopedFileReference, record: TrashRecord) {
         val metadata = providers.providerFor(payload.reference.providerId).getMetadata(payload.reference) ?: return
-        if (!metadata.isDirectory || metadata.isSymbolicLink) { provider.delete(payload); return }
+        if (!metadata.isDirectory || metadata.isSymbolicLink) {
+            if (!provider.delete(payload) && providers.providerFor(payload.reference.providerId).exists(payload.reference)) {
+                throw IllegalStateException("Provider did not delete the recycle payload")
+            }
+            return
+        }
         val root = metadata.asLocation(payloadParent(record))
         data class Pending(val entry: FileEntry, val parent: BrowserLocation, val visited: Boolean)
         val stack = ArrayDeque<Pending>()
@@ -451,13 +460,16 @@ class TrashManager(
             val current = stack.removeLast()
             val scoped = ScopedFileReference(current.entry.reference, payload.rootReference, payload.storageId)
             if (!current.entry.isDirectory || current.entry.isSymbolicLink || current.visited) {
-                provider.delete(scoped)
+                if (!provider.delete(scoped) && providers.providerFor(payload.reference.providerId).exists(scoped.reference)) {
+                    throw IllegalStateException("Provider did not delete ${current.entry.name}")
+                }
             } else {
                 stack.addLast(current.copy(visited = true))
                 val location = current.entry.asLocation(current.parent)
                 providers.providerFor(payload.reference.providerId).listChildren(location).forEach { stack.addLast(Pending(it, location, false)) }
             }
         }
+        if (providers.providerFor(payload.reference.providerId).exists(payload.reference)) throw IllegalStateException("Recycle payload still exists after deletion")
     }
 
     private suspend fun cleanupContainer(provider: WritableStorageProvider, payload: ScopedFileReference, record: TrashRecord) {

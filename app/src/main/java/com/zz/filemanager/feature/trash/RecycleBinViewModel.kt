@@ -118,6 +118,11 @@ class RecycleBinViewModel(
     fun empty() = act {
         val result = manager.empty()
         if (result.failed > 0) _events.emit(RecycleEvent.Message("${result.deleted} deleted; ${result.failed} failed."))
+        val media = records.value.filter { it.backend == TrashBackendType.MEDIA_STORE && it.originalReference.uri != null }
+        if (media.isNotEmpty() && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            pendingPlatform = PlatformAction.DELETE to media
+            _events.emit(RecycleEvent.PlatformRequest(mediaStoreTrash.createDeleteRequest(media.map { Uri.parse(it.originalReference.uri) })))
+        }
     }
     fun onPlatformResult(confirmed: Boolean) {
         val pending = pendingPlatform ?: return
