@@ -95,6 +95,14 @@ class FileOperationController(
             executionHost.requestExecution()
             return
         }
+        val hasReplaceRecovery = operation.items.any { it.replacePhase != ReplacePhase.NONE }
+        if (hasReplaceRecovery && operation.state == FileOperationState.INTERRUPTED) {
+            // An interrupted Replace may be holding the original destination under a safety
+            // backup name. Re-enter the engine so it can restore/finish the transaction first.
+            store.save(operation.copy(state = FileOperationState.QUEUED, updatedAtMillis = now()))
+            executionHost.requestExecution()
+            return
+        }
         val direct = operation.state in setOf(FileOperationState.QUEUED, FileOperationState.PAUSED, FileOperationState.INTERRUPTED, FileOperationState.WAITING_FOR_USER)
         val state = if (direct) FileOperationState.CANCELLED else if (!operation.state.isTerminal) FileOperationState.CANCELLING else operation.state
         store.save(operation.copy(state = state, completedAtMillis = if (direct) now() else operation.completedAtMillis, pendingCollision = if (direct) null else operation.pendingCollision, updatedAtMillis = now()))
@@ -118,6 +126,9 @@ class FileOperationController(
     suspend fun retry(id: String): String? {
         val old = store.get(id) ?: return null
         if (old.state != FileOperationState.FAILED && old.state != FileOperationState.COMPLETED_WITH_WARNINGS) return null
+        // A non-terminal Replace transaction must be recovered in-place, never cloned to a new
+        // operation, otherwise the safety backup could be orphaned.
+        if (old.items.any { it.replacePhase != ReplacePhase.NONE }) return null
         val newId = UUID.randomUUID().toString()
         val timestamp = now()
         val retry = old.copy(
@@ -137,6 +148,13 @@ class FileOperationController(
                 partialOutput = item.partialOutput,
                 batchRenameTemporaryName = null,
                 batchRenamePhase = BatchRenamePhase.ORIGINAL,
+                replacePhase = ReplacePhase.NONE,
+                replaceFinalName = null,
+                replaceOriginalReference = null,
+                replaceOriginalSizeBytes = null,
+                replaceOriginalModifiedAtMillis = null,
+                replaceBackupName = null,
+                replaceBackupReference = null,
             ) },
             createdAtMillis = timestamp,
             startedAtMillis = null,
