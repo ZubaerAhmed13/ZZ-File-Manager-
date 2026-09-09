@@ -3,12 +3,12 @@ package com.zz.filemanager
 import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
-import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.assertExists
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
+import androidx.compose.ui.test.onAllNodes
 import androidx.compose.ui.test.onNode
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -73,13 +73,15 @@ class Step4CertificationInstrumentationTest {
             composeRule.onNode(hasText("hello\nworld") and hasSetTextAction())
                 .performTextReplacement("changed\ncontent")
             composeRule.onNodeWithContentDescription("Save").performClick()
-            composeRule.waitUntil(timeoutMillis = 10_000) { file.exists() && runCatching { file.readText() == "changed\ncontent" }.getOrDefault(false) }
+            composeRule.waitUntil(timeoutMillis = 10_000) {
+                file.exists() && runCatching { file.readText() == "changed\ncontent" }.getOrDefault(false)
+            }
             assertEquals("changed\ncontent", file.readText())
         }
     }
 
     @Test
-    fun archiveViewerOpensGeneratedZipAndListsNestedEntry() {
+    fun archiveViewerNavigatesGeneratedZipHierarchy() {
         val file = File(testRoot, "fixture.zip")
         ZipOutputStream(FileOutputStream(file)).use { zip ->
             zip.putNextEntry(ZipEntry("folder/")); zip.closeEntry()
@@ -87,9 +89,10 @@ class Step4CertificationInstrumentationTest {
         }
         launchFile(file, FileEntryType.ARCHIVE, "application/zip").use {
             composeRule.waitUntil(10_000) {
-                composeRule.onAllNodes(hasText("folder/a.txt")).fetchSemanticsNodes().isNotEmpty()
+                composeRule.onAllNodes(hasText("folder")).fetchSemanticsNodes().isNotEmpty()
             }
-            composeRule.onNodeWithText("folder/a.txt").assertExists()
+            composeRule.onNodeWithText("folder").performClick()
+            composeRule.onNodeWithText("a.txt").assertExists()
             composeRule.onNodeWithText("Extract all").assertExists()
         }
     }
@@ -97,14 +100,19 @@ class Step4CertificationInstrumentationTest {
     @Test
     fun imageViewerRendersGeneratedImage() {
         val file = File(testRoot, "fixture.png")
-        Bitmap.createBitmap(16, 12, Bitmap.Config.ARGB_8888).use { bitmap ->
+        val bitmap = Bitmap.createBitmap(16, 12, Bitmap.Config.ARGB_8888)
+        try {
             FileOutputStream(file).use { output -> bitmap.compress(Bitmap.CompressFormat.PNG, 100, output) }
+        } finally {
+            bitmap.recycle()
         }
         launchFile(file, FileEntryType.IMAGE, "image/png").use {
             composeRule.waitUntil(10_000) {
                 composeRule.onAllNodes(hasText("16 × 12", substring = true)).fetchSemanticsNodes().isNotEmpty()
             }
             composeRule.onNodeWithContentDescription("fixture.png").assertExists()
+            composeRule.onNodeWithText("Previous").assertExists()
+            composeRule.onNodeWithText("Next").assertExists()
         }
     }
 
@@ -113,6 +121,7 @@ class Step4CertificationInstrumentationTest {
         val file = File(testRoot, "broken.mp4").apply { writeBytes(byteArrayOf(0, 1, 2, 3)) }
         launchFile(file, FileEntryType.VIDEO, "video/mp4").use {
             composeRule.onNodeWithText("broken.mp4").assertExists()
+            composeRule.onNodeWithText("Fullscreen").assertExists()
         }
     }
 
