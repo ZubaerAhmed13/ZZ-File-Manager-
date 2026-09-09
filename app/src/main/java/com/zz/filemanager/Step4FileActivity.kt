@@ -491,6 +491,7 @@ private fun TextViewerEditor(
     snackbar: SnackbarHostState,
 ) {
     val scope = rememberCoroutineScope()
+    val backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
     var document by remember(entry.id) { mutableStateOf<TextDocument?>(null) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
