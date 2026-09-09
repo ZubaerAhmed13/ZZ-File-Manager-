@@ -1,64 +1,77 @@
 # Step 2 Test Matrix
 
-Functional certification was completed on implementation head `52fad0bd6be9043ff091c495426c853cbe2f27e5` by GitHub Actions run `34324743879` (#105). The clean build/JVM/lint/release/instrumentation-compile gate passed, followed by 9/9 passing API-35 emulator instrumentation tests with zero failures and zero skips. Documentation-only commits created after that run are re-certified on the final exact branch head before Step 2 is closed.
+Functional certification was completed on implementation head `f21bd3705087cc65620e772e4a549c69baf4b443` by GitHub Actions run `34336655608` (#139). The clean build/JVM/lint/release/instrumentation-compile gate passed, followed by **9/9 passing API-35 emulator instrumentation tests with zero failures and zero skips**.
+
+Verified Step 1 baseline: `2be3a6933931a1f7aa9ae3857e7adf2f910bca9e`.
 
 | Test / area | Operation | Provider | Scenario | Expected result | Result | Type | Physical device |
 |---|---|---|---|---|---|---|---|
-| `queuedCopy_streamsBytesAndCompletes` | Copy | Fake writable | Real byte stream | Destination bytes equal source; COMPLETE | PASS | JVM | Not required |
-| `moveDeletesSourceOnlyAfterDestinationCompletes` | Move | Fake writable | Copy/verify/delete fallback | Destination completes before source deletion | PASS | JVM | Not required |
-| `copyFailureKeepsSourceIntact` | Move | Fake writable | Destination write failure | Source remains; operation fails safely | PASS | JVM | Not required |
-| `collisionWaitsForDecisionThenKeepBothUsesPredictableName` | Copy | Fake writable | Existing same-name file | WAITING_FOR_USER then deterministic keep-both output | PASS | JVM | Not required |
-| `cancelledCollisionCannotBeRevivedByLateDecision` | Collision/race | Fake writable | Cancel while waiting, then late decision | CANCELLED remains terminal; no late output | PASS | JVM | Not required |
-| `pauseDuringCopyCleansPartialThenResumeCompletes` | Copy | Fake writable | Cooperative pause during streamed write | Partial removed, item requeued, resume completes | PASS | JVM | Not required |
-| `cancelDuringCopyCleansPartialAndPreservesSource` | Copy | Fake writable | Cooperative cancellation during streamed write | Streams close, partial removed, source retained | PASS | JVM | Not required |
-| `queuedCancellationNeverCreatesDestination` | Copy | Fake writable | Cancel before execution | No destination created; source retained | PASS | JVM | Not required |
-| `destinationDisappearsDuringCopyFailsAndKeepsPartialTracked` | Copy | Fake writable | Destination becomes unavailable during write | FAILED, source retained, partial reference tracked | PASS | JVM | Not required |
-| `staleClipboardSourceDeletedBeforePasteFailsSafely` | Copy/paste | Fake writable | Source removed after clipboard snapshot | SOURCE_MISSING, no destination output | PASS | JVM | Not required |
-| `queuedOperationsCompleteInSubmissionOrder` | Queue | Fake writable | Three queued copies | FIFO terminal order | PASS | JVM | Not required |
-| `secondOperationQueuedAsFirstCompletesIsPickedUpBySameRun` | Queue | Fake writable | New work arrives at terminal transition | Same engine run drains newly queued work | PASS | JVM | Not required |
-| Folder copied into itself | Copy safety | Fake writable | Directory → itself | Blocked as DESCENDANT_TARGET | PASS | JVM | Not required |
-| Folder copied into descendant | Copy safety | Fake writable | Directory → child directory | Blocked as DESCENDANT_TARGET | PASS | JVM | Not required |
-| File copied onto itself | Copy safety | Fake writable | Same file/same directory | SAME_RESOURCE collision; original preserved | PASS | JVM | Not required |
-| Permanent nested delete | Delete | Fake writable | Nested tree | Children removed before parent; no recursion overflow dependency | PASS | JVM | Not required |
-| Known insufficient space | Copy | Fake writable | Required bytes > reliable free bytes | Fail before destination output | PASS | JVM | Not required |
-| >30 GiB JSON/model counters | Model/progress | N/A | Large `Long` values | Persist/restore without `Int` overflow | PASS | JVM/model | Not required |
-| 2/4/10/30 GB counter semantics | Large-file model | N/A | Simulated large sizes | No artificial app ceiling or integer overflow | PASS | JVM/model | Not required |
-| Host interruption recovery | Recovery | Memory store | RUNNING execution host interrupted | INTERRUPTED; never false-COMPLETED | PASS | JVM | Not required |
-| Retry carries tracked partial | Recovery/retry | Memory store | Failed operation with `.zzpart-*` reference | New operation ID; partial cleanup context preserved | PASS | JVM | Not required |
-| Interrupted cancel terminal | Recovery/cancel | Memory store | Cancel interrupted operation | CANCELLED terminal state; tracked partial retained for audit/cleanup | PASS | JVM | Not required |
-| Duplicate submission guard | Queue/controller | Memory store | Identical enqueue inside guard window | Original queued operation ID reused | PASS | JVM | Not required |
-| Guard-window expiry | Queue/controller | Memory store | Same submission after guard window | New operation created | PASS | JVM | Not required |
-| Clock rollback guard | Queue/controller | Memory store | Wall clock moves backward | Legitimate enqueue is not incorrectly suppressed | PASS | JVM | Not required |
-| Batch rename mapping identity | Batch rename | Memory store | Same sources with different target mapping | Distinct operations | PASS | JVM | Not required |
-| Batch rename map-order dedupe | Batch rename | Memory store | Same mapping, different map iteration order | Duplicate suppressed deterministically | PASS | JVM | Not required |
-| Batch rename planner | Batch rename | N/A | Numbering/extensions/duplicate proposal | Extensions preserved; duplicate outputs rejected | PASS | JVM | Not required |
-| Keep-both naming | Collision | N/A | File/folder names | Correct extension-aware `(n)` placement | PASS | JVM | Not required |
-| 10,000-source queue | Selection/scale | Memory store | 10,000 metadata-only sources | All unique items queued with `Long` total count; no file payload allocation | PASS | JVM | Not required |
-| BrowserViewModel Step 1 regression suite | Browse/navigation | Fake browser store | Sort/history/up/rapid nav/errors/open | Existing Step 1 behavior preserved | PASS | JVM | Not required |
-| Local root containment | Security | Local | Path outside logical root | Access denied | PASS | JVM/provider coverage | Not required |
-| `localProvider_createCopyMoveRenameDeleteNested` | File operations | Real local provider | Android app-private test tree | Create/copy/move/rename/delete nested flow succeeds | PASS | API-35 instrumentation | Not required |
-| `productionSafProviderSupportsTreeCrudNavigationAndAncestry` | SAF CRUD/navigation/security | Production SAF provider + test DocumentsProvider | Tree list/create/write/read/find/rename/ancestry/parent/breadcrumb/delete | All operations stay within scoped tree and succeed | PASS | API-35 instrumentation | Not required |
-| `fileOperationEngineCopiesAndMovesAcrossRealSafTreeLocations` | Copy/move | Production SAF provider + test DocumentsProvider | Real SAF tree source/destination with streamed payloads | Copy/move complete, bytes match, source deletion safe, no `.zzpart-*` left | PASS | API-35 instrumentation | Not required |
-| `Step2BrowserUiTest` | Selection/clipboard/operations UI | Android Compose | Long-press/select-all/copy/cut/delete/rename/batch rename/collision/progress controls | Step 2 interaction surfaces render and behave as specified | PASS | API-35 instrumentation | Not required |
-| `LastLocationRestorationTest` | Persistence | Android | Restart/navigation state | Step 1 restoration remains valid | PASS | API-35 instrumentation | Not required |
-| `MainActivityTest` | UI smoke | Android | Launch | Root UI renders | PASS | API-35 instrumentation | Not required |
-| Unknown SAF capacity | Copy | SAF/fake | Free bytes unavailable | Transfer is not falsely blocked as out-of-space | PASS by engine behavior/review | JVM + provider design | Not required |
-| Fixed-memory transfer design | Large files | Engine | Logical large source | Application copy buffer remains fixed at 256 KiB | PASS | Static + JVM construction | Not required |
-| Process recreation with persisted clipboard | Clipboard | SharedPreferences | COPY/CUT snapshot persistence | Typed references/mode/origin can be restored | PASS by implementation + green Android/JVM suite | JVM/Android storage | Not required |
-| Notification / foreground host | Background | Android | User-started long operation | Foreground `dataSync` execution with pause/cancel actions and timeout reconciliation | PASS by build/lint/instrumented integration | Android/static | Device/OEM certification Step 7 |
-| Full system picker interaction | SAF UX | Android DocumentsUI | User grants arbitrary third-party tree | Production code uses normal URI-grant contract; headless CI uses deterministic provider grant rather than driving DocumentsUI | ENVIRONMENT-LIMITED | API-35 provider integration substitutes only picker UI automation, not provider logic | Deferred Step 7 |
+| Streamed copy | Copy | Fake writable | Real byte stream | Destination bytes equal source; COMPLETE | PASS | JVM | Not required |
+| Safe move deletion order | Move | Fake writable | Copy/verify/delete fallback | Destination completes before source deletion | PASS | JVM | Not required |
+| Copy failure source preservation | Move | Fake writable | Destination write failure | Source remains; operation fails safely | PASS | JVM | Not required |
+| Collision keep-both | Copy | Fake writable | Existing same-name file | WAITING_FOR_USER then predictable extension-aware output | PASS | JVM | Not required |
+| Cancelled collision race | Collision | Fake writable | Cancel while waiting then late decision | CANCELLED stays terminal; no revival | PASS | JVM | Not required |
+| Pause during streamed copy | Copy | Fake writable | Cooperative pause | Partial cleaned/requeued; resume completes | PASS | JVM | Not required |
+| Cancel during streamed copy | Copy | Fake writable | Cooperative cancel | Streams close; source retained; partial cleanup attempted | PASS | JVM | Not required |
+| Queued cancellation | Copy | Fake writable | Cancel before execution | No destination created | PASS | JVM | Not required |
+| Provider disappearance | Copy | Fake writable | Destination vanishes mid-write | Safe failure; source retained; uncleaned partial tracked | PASS | JVM | Not required |
+| Stale clipboard source | Copy/paste | Fake writable | Source removed after clipboard snapshot | SOURCE_MISSING; no output | PASS | JVM | Not required |
+| FIFO queue ordering | Queue | Fake writable | Three queued copies | Terminal order follows submission | PASS | JVM | Not required |
+| Queue drain while new work arrives | Queue | Fake writable | Second operation arrives at completion boundary | Same engine run picks it up | PASS | JVM | Not required |
+| Folder → self | Copy safety | Fake writable | Directory copied into itself | DESCENDANT_TARGET | PASS | JVM | Not required |
+| Folder → descendant | Copy safety | Fake writable | Directory copied into child | DESCENDANT_TARGET | PASS | JVM | Not required |
+| File → same resource | Copy safety | Fake writable | Same file/same folder | SAME_RESOURCE collision; original preserved | PASS | JVM | Not required |
+| Permanent nested delete | Delete | Fake writable | Nested tree | Child-before-parent deletion | PASS | JVM | Not required |
+| Known insufficient space | Copy | Fake writable | Required bytes > reliable free bytes | Fail before output | PASS | JVM | Not required |
+| Large `Long` counters | Model/progress | N/A | >30 GiB modeled values | Persist/restore without `Int` overflow | PASS | JVM/model | Not required |
+| Host interruption recovery | Recovery | Memory store | RUNNING host interrupted | INTERRUPTED; never false-COMPLETED | PASS | JVM | Not required |
+| Retry carries partial cleanup context | Recovery/retry | Memory store | Failed `.zzpart-*` retained | New operation ID with cleanup context | PASS | JVM | Not required |
+| Duplicate submission guard | Queue/controller | Memory store | Identical enqueue inside guard window | Original queued operation reused | PASS | JVM | Not required |
+| Guard-window expiry | Queue/controller | Memory store | Same submission after window | New operation created | PASS | JVM | Not required |
+| Clock rollback guard | Queue/controller | Memory store | Wall clock moves backward | Legitimate enqueue not suppressed | PASS | JVM | Not required |
+| Batch rename mapping identity | Batch rename | Memory store | Same sources, different target map | Distinct operation | PASS | JVM | Not required |
+| Batch rename map-order dedupe | Batch rename | Memory store | Same map, different iteration order | Duplicate suppressed deterministically | PASS | JVM | Not required |
+| Batch rename planner | Batch rename | N/A | Numbering/extensions/duplicates | Extensions preserved; duplicate proposals rejected | PASS | JVM | Not required |
+| Batch rename phase-two failure | Batch rename | Fake writable | Failure during temp→final | All items roll back to originals | PASS | JVM | Not required |
+| Batch rollback failure/resume | Batch rename | Fake writable | Rollback itself fails | Operation remains INTERRUPTED with rollback ledger; resume restores originals | PASS | JVM | Not required |
+| Batch process death after original→temp mutation | Batch rename | Fake writable | Mutation occurs then cancellation before save | Resume reconciles name/reference and completes | PASS | JVM | Not required |
+| Batch process death between phases | Batch rename | Fake writable | Cancellation before first final rename | Resume completes safely | PASS | JVM | Not required |
+| Batch process death after final mutation | Batch rename | Fake writable | Final rename mutates then cancellation before save | Resume reconciles and completes | PASS | JVM | Not required |
+| Replace write failure | Replace | Fake writable | Destination staged-write failure | Existing destination unchanged; no hidden transfer artifacts | PASS | JVM | Not required |
+| Replace source read failure | Replace | Fake writable | Source read fails mid-stream | Existing destination unchanged | PASS | JVM | Not required |
+| Replace provider disappearance | Replace | Fake writable | Provider vanishes after first staged write | Existing final preserved; recovery context retained where needed | PASS | JVM | Not required |
+| Replace cooperative cancellation | Replace | Fake writable | Cancel during staging | Existing destination unchanged; partial removed when possible | PASS | JVM | Not required |
+| Replace final rename failure | Replace | Fake writable | Staged→final rename fails | Existing destination restored; hidden backup/partial cleanup verified | PASS | JVM | Not required |
+| Replace process death after old→backup mutation | Replace | Fake writable | Cancellation after destination rename but before phase save | Persisted BACKUP_PLANNED ledger reconciles; original restored then replacement completes | PASS | JVM | Not required |
+| Replace ledger JSON round-trip | Persistence | JSON/model | Replace phase/original/backup/staged fields incl. 20–30 GiB values | All transaction data restored exactly | PASS | JVM/model | Not required |
+| Rename without delete capability | Replace/collision | Fake writable | Provider supports rename but not delete | Replace is not offered; Keep-Both remains allowed; existing file preserved | PASS | JVM | Not required |
+| Provider without rename | Copy/finalization | Fake writable | Provider can create/write but cannot safely rename staged file | SAFE_FINALIZATION_UNSUPPORTED; no visible partial final | PASS | JVM | Not required |
+| Native 30 GiB move with 1 GiB free | Move | Fake writable | Provider-safe same-storage native move | Move allowed; no false insufficient-space failure | PASS | JVM/model | Not required |
+| Keep-both naming | Collision | N/A | File/folder names | Correct `(n)` placement before extension | PASS | JVM | Not required |
+| 10,000-source queue | Selection/scale | Memory store | 10,000 metadata-only sources | Unique items queued; `Long` total; no file payload allocation | PASS | JVM | Not required |
+| BrowserViewModel Step 1 regressions | Browse/navigation | Fake browser store | Sort/history/up/rapid nav/errors/open | Step 1 behavior preserved | PASS | JVM | Not required |
+| Local root containment | Security | Local | Path outside logical root | Access denied | PASS | Provider/JVM | Not required |
+| Real local CRUD/transfer | File operations | Production local provider | App-private Android tree | Create/copy/move/rename/delete nested flow succeeds | PASS | API-35 instrumentation | Not required |
+| Production SAF CRUD/navigation/ancestry | SAF | Production SAF + deterministic test DocumentsProvider | Tree CRUD/list/rename/ancestry/parent/breadcrumb/delete | Scoped operations succeed | PASS | API-35 instrumentation | Not required |
+| Engine copy/move across SAF locations | Copy/move | Production SAF | Real tree source/destination payloads | Bytes match; source deletion safe; no `.zzpart-*` left | PASS | API-35 instrumentation | Not required |
+| Step 2 browser UI | UI | Compose | Selection/clipboard/delete/rename/batch/collision/progress controls | Required interaction surfaces work | PASS | API-35 instrumentation | Not required |
+| Last-location restoration | Persistence | Android | Restart/navigation state | Step 1 restoration remains valid | PASS | API-35 instrumentation | Not required |
+| Main activity smoke | UI | Android | Launch | Root UI renders | PASS | API-35 instrumentation | Not required |
+| Unknown SAF capacity | Copy | SAF/fake | Capacity unavailable | Transfer not falsely blocked as out-of-space | PASS | Engine/provider design | Not required |
+| Foreground host / notification | Background | Android | User-started long operation | `dataSync` FGS, pause/cancel controls, timeout reconciliation | PASS | Build/lint/integration | Step 7 OEM certification |
+| System picker interaction | SAF UX | Android DocumentsUI | Arbitrary third-party tree grant | Production URI-grant contract used; headless CI substitutes deterministic grant | ENVIRONMENT-LIMITED | API-35 provider integration | Deferred Step 7 |
 
-## Final automated certification gate
+## Final automated functional certification gate
 
-Run `34324743879` (#105), implementation head `52fad0bd6be9043ff091c495426c853cbe2f27e5`, passed:
+Run `34336655608` (#139), implementation head `f21bd3705087cc65620e772e4a549c69baf4b443`, passed:
 
 ```bash
 ./gradlew clean assembleDebug testDebugUnitTest lintDebug assembleRelease assembleDebugAndroidTest
 ./gradlew connectedDebugAndroidTest   # API 35 emulator
 ```
 
-API-35 result: **9 tests executed, 0 skipped, 0 failed**.
+The first Gradle phase reported `BUILD SUCCESSFUL` with `assembleDebug`, JVM tests, lint, release assembly and instrumentation compilation all successful. The API-35 phase reported **9 tests completed, 0 skipped, 0 failed** and `BUILD SUCCESSFUL`.
 
-Failures discovered during Step 2 were fixed rather than suppressed. In particular, SAF directory traversal was changed from unsupported `SingleDocumentFile.listFiles()` behavior to tree-aware `DocumentsContract` queries, SAF document IDs are treated as opaque, mutation capabilities honor provider flags, and rename/finalization uses `DocumentsContract.renameDocument()`.
+Failures found on earlier Step 2 heads were corrected rather than suppressed. The final repaired design includes durable Replace process-death recovery, durable batch-rename rollback recovery, safe capability-gated Replace, native-move-aware free-space planning, weak-provider partial-file protection, and the production SAF corrections from earlier certification.
 
-Physical phone certification remains explicitly deferred to Step 7.
+Physical phone certification intentionally deferred to Step 7 per project plan.
