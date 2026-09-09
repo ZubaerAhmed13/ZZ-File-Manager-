@@ -6,7 +6,7 @@ Step 2 establishes the durable professional file-operation subsystem while prese
 
 Verified Step 1 baseline: `2be3a6933931a1f7aa9ae3857e7adf2f910bca9e`.
 
-Certified Step 2 functional implementation head: `f21bd3705087cc65620e772e4a549c69baf4b443`, GitHub Actions run `34336655608` (#139).
+Certified Step 2 functional implementation head: `9f5fd474f64cbbd43308a147479bdaa3668a1170`, GitHub Actions run `34346037170` (#159).
 
 ## Data flow
 
@@ -91,6 +91,12 @@ Operation types implemented in Step 2 are copy, move, permanent delete, rename, 
 
 Process death never converts unfinished work to success. Unsafe runtime states reconcile to `INTERRUPTED`; completed item boundaries remain recorded while unsafe current-file offsets are discarded when correct byte-level continuation cannot be proven.
 
+### Terminal-completion invariant
+
+Terminal success is permitted only when completion is proven. `FileOperationEngine.finishFromItems()` refuses `COMPLETED`/`COMPLETED_WITH_WARNINGS` while any item is still `QUEUED` or `RUNNING`, any item has `replacePhase != NONE`, `batchRenameRollbackRequired` is true, or a batch-rename item has an unresolved transactional phase. Such a snapshot is persisted as `INTERRUPTED` with no completion timestamp so recovery must finish before success can be reported.
+
+This is a defense-in-depth invariant above the individual transaction coordinators: even if a lower-level mutation stops at an unexpected journal boundary, the operation-level finalizer cannot convert that unresolved state into success.
+
 ## Copy and move safety
 
 File content is copied with a fixed bounded buffer of **256 KiB** by default. No operation uses `readBytes()` or allocates memory proportional to source size. All byte counters are `Long`.
@@ -131,17 +137,22 @@ rename old destination → hidden .zzreplace-backup-* name
 journal BACKED_UP
 journal COMMITTING
 rename staged output → final name
+journal returned final reference while phase remains COMMITTING
 verify committed size
-journal COMMITTED + committed ref
+journal COMMITTED
 remove safety backup
 clear Replace ledger
 ```
 
-The operation item persists the phase, final name, original destination reference/size/modified timestamp, backup name/reference and staged partial reference. These fields are serialized by `OperationJsonCodec`, so process recreation does not lose the transaction ledger.
+The post-rename journal write is deliberate. After `staged → final` mutates provider state, the returned final reference is persisted immediately while the transaction is still `COMMITTING`, before post-commit verification. Therefore a verification exception cannot leave the only proof of the new final in transient memory.
+
+If post-commit verification fails after the final-name mutation, the coordinator persists the operation as `INTERRUPTED`, keeps the original safety-backup reference and the final result reference, and raises recovery-required control flow. It never returns a still-running snapshot that can be interpreted as successfully complete.
+
+The operation item persists the phase, final name, original destination reference/size/modified timestamp, backup name/reference, staged partial reference, and when available the mutated final result reference. These fields are serialized by `OperationJsonCodec`, so process recreation does not lose the transaction ledger.
 
 If process/service cancellation occurs during a destructive boundary, `CancellationException` propagates without speculative rollback in the cancelled coroutine. The persisted phase is left intact for deterministic recovery on resume.
 
-Recovery is conservative. It compares final/backup/staged existence and known destination snapshots. When it can prove the old file is still the valid destination, it resets safely. When it can prove the old file is in the safety backup and no committed final exists, it restores the original name before retrying. When it can prove the staged file became the committed final, it completes backup cleanup and returns that result. If state is ambiguous, the operation remains `INTERRUPTED`, preserves all safety references, and does not guess or delete data.
+Recovery is conservative. It compares final/backup/staged existence, the journaled result reference, and the known original destination snapshot. When it can prove the old file is still the valid destination, it resets safely. When it can prove the old file is in the safety backup and no committed final exists, it restores the original name before retrying. When it can prove staged content became the final candidate, it verifies that candidate before committing the ledger. If verification fails and the safety backup exists, recovery can remove the unverified final and restore the original; if the state cannot be proven safe, the operation remains `INTERRUPTED` and preserves the ledger rather than guessing or deleting data.
 
 A failed backup cleanup after commit also remains recoverable instead of silently orphaning the hidden backup. Retry never clones an unfinished Replace transaction into a new operation; the existing ledger must be reconciled in place first.
 
@@ -196,17 +207,20 @@ Step 2 preserves and expands Step 1 storage safety:
 - provider-scoped references persisted instead of Android framework objects
 - no visible partial final filename on providers without safe finalization
 - durable safety backups are never treated as disposable `.zzpart-*` data
+- no successful terminal state while active or transactional state is unresolved
 
 ## Automated certification
 
-Functional implementation head `f21bd3705087cc65620e772e4a549c69baf4b443` passed GitHub Actions run `34336655608` (#139):
+Functional implementation head `9f5fd474f64cbbd43308a147479bdaa3668a1170` passed GitHub Actions run `34346037170` (#159):
 
 ```bash
 ./gradlew clean assembleDebug testDebugUnitTest lintDebug assembleRelease assembleDebugAndroidTest
 ./gradlew connectedDebugAndroidTest
 ```
 
-Both Gradle phases reported `BUILD SUCCESSFUL`. API-35 executed **9 tests, 0 skipped, 0 failed**.
+The combined build/JVM/lint/release/instrumentation-compile phase reported `BUILD SUCCESSFUL`. The API-35 emulator then executed **9 tests, 0 skipped, 0 failed** and also reported `BUILD SUCCESSFUL`.
+
+The JVM suite on this exact head includes the final regressions for post-commit Replace verification failure, operation finalization with a RUNNING item, operation finalization with an unresolved Replace ledger, and process death after staged→final mutation before the `COMMITTED` journal save.
 
 ## Physical-device boundary
 
