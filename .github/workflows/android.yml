@@ -1,25 +1,24 @@
-name: Android Step 3 CI
+name: Android Step 4 CI
 
 on:
   push:
-    branches: [ main, 'step1/**', 'step2/**', 'step3/**' ]
+    branches: [ main, 'step1/**', 'step2/**', 'step3/**', 'step4/**' ]
   pull_request:
     branches: [ main ]
 
 permissions:
   contents: read
 
-# Only the newest commit on the same branch/ref needs certification. This keeps
-# rapid Step 3 fixes from queuing obsolete full emulator runs while preserving
-# the complete gate for the exact current head.
+# Only the newest commit on the same branch/ref needs certification. Rapid fixes cancel obsolete
+# emulator runs, while the exact current Step 4 head still has to pass the complete gate.
 concurrency:
-  group: android-step3-${{ github.workflow }}-${{ github.ref }}
+  group: android-step4-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  certify-step3-api35:
+  certify-step4-api35:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -33,6 +32,14 @@ jobs:
         run: |
           chmod +x ./gradlew
           ./gradlew clean assembleDebug testDebugUnitTest lintDebug assembleRelease assembleDebugAndroidTest --stacktrace
+      - name: Enforce zero skipped JVM tests
+        if: always()
+        shell: bash
+        run: |
+          if find app/build/test-results -name '*.xml' -type f -print0 2>/dev/null | xargs -0 grep -E '<testsuite[^>]*skipped="[1-9][0-9]*"' ; then
+            echo 'Skipped JVM certification tests detected.' >&2
+            exit 1
+          fi
       - name: Upload lint report
         if: always()
         uses: actions/upload-artifact@v4
@@ -57,6 +64,14 @@ jobs:
           script: |
             chmod +x ./gradlew
             ./gradlew connectedDebugAndroidTest --stacktrace
+      - name: Enforce zero skipped instrumentation tests
+        if: always()
+        shell: bash
+        run: |
+          if find app/build/outputs/androidTest-results -name '*.xml' -type f -print0 2>/dev/null | xargs -0 grep -E '<testsuite[^>]*skipped="[1-9][0-9]*"' ; then
+            echo 'Skipped instrumentation certification tests detected.' >&2
+            exit 1
+          fi
       - name: Upload instrumentation reports
         if: always()
         uses: actions/upload-artifact@v4
