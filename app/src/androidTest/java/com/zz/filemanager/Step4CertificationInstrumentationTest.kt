@@ -3,13 +3,8 @@ package com.zz.filemanager
 import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
-import androidx.compose.ui.test.assertExists
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.hasSetTextAction
-import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
-import androidx.compose.ui.test.onAllNodes
-import androidx.compose.ui.test.onNode
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -70,7 +65,7 @@ class Step4CertificationInstrumentationTest {
         val file = File(testRoot, "notes.txt").apply { writeText("hello\nworld") }
         launchFile(file, FileEntryType.TEXT, "text/plain").use {
             composeRule.onNodeWithText("Edit").assertIsDisplayed().performClick()
-            composeRule.onNode(hasText("hello\nworld") and hasSetTextAction())
+            composeRule.onNodeWithText("hello\nworld")
                 .performTextReplacement("changed\ncontent")
             composeRule.onNodeWithContentDescription("Save").performClick()
             composeRule.waitUntil(timeoutMillis = 10_000) {
@@ -89,11 +84,11 @@ class Step4CertificationInstrumentationTest {
         }
         launchFile(file, FileEntryType.ARCHIVE, "application/zip").use {
             composeRule.waitUntil(10_000) {
-                composeRule.onAllNodes(hasText("folder")).fetchSemanticsNodes().isNotEmpty()
+                runCatching { composeRule.onNodeWithText("folder").fetchSemanticsNode() }.isSuccess
             }
             composeRule.onNodeWithText("folder").performClick()
-            composeRule.onNodeWithText("a.txt").assertExists()
-            composeRule.onNodeWithText("Extract all").assertExists()
+            composeRule.onNodeWithText("a.txt").assertIsDisplayed()
+            composeRule.onNodeWithText("Extract all").assertIsDisplayed()
         }
     }
 
@@ -108,11 +103,11 @@ class Step4CertificationInstrumentationTest {
         }
         launchFile(file, FileEntryType.IMAGE, "image/png").use {
             composeRule.waitUntil(10_000) {
-                composeRule.onAllNodes(hasText("16 × 12", substring = true)).fetchSemanticsNodes().isNotEmpty()
+                runCatching { composeRule.onNodeWithText("16 × 12", substring = true).fetchSemanticsNode() }.isSuccess
             }
-            composeRule.onNodeWithContentDescription("fixture.png").assertExists()
-            composeRule.onNodeWithText("Previous").assertExists()
-            composeRule.onNodeWithText("Next").assertExists()
+            composeRule.onNodeWithContentDescription("fixture.png").assertIsDisplayed()
+            composeRule.onNodeWithText("Previous").assertIsDisplayed()
+            composeRule.onNodeWithText("Next").assertIsDisplayed()
         }
     }
 
@@ -120,8 +115,8 @@ class Step4CertificationInstrumentationTest {
     fun videoPlayerScreenInitializesAndMalformedMediaDoesNotCrashActivity() {
         val file = File(testRoot, "broken.mp4").apply { writeBytes(byteArrayOf(0, 1, 2, 3)) }
         launchFile(file, FileEntryType.VIDEO, "video/mp4").use {
-            composeRule.onNodeWithText("broken.mp4").assertExists()
-            composeRule.onNodeWithText("Fullscreen").assertExists()
+            composeRule.onNodeWithText("broken.mp4").assertIsDisplayed()
+            composeRule.onNodeWithText("Fullscreen").assertIsDisplayed()
         }
     }
 
@@ -129,7 +124,7 @@ class Step4CertificationInstrumentationTest {
     fun audioPlayerScreenInitializes() {
         val file = File(testRoot, "audio.mp3").apply { writeBytes(byteArrayOf(0, 1, 2, 3)) }
         launchFile(file, FileEntryType.AUDIO, "audio/mpeg").use {
-            composeRule.onNodeWithText("audio.mp3").assertExists()
+            composeRule.onNodeWithText("audio.mp3").assertIsDisplayed()
         }
     }
 
@@ -138,10 +133,10 @@ class Step4CertificationInstrumentationTest {
         val apk = File(context.applicationInfo.sourceDir)
         launchFile(apk, FileEntryType.APK, "application/vnd.android.package-archive", rootOverride = apk.parentFile).use {
             composeRule.waitUntil(15_000) {
-                composeRule.onAllNodes(hasText(context.packageName)).fetchSemanticsNodes().isNotEmpty()
+                runCatching { composeRule.onNodeWithText(context.packageName).fetchSemanticsNode() }.isSuccess
             }
-            composeRule.onNodeWithText(context.packageName).assertExists()
-            composeRule.onNodeWithText("Install with Android Package Installer").assertExists()
+            composeRule.onNodeWithText(context.packageName).assertIsDisplayed()
+            composeRule.onNodeWithText("Install with Android Package Installer").assertIsDisplayed()
         }
     }
 
@@ -149,7 +144,7 @@ class Step4CertificationInstrumentationTest {
     fun appsToolNavigatesWithoutBroadPackageVisibilityPermission() {
         launchTool(Step4ToolsActivity.MODE_APPS).use {
             composeRule.onNodeWithText("Installed Apps").assertIsDisplayed()
-            composeRule.onNodeWithText("Search apps").assertExists()
+            composeRule.onNodeWithText("Search apps").assertIsDisplayed()
         }
     }
 
@@ -157,8 +152,8 @@ class Step4CertificationInstrumentationTest {
     fun analyzerToolScreenInitializes() {
         launchTool(Step4ToolsActivity.MODE_ANALYZER).use {
             composeRule.onNodeWithText("Analyze Storage").assertIsDisplayed()
-            composeRule.onNodeWithText("Scan").assertExists()
-            composeRule.onNodeWithText("Find duplicates").assertExists()
+            composeRule.onNodeWithText("Scan").assertIsDisplayed()
+            composeRule.onNodeWithText("Find duplicates").assertIsDisplayed()
         }
     }
 
@@ -166,8 +161,8 @@ class Step4CertificationInstrumentationTest {
     fun archiveCreationToolScreenInitializes() {
         launchTool(Step4ToolsActivity.MODE_ARCHIVE_CREATE).use {
             composeRule.onNodeWithText("Create Archive").assertIsDisplayed()
-            composeRule.onNodeWithText("Choose source folder").assertExists()
-            composeRule.onNodeWithText("Choose destination").assertExists()
+            composeRule.onNodeWithText("Choose source folder").assertIsDisplayed()
+            composeRule.onNodeWithText("Choose destination").assertIsDisplayed()
         }
     }
 

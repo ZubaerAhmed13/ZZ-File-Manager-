@@ -232,12 +232,15 @@ class BrowserViewModelTest {
 
     @Test
     fun openFile_emitsExternalOpenRequest() = runTest(mainDispatcherRule.dispatcher) {
-        val storage = FakeBrowserStorage()
+        val root = location("root")
+        val storage = FakeBrowserStorage().apply { children[root.identity] = emptyList() }
         val viewModel = BrowserViewModel(storage, FakeBrowserPreferences(), mainDispatcherRule.dispatcher)
         val expected = OpenFileRequest("content://test/report.pdf", "application/pdf")
         storage.openRequests["report.pdf"] = expected
-        val event = backgroundScope.async(UnconfinedTestDispatcher(testScheduler)) { viewModel.events.first() }
 
+        viewModel.start(root)
+        advanceUntilIdle()
+        val event = backgroundScope.async(UnconfinedTestDispatcher(testScheduler)) { viewModel.events.first() }
         viewModel.openEntry(file("report.pdf", mime = "application/pdf", uri = expected.uri))
 
         assertEquals(BrowserEvent.OpenFile(expected), event.await())
