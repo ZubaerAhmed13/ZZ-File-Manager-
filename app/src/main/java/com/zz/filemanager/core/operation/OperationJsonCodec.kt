@@ -102,6 +102,13 @@ object OperationJsonCodec {
         putNullable("partialOutput", item.partialOutput?.let(::scopedToJson))
         putNullable("batchRenameTemporaryName", item.batchRenameTemporaryName)
         put("batchRenamePhase", item.batchRenamePhase.name)
+        put("replacePhase", item.replacePhase.name)
+        putNullable("replaceFinalName", item.replaceFinalName)
+        putNullable("replaceOriginalReference", item.replaceOriginalReference?.let(::scopedToJson))
+        putNullable("replaceOriginalSizeBytes", item.replaceOriginalSizeBytes)
+        putNullable("replaceOriginalModifiedAtMillis", item.replaceOriginalModifiedAtMillis)
+        putNullable("replaceBackupName", item.replaceBackupName)
+        putNullable("replaceBackupReference", item.replaceBackupReference?.let(::scopedToJson))
     }
 
     private fun itemFromJson(json: JSONObject) = OperationItem(
@@ -117,6 +124,13 @@ object OperationJsonCodec {
         partialOutput = json.objectOrNull("partialOutput")?.let(::scopedFromJson),
         batchRenameTemporaryName = json.stringOrNull("batchRenameTemporaryName"),
         batchRenamePhase = json.stringOrNull("batchRenamePhase")?.let(BatchRenamePhase::valueOf) ?: BatchRenamePhase.ORIGINAL,
+        replacePhase = json.stringOrNull("replacePhase")?.let(ReplacePhase::valueOf) ?: ReplacePhase.NONE,
+        replaceFinalName = json.stringOrNull("replaceFinalName"),
+        replaceOriginalReference = json.objectOrNull("replaceOriginalReference")?.let(::scopedFromJson),
+        replaceOriginalSizeBytes = json.longOrNull("replaceOriginalSizeBytes"),
+        replaceOriginalModifiedAtMillis = json.longOrNull("replaceOriginalModifiedAtMillis"),
+        replaceBackupName = json.stringOrNull("replaceBackupName"),
+        replaceBackupReference = json.objectOrNull("replaceBackupReference")?.let(::scopedFromJson),
     )
 
     private fun sourceToJson(source: OperationSource) = JSONObject().apply {
