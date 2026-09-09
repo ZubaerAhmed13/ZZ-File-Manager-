@@ -1,0 +1,33 @@
+name: One-shot Replace cancellation patch
+
+on:
+  push:
+    branches:
+      - step2/file-operations-engine
+    paths:
+      - .github/workflows/one-shot-replace-cancellation-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: step2/file-operations-engine
+          fetch-depth: 0
+      - name: Apply exact-match patch
+        run: python3 tools/patch_replace_cancellation.py
+      - name: Verify patch
+        run: |
+          git diff --check
+          test -n "$(git status --short app/src/main/java/com/zz/filemanager/core/operation/ReplaceTransactionCoordinator.kt)"
+      - name: Commit patch
+        run: |
+          git config user.name "Zubaer Ahmed"
+          git config user.email "zubaerknight@gmail.com"
+          git add app/src/main/java/com/zz/filemanager/core/operation/ReplaceTransactionCoordinator.kt
+          git commit -m "fix: preserve replace ledger on cancellation"
+          git push origin HEAD:step2/file-operations-engine
