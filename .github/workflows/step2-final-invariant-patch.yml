@@ -20,7 +20,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Apply guarded source repair
-        run: python tools/step2_final_invariant_patch.py
+        run: python tools/step2_final_invariant_runner.py
       - name: Commit guarded repair
         run: |
           git config user.name 'github-actions[bot]'
