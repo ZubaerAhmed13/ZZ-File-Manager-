@@ -164,6 +164,12 @@ internal object LibraryCodec {
         it.getString("providerId"), it.getString("id"), it.getString("displayName"), it.getString("reference"),
         it.getString("rootReference"), it.getString("storageId"), it.optBoolean("readable", true), it.optBoolean("writable", false)
     ) }
+    private fun scoped(value: ScopedFileReference?) = value?.let { JSONObject().apply {
+        put("reference", reference(it.reference)); put("rootReference", it.rootReference); put("storageId", it.storageId)
+    } }
+    private fun decodeScoped(value: JSONObject?) = value?.let {
+        ScopedFileReference(decodeReference(it.getJSONObject("reference")), it.getString("rootReference"), it.getString("storageId"))
+    }
     fun favorite(item: FavoriteItem) = JSONObject().apply {
         put("id", item.id); put("reference", reference(item.reference)); put("rootReference", item.rootReference); put("storageId", item.storageId)
         put("parent", location(item.parentLocation)); put("displayName", item.displayName); put("type", item.type.name); put("addedAt", item.addedAtMillis)
@@ -191,19 +197,39 @@ internal object LibraryCodec {
     fun trash(item: TrashRecord) = JSONObject().apply {
         put("id", item.id); put("backend", item.backend.name); put("originalReference", reference(item.originalReference)); put("originalParent", location(item.originalParent))
         put("originalName", item.originalName); put("type", item.type.name); put("size", item.sizeBytes); put("modified", item.modifiedAtMillis)
-        put("trashReference", item.trashReference?.let { JSONObject().apply { put("reference", reference(it.reference)); put("rootReference", it.rootReference); put("storageId", it.storageId) } })
-        put("containerReference", item.containerReference?.let { JSONObject().apply { put("reference", reference(it.reference)); put("rootReference", it.rootReference); put("storageId", it.storageId) } })
+        put("trashReference", scoped(item.trashReference)); put("containerReference", scoped(item.containerReference))
         put("trashedAt", item.trashedAtMillis); put("updatedAt", item.updatedAtMillis); put("state", item.state.name); put("operationId", item.operationId); put("failure", item.failureReason)
         put("restoreDestination", location(item.restoreDestination)); put("restoreName", item.restoreName); put("restoreReplace", item.restoreReplace)
+        put("restoreReplacePhase", item.restoreReplacePhase.name); put("restoreStageName", item.restoreStageName)
+        put("restoreCommitIdentity", item.restoreCommitIdentity); put("restoreCommittedReference", scoped(item.restoreCommittedReference))
     }.toString()
     fun decodeTrash(raw: String): TrashRecord? = runCatching { JSONObject(raw).let { o ->
-        val scoped = o.optJSONObject("trashReference")?.let { ScopedFileReference(decodeReference(it.getJSONObject("reference")), it.getString("rootReference"), it.getString("storageId")) }
-        val container = o.optJSONObject("containerReference")?.let { ScopedFileReference(decodeReference(it.getJSONObject("reference")), it.getString("rootReference"), it.getString("storageId")) }
-        TrashRecord(o.getString("id"), enumValueOf(o.getString("backend")), decodeReference(o.getJSONObject("originalReference")),
-            requireNotNull(decodeLocation(o.getJSONObject("originalParent"))), o.getString("originalName"), enumValueOf(o.getString("type")),
-            o.optLongOrNull("size"), o.optLongOrNull("modified"), scoped, container, o.getLong("trashedAt"), o.getLong("updatedAt"), enumValueOf(o.getString("state")),
-            o.optStringOrNull("operationId"), o.optStringOrNull("failure"), decodeLocation(o.optJSONObject("restoreDestination")),
-            o.optStringOrNull("restoreName"), o.optBoolean("restoreReplace", false))
+        val trash = decodeScoped(o.optJSONObject("trashReference"))
+        val container = decodeScoped(o.optJSONObject("containerReference"))
+        TrashRecord(
+            id = o.getString("id"),
+            backend = enumValueOf(o.getString("backend")),
+            originalReference = decodeReference(o.getJSONObject("originalReference")),
+            originalParent = requireNotNull(decodeLocation(o.getJSONObject("originalParent"))),
+            originalName = o.getString("originalName"),
+            type = enumValueOf(o.getString("type")),
+            sizeBytes = o.optLongOrNull("size"),
+            modifiedAtMillis = o.optLongOrNull("modified"),
+            trashReference = trash,
+            containerReference = container,
+            trashedAtMillis = o.getLong("trashedAt"),
+            updatedAtMillis = o.getLong("updatedAt"),
+            state = enumValueOf(o.getString("state")),
+            operationId = o.optStringOrNull("operationId"),
+            failureReason = o.optStringOrNull("failure"),
+            restoreDestination = decodeLocation(o.optJSONObject("restoreDestination")),
+            restoreName = o.optStringOrNull("restoreName"),
+            restoreReplace = o.optBoolean("restoreReplace", false),
+            restoreReplacePhase = runCatching { enumValueOf<RestoreReplacePhase>(o.optString("restoreReplacePhase", RestoreReplacePhase.NONE.name)) }.getOrDefault(RestoreReplacePhase.NONE),
+            restoreStageName = o.optStringOrNull("restoreStageName"),
+            restoreCommitIdentity = o.optStringOrNull("restoreCommitIdentity"),
+            restoreCommittedReference = decodeScoped(o.optJSONObject("restoreCommittedReference")),
+        )
     } }.getOrNull()
     private fun JSONObject.optStringOrNull(name: String): String? = if (isNull(name)) null else optString(name).takeIf { it.isNotEmpty() }
     private fun JSONObject.optLongOrNull(name: String): Long? = if (isNull(name) || !has(name)) null else getLong(name)
