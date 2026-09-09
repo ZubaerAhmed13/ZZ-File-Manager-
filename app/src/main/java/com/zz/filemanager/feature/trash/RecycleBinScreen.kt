@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -27,6 +28,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
@@ -59,12 +61,20 @@ fun RecycleBinScreen(viewModel: RecycleBinViewModel, onBack: () -> Unit) {
     val records by viewModel.records.collectAsStateWithLifecycle()
     val selected by viewModel.selected.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
+    val sort by viewModel.sort.collectAsStateWithLifecycle()
+    val totalSize by viewModel.totalSizeBytes.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     var deleteConfirm by remember { mutableStateOf(false) }
     var emptyConfirm by remember { mutableStateOf(false) }
     var collisionId by remember { mutableStateOf<String?>(null) }
+    var chooseDestinationId by remember { mutableStateOf<String?>(null) }
     val platformLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result -> viewModel.onPlatformResult(result.resultCode == Activity.RESULT_OK) }
-    LaunchedEffect(viewModel) { viewModel.events.collect { event -> when (event) { is RecycleEvent.Message -> snackbar.showSnackbar(event.text); is RecycleEvent.Collision -> collisionId = event.recordId; is RecycleEvent.PlatformRequest -> platformLauncher.launch(IntentSenderRequest.Builder(event.pendingIntent.intentSender).build()) } } }
+    val destinationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        val id = chooseDestinationId
+        chooseDestinationId = null
+        if (uri != null && id != null) viewModel.restoreToTree(id, uri)
+    }
+    LaunchedEffect(viewModel) { viewModel.events.collect { event -> when (event) { is RecycleEvent.Message -> snackbar.showSnackbar(event.text); is RecycleEvent.Collision -> collisionId = event.recordId; is RecycleEvent.PlatformRequest -> platformLauncher.launch(IntentSenderRequest.Builder(event.pendingIntent.intentSender).build()); is RecycleEvent.ChooseDestination -> { chooseDestinationId = event.recordId; destinationLauncher.launch(null) } } } }
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
@@ -84,7 +94,11 @@ fun RecycleBinScreen(viewModel: RecycleBinViewModel, onBack: () -> Unit) {
         when {
             busy -> Column(Modifier.fillMaxSize().padding(padding), horizontalAlignment = Alignment.CenterHorizontally) { CircularProgressIndicator(Modifier.padding(32.dp)) }
             records.isEmpty() -> Text(stringResource(R.string.recycle_empty), Modifier.padding(padding).padding(24.dp))
-            else -> LazyColumn(Modifier.padding(padding)) { items(records, key = { it.id }) { record -> TrashRow(record, record.id in selected, viewModel::toggle) } }
+            else -> LazyColumn(Modifier.padding(padding)) {
+                item { Text(stringResource(R.string.recycle_total_size, Formatters.bytes(totalSize)), Modifier.padding(horizontal = 16.dp, vertical = 8.dp), style = MaterialTheme.typography.titleSmall) }
+                item { LazyRow(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)) { items(RecycleSort.entries) { option -> FilterChip(selected = sort == option, onClick = { viewModel.setSort(option) }, label = { Text(recycleSortLabel(option)) }) } } }
+                items(records, key = { it.id }) { record -> TrashRow(record, record.id in selected, viewModel::toggle) }
+            }
         }
     }
     if (deleteConfirm) AlertDialog(
@@ -106,7 +120,7 @@ fun RecycleBinScreen(viewModel: RecycleBinViewModel, onBack: () -> Unit) {
         title = { Text(stringResource(R.string.restore_collision)) },
         text = { Text(stringResource(R.string.file_conflict)) },
         confirmButton = { TextButton(onClick = { collisionId = null; viewModel.restore(RestoreCollisionPolicy.KEEP_BOTH, id) }) { Text(stringResource(R.string.keep_both)) } },
-        dismissButton = { Row { TextButton(onClick = { collisionId = null; viewModel.restore(RestoreCollisionPolicy.REPLACE, id) }) { Text(stringResource(R.string.replace)) }; TextButton(onClick = { collisionId = null }) { Text(stringResource(R.string.cancel)) } } },
+        dismissButton = { Column { Row { TextButton(onClick = { collisionId = null; viewModel.restore(RestoreCollisionPolicy.REPLACE, id) }) { Text(stringResource(R.string.replace)) }; TextButton(onClick = { collisionId = null; viewModel.chooseDestination(id) }) { Text(stringResource(R.string.choose_destination)) } }; TextButton(onClick = { collisionId = null }) { Text(stringResource(R.string.cancel)) } } },
     ) }
 }
 
@@ -114,9 +128,16 @@ fun RecycleBinScreen(viewModel: RecycleBinViewModel, onBack: () -> Unit) {
 private fun TrashRow(record: TrashRecord, selected: Boolean, toggle: (TrashRecord) -> Unit) {
     ListItem(
         headlineContent = { Text(record.originalName, maxLines = 1) },
-        supportingContent = { Column { Text(stringResource(R.string.original_location) + ": " + record.originalParent.displayName); Text(stringResource(R.string.deleted_date) + ": " + DateFormat.getDateTimeInstance().format(Date(record.trashedAtMillis))); record.sizeBytes?.let { Text(Formatters.bytes(it)) }; if (record.failureReason != null) Text(record.failureReason, color = MaterialTheme.colorScheme.error) } },
+        supportingContent = { Column { Text(stringResource(R.string.original_location) + ": " + record.originalParent.displayName); Text(stringResource(R.string.deleted_date) + ": " + DateFormat.getDateTimeInstance().format(Date(record.trashedAtMillis))); record.sizeBytes?.let { Text(Formatters.bytes(it)) }; Text(stringResource(R.string.recycle_backend, record.backend.name.replace('_', ' '))); if (record.failureReason != null) Text(record.failureReason, color = MaterialTheme.colorScheme.error) } },
         leadingContent = { Icon(if (record.type == com.zz.filemanager.core.model.FileEntryType.DIRECTORY) Icons.Default.Folder else Icons.AutoMirrored.Filled.InsertDriveFile, null) },
         modifier = Modifier.fillMaxWidth().combinedClickable(onClick = { toggle(record) }, onLongClick = { toggle(record) }),
         tonalElevation = if (selected) 4.dp else 0.dp,
     )
 }
+
+@Composable private fun recycleSortLabel(sort: RecycleSort) = stringResource(when (sort) {
+    RecycleSort.DATE_DELETED -> R.string.deleted_date
+    RecycleSort.NAME -> R.string.sort_name
+    RecycleSort.SIZE -> R.string.sort_size
+    RecycleSort.ORIGINAL_LOCATION -> R.string.original_location
+})

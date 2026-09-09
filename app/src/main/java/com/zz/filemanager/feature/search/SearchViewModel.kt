@@ -50,6 +50,13 @@ class SearchViewModel(
     fun setKinds(files: Boolean, directories: Boolean) { update(_query.value.copy(includeFiles = files, includeDirectories = directories)) }
     fun submit() { update(_query.value, debounce = false) }
     fun cancel() { generation++; searchJob?.cancel(); _state.value = SearchUiState.Cancelled }
+    fun dismissResult(id: String) {
+        _state.value = when (val current = _state.value) {
+            is SearchUiState.Searching -> current.copy(results = current.results.filterNot { it.id == id })
+            is SearchUiState.Results -> current.copy(results = current.results.filterNot { it.id == id })
+            else -> current
+        }
+    }
 
     private fun update(value: FileSearchQuery, debounce: Boolean = false) {
         _query.value = value

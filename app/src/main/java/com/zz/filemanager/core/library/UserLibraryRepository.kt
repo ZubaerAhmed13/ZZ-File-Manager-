@@ -40,7 +40,7 @@ class UserLibraryRepository(
     override suspend fun initialize() = mutex.withLock { ensureInitializedLocked() }
 
     override suspend fun upsertFavorite(item: FavoriteItem) = mutate {
-        database.upsert("favorites", item.id, LibraryCodec.favorite(item), item.addedAtMillis, item.status.name)
+        database.upsert("favorites", item.id, LibraryCodec.favorite(item), item.addedAtMillis, item.status.name, item.reference.providerId, item.reference.opaqueId)
         database.trim("favorites", MAX_FAVORITES)
     }
 
@@ -49,7 +49,7 @@ class UserLibraryRepository(
     override suspend fun updateFavorite(item: FavoriteItem) = upsertFavorite(item)
 
     override suspend fun recordRecentFile(item: RecentFile) = mutate {
-        database.upsert("recent_files", item.id, LibraryCodec.recent(item), item.openedAtMillis, item.status.name)
+        database.upsert("recent_files", item.id, LibraryCodec.recent(item), item.openedAtMillis, item.status.name, item.reference.providerId, item.reference.opaqueId)
         database.trim("recent_files", MAX_RECENT_FILES)
     }
 
@@ -69,7 +69,7 @@ class UserLibraryRepository(
     }
 
     override suspend fun upsertTrash(record: TrashRecord) = mutate {
-        database.upsert("trash_records", record.id, LibraryCodec.trash(record), record.updatedAtMillis, record.state.name)
+        database.upsert("trash_records", record.id, LibraryCodec.trash(record), record.updatedAtMillis, record.state.name, record.originalReference.providerId, record.originalReference.opaqueId)
     }
 
     override suspend fun removeTrash(id: String) = mutate { database.delete("trash_records", id) }
@@ -110,18 +110,28 @@ class UserLibraryRepository(
 private class UserLibraryDatabase(context: Context) : SQLiteOpenHelper(context, NAME, null, VERSION) {
     override fun onCreate(db: SQLiteDatabase) {
         listOf("favorites", "recent_files", "search_history", "activity_history", "trash_records").forEach { table ->
-            db.execSQL("CREATE TABLE $table (id TEXT PRIMARY KEY NOT NULL, timestamp INTEGER NOT NULL, state TEXT, payload TEXT NOT NULL)")
+            db.execSQL("CREATE TABLE $table (id TEXT PRIMARY KEY NOT NULL, timestamp INTEGER NOT NULL, state TEXT, provider_id TEXT, reference_id TEXT, payload TEXT NOT NULL)")
             db.execSQL("CREATE INDEX idx_${table}_timestamp ON $table(timestamp DESC)")
             db.execSQL("CREATE INDEX idx_${table}_state ON $table(state)")
+            db.execSQL("CREATE INDEX idx_${table}_provider_reference ON $table(provider_id, reference_id)")
         }
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        if (oldVersion != newVersion) throw IllegalStateException("No user-library migration from $oldVersion to $newVersion")
+        var version = oldVersion
+        if (version == 1) {
+            listOf("favorites", "recent_files", "search_history", "activity_history", "trash_records").forEach { table ->
+                db.execSQL("ALTER TABLE $table ADD COLUMN provider_id TEXT")
+                db.execSQL("ALTER TABLE $table ADD COLUMN reference_id TEXT")
+                db.execSQL("CREATE INDEX idx_${table}_provider_reference ON $table(provider_id, reference_id)")
+            }
+            version = 2
+        }
+        check(version == newVersion) { "No user-library migration from $oldVersion to $newVersion" }
     }
 
-    fun upsert(table: String, id: String, payload: String, timestamp: Long, state: String?) {
-        val values = ContentValues().apply { put("id", id); put("timestamp", timestamp); put("state", state); put("payload", payload) }
+    fun upsert(table: String, id: String, payload: String, timestamp: Long, state: String?, providerId: String? = null, referenceId: String? = null) {
+        val values = ContentValues().apply { put("id", id); put("timestamp", timestamp); put("state", state); put("provider_id", providerId); put("reference_id", referenceId); put("payload", payload) }
         writableDatabase.insertWithOnConflict(table, null, values, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
@@ -135,7 +145,7 @@ private class UserLibraryDatabase(context: Context) : SQLiteOpenHelper(context, 
         table, arrayOf("payload"), null, null, null, null, "timestamp DESC"
     ).use { cursor -> buildList { while (cursor.moveToNext()) decode(cursor.getString(0))?.let(::add) } }
 
-    companion object { const val NAME = "step3_user_library.db"; const val VERSION = 1 }
+    companion object { const val NAME = "step3_user_library.db"; const val VERSION = 2 }
 }
 
 internal object LibraryCodec {

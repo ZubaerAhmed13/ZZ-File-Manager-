@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -16,6 +17,7 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
@@ -39,9 +41,17 @@ import com.zz.filemanager.core.model.BrowserLocation
 @Composable
 fun FavoritesScreen(viewModel: LibraryViewModel, onBack: () -> Unit, onOpen: (FavoriteItem) -> Unit) {
     val items by viewModel.favorites.collectAsStateWithLifecycle()
+    val sort by viewModel.favoriteSort.collectAsStateWithLifecycle()
     Scaffold(topBar = { TopAppBar(title = { Text(stringResource(R.string.favorites)) }, navigationIcon = { Back(onBack) }) }) { padding ->
         if (items.isEmpty()) Text(stringResource(R.string.no_favorites), Modifier.padding(padding).padding(24.dp))
         else LazyColumn(Modifier.padding(padding)) {
+            item {
+                LazyRow(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)) {
+                    items(FavoriteSort.entries) { option ->
+                        FilterChip(selected = sort == option, onClick = { viewModel.setFavoriteSort(option) }, label = { Text(favoriteSortLabel(option)) })
+                    }
+                }
+            }
             items(items, key = { it.id }) { item ->
                 ListItem(
                     headlineContent = { Text(item.displayName, maxLines = 1) },
@@ -91,3 +101,9 @@ fun RecentScreen(
 @Composable private fun StatusAndLocation(status: LibraryItemStatus, location: String?) { Column { location?.let { Text(it, maxLines = 1) }; if (status != LibraryItemStatus.AVAILABLE) Text(stringResource(if (status == LibraryItemStatus.TRASHED) R.string.in_recycle_bin else R.string.unavailable), color = MaterialTheme.colorScheme.error) } }
 @Composable private fun SectionHeader(title: Int, clear: Int?, onClear: () -> Unit) { Row(Modifier.fillMaxWidth().padding(start = 16.dp, top = 16.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) { Text(stringResource(title), style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f)); if (clear != null) TextButton(onClick = onClear) { Text(stringResource(clear)) } } }
 @Composable private fun ActivityRow(entry: ActivityEntry) { ListItem(headlineContent = { Text(entry.summary) }, supportingContent = { Text(java.text.DateFormat.getDateTimeInstance().format(java.util.Date(entry.occurredAtMillis))) }, leadingContent = { Icon(Icons.Default.History, null) }) }
+@Composable private fun favoriteSortLabel(sort: FavoriteSort) = stringResource(when (sort) {
+    FavoriteSort.NAME -> R.string.sort_name
+    FavoriteSort.RECENTLY_ADDED -> R.string.recently_added
+    FavoriteSort.RECENTLY_OPENED -> R.string.recently_opened
+    FavoriteSort.TYPE -> R.string.sort_type
+})

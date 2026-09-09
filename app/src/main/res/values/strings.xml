@@ -89,6 +89,7 @@
 
     <string name="selected_count">%1$d selected</string>
     <string name="copy">Copy</string>
+    <string name="open">Open</string>
     <string name="move">Move</string>
     <string name="delete">Delete</string>
     <string name="more">More</string>
@@ -159,12 +160,16 @@
     <string name="size_100_mb_to_1_gb">100 MB–1 GB</string>
     <string name="size_over_1_gb">Over 1 GB</string>
     <string name="date_any">Any date</string>
+    <string name="date_today">Today</string>
     <string name="date_last_7_days">Last 7 days</string>
     <string name="date_last_30_days">Last 30 days</string>
+    <string name="date_this_year">This year</string>
     <string name="favorites">Favorites</string>
     <string name="add_to_favorites">Add to Favorites</string>
     <string name="remove_from_favorites">Remove from Favorites</string>
     <string name="no_favorites">No favorites yet.</string>
+    <string name="recently_added">Recently added</string>
+    <string name="recently_opened">Recently opened</string>
     <string name="unavailable">Unavailable</string>
     <string name="in_recycle_bin">In Recycle Bin</string>
     <string name="recent">Recent</string>
@@ -186,6 +191,8 @@
     <string name="deleted_date">Deleted</string>
     <string name="original_location">Original location</string>
     <string name="recycle_empty">Recycle Bin is empty.</string>
+    <string name="recycle_total_size">Total known size: %1$s</string>
+    <string name="recycle_backend">Backend: %1$s</string>
     <string name="restore_collision">A file with this name already exists.</string>
     <string name="choose_destination">Choose destination</string>
     <string name="quick_access">Quick access</string>

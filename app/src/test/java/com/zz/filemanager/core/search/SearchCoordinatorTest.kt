@@ -9,6 +9,9 @@ import com.zz.filemanager.core.storage.StorageProvider
 import com.zz.filemanager.core.storage.StorageProviderRegistry
 import com.zz.filemanager.core.storage.WritableStorageProvider
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.yield
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -77,6 +80,69 @@ class SearchCoordinatorTest {
         assertEquals(100_000L, updates.filterIsInstance<SearchUpdate.Completed>().single().totalMatches)
     }
 
+    @Test fun deepTreeUsesIterativeTraversalWithoutStackOverflow() = runTest {
+        val depth = 5_000
+        val provider = object : StorageProvider {
+            override val id = "fake"
+            override suspend fun listChildren(location: BrowserLocation): List<FileEntry> {
+                val level = location.reference.toInt()
+                return if (level == depth) listOf(entryAt("needle.txt", "$level/needle.txt"))
+                else listOf(entryAt("folder-${level + 1}", "${level + 1}", FileEntryType.DIRECTORY))
+            }
+            override suspend fun getMetadata(item: FileReference): FileEntry? = null
+            override suspend fun openInputStream(item: FileReference) = ByteArrayInputStream(ByteArray(0))
+            override suspend fun exists(item: FileReference) = true
+            override suspend fun resolveParent(location: BrowserLocation): BrowserLocation? = null
+            override suspend fun breadcrumbs(location: BrowserLocation): List<Breadcrumb> = emptyList()
+        }
+        val updates = SearchCoordinator(FakeRegistry(provider), SearchRootSource { listOf(location("0")) })
+            .search(FileSearchQuery("needle", SearchScope.CURRENT_FOLDER_RECURSIVE), location("0")).toList()
+        assertEquals(1L, updates.filterIsInstance<SearchUpdate.Completed>().single().totalMatches)
+    }
+
+    @Test fun recursiveSearchNeverFollowsSymbolicLinks() = runTest {
+        var lists = 0
+        val symbolicFolder = entryAt("loop", "root", FileEntryType.DIRECTORY, symbolic = true)
+        val provider = object : StorageProvider {
+            override val id = "fake"
+            override suspend fun listChildren(location: BrowserLocation): List<FileEntry> { lists++; return listOf(symbolicFolder) }
+            override suspend fun getMetadata(item: FileReference): FileEntry? = null
+            override suspend fun openInputStream(item: FileReference) = ByteArrayInputStream(ByteArray(0))
+            override suspend fun exists(item: FileReference) = true
+            override suspend fun resolveParent(location: BrowserLocation): BrowserLocation? = null
+            override suspend fun breadcrumbs(location: BrowserLocation): List<Breadcrumb> = emptyList()
+        }
+        SearchCoordinator(FakeRegistry(provider), SearchRootSource { listOf(location("root")) })
+            .search(FileSearchQuery(scope = SearchScope.CURRENT_FOLDER_RECURSIVE), location("root")).toList()
+        assertEquals(1, lists)
+    }
+
+    @Test fun cancelledTraversalCannotEmitTerminalSuccess() = runTest {
+        val root = location("root")
+        val provider = FakeProvider(mapOf("root" to List(100_000) { entry("file-$it.txt") }))
+        val updates = mutableListOf<SearchUpdate>()
+        val job = launch {
+            SearchCoordinator(FakeRegistry(provider), SearchRootSource { listOf(root) }, batchSize = 1)
+                .search(FileSearchQuery("file", SearchScope.CURRENT_FOLDER), root).collect {
+                    updates += it
+                    if (updates.size == 10) cancel()
+                    yield()
+                }
+        }
+        job.join()
+        assertFalse(updates.any { it is SearchUpdate.Completed })
+    }
+
+    @Test fun allResultSortModesAreDeterministic() {
+        val root = location("root")
+        val a = SearchResult("a", FileReference("fake", "a"), root, "z.txt", "b/z.txt", FileEntryType.TEXT, 10, 10, null, "s", true, true, 100)
+        val b = SearchResult("b", FileReference("fake", "b"), root.copy(displayName = "Alpha"), "a.pdf", "a/a.pdf", FileEntryType.PDF, 20, 20, null, "s", true, true, 400)
+        SearchSort.entries.forEach { sort -> assertEquals(setOf("a", "b"), SearchResultSorter.sort(listOf(a, b), sort).map { it.id }.toSet()) }
+        assertEquals("b", SearchResultSorter.sort(listOf(a, b), SearchSort.RELEVANCE).first().id)
+        assertEquals("b", SearchResultSorter.sort(listOf(a, b), SearchSort.NAME).first().id)
+        assertEquals("b", SearchResultSorter.sort(listOf(a, b), SearchSort.SIZE).first().id)
+    }
+
     private class FakeRegistry(private val provider: StorageProvider) : StorageProviderRegistry {
         override fun providerFor(providerId: String): StorageProvider = provider
         override fun writableProviderFor(providerId: String): WritableStorageProvider? = null
@@ -96,5 +162,10 @@ class SearchCoordinatorTest {
             val path = if (name == "folder") "root/folder" else "root/$name"
             return FileEntry("fake:$path", FileReference("fake", "fake:$path", path = path), name, name.substringAfterLast('.', "").takeIf { it.isNotEmpty() }, null, type, size, modified, null, name.startsWith('.'), true, true, null, "root", null)
         }
+        private fun entryAt(name: String, path: String, type: FileEntryType = FileEntryType.TEXT, symbolic: Boolean = false) = FileEntry(
+            "fake:$path", FileReference("fake", "fake:$path", path = path), name,
+            name.substringAfterLast('.', "").takeIf { it.isNotEmpty() }, null, type, 10L, 10L, null,
+            name.startsWith('.'), true, true, null, "root", null, symbolic,
+        )
     }
 }

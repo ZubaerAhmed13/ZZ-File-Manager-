@@ -1,7 +1,16 @@
-@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@file:OptIn(
+    androidx.compose.material3.ExperimentalMaterial3Api::class,
+    androidx.compose.foundation.ExperimentalFoundationApi::class,
+)
 
 package com.zz.filemanager.feature.search
 
+import android.app.Activity
+import android.app.PendingIntent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -19,6 +28,7 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.StarBorder
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -63,6 +73,12 @@ fun SearchScreen(
     onOpen: (SearchResult) -> Unit,
     onReveal: (SearchResult) -> Unit,
     onFavorite: (SearchResult) -> Unit,
+    onCopy: (SearchResult) -> Unit,
+    onMove: (SearchResult) -> Unit,
+    onShare: (SearchResult) -> Unit,
+    onTrash: (SearchResult) -> PendingIntent?,
+    onPlatformTrashConfirmed: (SearchResult) -> Unit,
+    onDeletePermanently: (SearchResult) -> Unit,
     onClearHistory: () -> Unit,
 ) {
     val query by viewModel.query.collectAsStateWithLifecycle()
@@ -70,6 +86,17 @@ fun SearchScreen(
     val history by viewModel.history.collectAsStateWithLifecycle()
     val nowMillis = remember { System.currentTimeMillis() }
     var advanced by remember { mutableStateOf(false) }
+    var actionResult by remember { mutableStateOf<SearchResult?>(null) }
+    var propertyResult by remember { mutableStateOf<SearchResult?>(null) }
+    var deleteResult by remember { mutableStateOf<SearchResult?>(null) }
+    var pendingPlatformTrash by remember { mutableStateOf<SearchResult?>(null) }
+    val platformLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        val pending = pendingPlatformTrash
+        pendingPlatformTrash = null
+        if (result.resultCode == Activity.RESULT_OK && pending != null) onPlatformTrashConfirmed(pending)
+    }
+    val todayStart = remember { LocalDate.now().atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli() }
+    val yearStart = remember { LocalDate.now().withDayOfYear(1).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli() }
     val sevenDaysAgo = nowMillis - 7L * 24L * 60L * 60L * 1000L
     val thirtyDaysAgo = nowMillis - 30L * 24L * 60L * 60L * 1000L
     val results = when (state) {
@@ -126,8 +153,10 @@ fun SearchScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 item { FilterChip(selected = query.modifiedAfter == null && query.modifiedBefore == null, onClick = { viewModel.setDates(null, null) }, label = { Text(stringResource(R.string.date_any)) }) }
+                item { FilterChip(selected = query.modifiedAfter == todayStart, onClick = { viewModel.setDates(todayStart, nowMillis) }, label = { Text(stringResource(R.string.date_today)) }) }
                 item { FilterChip(selected = query.modifiedAfter == sevenDaysAgo, onClick = { viewModel.setDates(sevenDaysAgo, nowMillis) }, label = { Text(stringResource(R.string.date_last_7_days)) }) }
                 item { FilterChip(selected = query.modifiedAfter == thirtyDaysAgo, onClick = { viewModel.setDates(thirtyDaysAgo, nowMillis) }, label = { Text(stringResource(R.string.date_last_30_days)) }) }
+                item { FilterChip(selected = query.modifiedAfter == yearStart, onClick = { viewModel.setDates(yearStart, nowMillis) }, label = { Text(stringResource(R.string.date_this_year)) }) }
                 item { AssistChip(onClick = { advanced = true }, label = { Text(stringResource(R.string.advanced_filters)) }) }
             }
             LazyRow(
@@ -158,11 +187,11 @@ fun SearchScreen(
                 }
                 is SearchUiState.Searching -> {
                     SearchStatus(current.totalMatches, current.scanned, true, 0)
-                    ResultList(results, onOpen, onReveal, onFavorite)
+                    ResultList(results, onOpen, onReveal, onFavorite) { actionResult = it }
                 }
                 is SearchUiState.Results -> {
                     SearchStatus(current.totalMatches, current.scanned, false, current.failures.size)
-                    ResultList(results, onOpen, onReveal, onFavorite)
+                    ResultList(results, onOpen, onReveal, onFavorite) { actionResult = it }
                 }
                 is SearchUiState.Empty -> EmptySearch(current.scanned, current.failures.size)
                 is SearchUiState.Error -> Column(Modifier.padding(24.dp)) { Text(current.message, color = MaterialTheme.colorScheme.error) }
@@ -183,7 +212,83 @@ fun SearchScreen(
             advanced = false
         },
     )
+    actionResult?.let { result ->
+        SearchActionDialog(
+            result = result,
+            onDismiss = { actionResult = null },
+            onOpen = { actionResult = null; onOpen(result) },
+            onReveal = { actionResult = null; onReveal(result) },
+            onCopy = { actionResult = null; onCopy(result) },
+            onMove = { actionResult = null; onMove(result) },
+            onShare = { actionResult = null; onShare(result) },
+            onFavorite = { actionResult = null; onFavorite(result) },
+            onProperties = { actionResult = null; propertyResult = result },
+            onTrash = {
+                actionResult = null
+                onTrash(result)?.let { pending ->
+                    pendingPlatformTrash = result
+                    platformLauncher.launch(IntentSenderRequest.Builder(pending.intentSender).build())
+                }
+            },
+            onDelete = { actionResult = null; deleteResult = result },
+        )
+    }
+    propertyResult?.let { result ->
+        SearchPropertiesDialog(result) { propertyResult = null }
+    }
+    deleteResult?.let { result -> AlertDialog(
+        onDismissRequest = { deleteResult = null },
+        title = { Text(stringResource(R.string.delete_permanently)) },
+        text = { Text(stringResource(R.string.delete_one_permanently, result.name) + " " + stringResource(R.string.permanent_delete_warning)) },
+        confirmButton = { Button(onClick = { deleteResult = null; onDeletePermanently(result) }) { Text(stringResource(R.string.delete_permanently)) } },
+        dismissButton = { TextButton(onClick = { deleteResult = null }) { Text(stringResource(R.string.cancel)) } },
+    ) }
 }
+
+@Composable
+private fun SearchActionDialog(
+    result: SearchResult,
+    onDismiss: () -> Unit,
+    onOpen: () -> Unit,
+    onReveal: () -> Unit,
+    onCopy: () -> Unit,
+    onMove: () -> Unit,
+    onShare: () -> Unit,
+    onFavorite: () -> Unit,
+    onProperties: () -> Unit,
+    onTrash: () -> Unit,
+    onDelete: () -> Unit,
+) = AlertDialog(
+    onDismissRequest = onDismiss,
+    title = { Text(result.name) },
+    text = { Column {
+        TextButton(onClick = onOpen) { Text(stringResource(R.string.open)) }
+        TextButton(onClick = onReveal) { Text(stringResource(R.string.show_in_folder)) }
+        TextButton(onClick = onCopy) { Text(stringResource(R.string.copy)) }
+        TextButton(onClick = onMove, enabled = result.writable) { Text(stringResource(R.string.move)) }
+        TextButton(onClick = onShare, enabled = !result.isDirectory) { Text(stringResource(R.string.share)) }
+        TextButton(onClick = onFavorite) { Text(stringResource(R.string.add_to_favorites)) }
+        TextButton(onClick = onProperties) { Text(stringResource(R.string.properties)) }
+        TextButton(onClick = onTrash, enabled = result.writable) { Text(stringResource(R.string.move_to_recycle_bin)) }
+        TextButton(onClick = onDelete, enabled = result.writable) { Text(stringResource(R.string.delete_permanently)) }
+    } },
+    confirmButton = {},
+    dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) } },
+)
+
+@Composable
+private fun SearchPropertiesDialog(result: SearchResult, onDismiss: () -> Unit) = AlertDialog(
+    onDismissRequest = onDismiss,
+    title = { Text(stringResource(R.string.properties)) },
+    text = { Column {
+        Text(stringResource(R.string.name) + ": " + result.name)
+        Text(stringResource(R.string.type) + ": " + result.type.name)
+        result.sizeBytes?.let { Text(stringResource(R.string.size) + ": " + Formatters.bytes(it)) }
+        result.modifiedAtMillis?.let { Text(stringResource(R.string.modified) + ": " + java.text.DateFormat.getDateTimeInstance().format(java.util.Date(it))) }
+        Text(stringResource(R.string.location) + ": " + result.parentLocation.displayName)
+    } },
+    confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.close)) } },
+)
 
 @Composable
 private fun AdvancedFiltersDialog(
@@ -257,7 +362,7 @@ private fun SearchStatus(total: Long, scanned: Long, active: Boolean, failures: 
 }
 
 @Composable
-private fun ResultList(results: List<SearchResult>, onOpen: (SearchResult) -> Unit, onReveal: (SearchResult) -> Unit, onFavorite: (SearchResult) -> Unit) {
+private fun ResultList(results: List<SearchResult>, onOpen: (SearchResult) -> Unit, onReveal: (SearchResult) -> Unit, onFavorite: (SearchResult) -> Unit, onActions: (SearchResult) -> Unit) {
     LazyColumn(Modifier.fillMaxSize()) {
         items(results, key = { it.id }) { result ->
             ListItem(
@@ -272,10 +377,10 @@ private fun ResultList(results: List<SearchResult>, onOpen: (SearchResult) -> Un
                 trailingContent = {
                     Row {
                         IconButton(onClick = { onFavorite(result) }) { Icon(Icons.Default.StarBorder, stringResource(R.string.add_to_favorites)) }
-                        AssistChip(onClick = { onReveal(result) }, label = { Text(stringResource(R.string.show_in_folder)) })
+                        IconButton(onClick = { onActions(result) }) { Icon(Icons.Default.MoreVert, stringResource(R.string.more)) }
                     }
                 },
-                modifier = Modifier.clickable { onOpen(result) },
+                modifier = Modifier.combinedClickable(onClick = { onOpen(result) }, onLongClick = { onActions(result) }),
             )
         }
     }

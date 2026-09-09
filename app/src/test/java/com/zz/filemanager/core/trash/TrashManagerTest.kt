@@ -7,6 +7,8 @@ import com.zz.filemanager.core.library.SearchHistoryItem
 import com.zz.filemanager.core.library.TrashRecord
 import com.zz.filemanager.core.library.UserLibraryManager
 import com.zz.filemanager.core.library.UserLibraryStore
+import com.zz.filemanager.core.library.LibraryItemStatus
+import com.zz.filemanager.core.library.stableIdentity
 import com.zz.filemanager.core.model.Breadcrumb
 import com.zz.filemanager.core.model.BrowserLocation
 import com.zz.filemanager.core.model.FileEntry
@@ -18,6 +20,11 @@ import com.zz.filemanager.core.storage.StorageCapability
 import com.zz.filemanager.core.storage.StorageProvider
 import com.zz.filemanager.core.storage.StorageProviderRegistry
 import com.zz.filemanager.core.storage.WritableStorageProvider
+import com.zz.filemanager.core.operation.FileOperation
+import com.zz.filemanager.core.operation.FileOperationController
+import com.zz.filemanager.core.operation.FileOperationState
+import com.zz.filemanager.core.operation.OperationExecutionHost
+import com.zz.filemanager.core.operation.OperationStore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.test.runTest
@@ -74,6 +81,92 @@ class TrashManagerTest {
         assertTrue(provider.hasPath("/root/report (1).pdf"))
     }
 
+    @Test fun nonNativeTrashQueuesStep2MoveWithoutDeletingSourceEarly() = runTest {
+        val provider = FakeWritableProvider(nativeMoves = false)
+        val store = MemoryLibraryStore()
+        val operations = MemoryOperationStore()
+        val controller = FileOperationController(operations, OperationExecutionHost {})
+        val manager = TrashManager(FakeRegistry(provider), store, UserLibraryManager(store, FakeRegistry(provider)), operationController = controller, operationStore = operations)
+        val source = provider.addFile("/root/archive.bin", 10_000)
+
+        val result = manager.trash(source, provider.root)
+
+        assertTrue(result is TrashResult.Queued)
+        assertTrue(provider.exists(source.reference))
+        assertEquals(com.zz.filemanager.core.library.TrashState.COPYING, store.trashRecords.value.single().state)
+        assertEquals(FileOperationState.QUEUED, operations.operations.value.single().state)
+        assertEquals(com.zz.filemanager.core.operation.FileOperationType.MOVE, operations.operations.value.single().type)
+    }
+
+    @Test fun startupReconciliationFinishesNativeMoveAfterInterruptedCatalogWrite() = runTest {
+        val provider = FakeWritableProvider()
+        val store = MemoryLibraryStore()
+        val manager = manager(provider, store)
+        val source = provider.addFile("/root/recover.txt", 10)
+        manager.trash(source, provider.root)
+        val record = store.trashRecords.value.single()
+        store.upsertTrash(record.copy(state = com.zz.filemanager.core.library.TrashState.MOVING))
+
+        manager.reconcile()
+
+        assertEquals(com.zz.filemanager.core.library.TrashState.TRASHED, store.trashRecords.value.single().state)
+    }
+
+    @Test fun favoriteAndRecentRemainLogicallyLinkedAcrossTrashAndRestore() = runTest {
+        val provider = FakeWritableProvider()
+        val store = MemoryLibraryStore()
+        val library = UserLibraryManager(store, FakeRegistry(provider), now = { 100L })
+        val manager = TrashManager(FakeRegistry(provider), store, library, now = { 200L })
+        val source = provider.addFile("/root/linked.txt", 10)
+        library.toggleFavorite(source, provider.root)
+        library.recordOpened(source, provider.root)
+
+        assertTrue(manager.trash(source, provider.root) is TrashResult.Success)
+        assertEquals(LibraryItemStatus.TRASHED, store.favorites.value.single().status)
+        assertEquals(LibraryItemStatus.TRASHED, store.recentFiles.value.single().status)
+        val record = store.trashRecords.value.single()
+        assertTrue(manager.restore(record.id) is TrashResult.Success)
+        assertEquals(LibraryItemStatus.AVAILABLE, store.favorites.value.single().status)
+        assertEquals(null, store.favorites.value.single().trashId)
+        assertEquals(LibraryItemStatus.AVAILABLE, store.recentFiles.value.single().status)
+    }
+
+    @Test fun favoritesAreUniqueRemovableAndValidateMissingReferences() = runTest {
+        val provider = FakeWritableProvider()
+        val store = MemoryLibraryStore()
+        val library = UserLibraryManager(store, FakeRegistry(provider), now = { 100L })
+        val source = provider.addFile("/root/favorite.txt", 10)
+        assertTrue(library.toggleFavorite(source, provider.root))
+        assertFalse(library.toggleFavorite(source, provider.root))
+        assertTrue(store.favorites.value.isEmpty())
+        library.toggleFavorite(source, provider.root)
+        val scoped = ScopedFileReference(source.reference, provider.root.rootReference, provider.root.storageId)
+        provider.delete(scoped)
+        library.validateFavorites()
+        assertEquals(LibraryItemStatus.UNAVAILABLE, store.favorites.value.single().status)
+        store.removeFavorite(source.reference.stableIdentity(provider.root.rootReference, provider.root.storageId))
+        assertTrue(store.favorites.value.isEmpty())
+    }
+
+    @Test fun missingOriginalParentCanRestoreToDeliberatelyChosenDestination() = runTest {
+        val provider = FakeWritableProvider()
+        val store = MemoryLibraryStore()
+        val manager = manager(provider, store)
+        val originalFolder = provider.addDirectory("/root/original")
+        val originalLocation = BrowserLocation("fake", originalFolder.id, "original", "/root/original", "/root", "root", true, true)
+        val alternateFolder = provider.addDirectory("/root/alternate")
+        val alternate = BrowserLocation("fake", alternateFolder.id, "alternate", "/root/alternate", "/root", "root", true, true)
+        val source = provider.addFile("/root/original/recover.txt", 10)
+        manager.trash(source, originalLocation)
+        provider.delete(ScopedFileReference(originalFolder.reference, "/root", "root"))
+        val record = store.trashRecords.value.single()
+
+        assertTrue(manager.restore(record.id) is TrashResult.MissingOriginal)
+        assertTrue(manager.restoreTo(record.id, alternate) is TrashResult.Success)
+        assertTrue(provider.hasPath("/root/alternate/recover.txt"))
+        assertTrue(store.trashRecords.value.isEmpty())
+    }
+
     private fun manager(provider: FakeWritableProvider, store: MemoryLibraryStore): TrashManager {
         val registry = FakeRegistry(provider)
         return TrashManager(registry, store, UserLibraryManager(store, registry), now = { 1_000L })
@@ -87,13 +180,14 @@ private class FakeRegistry(private val provider: FakeWritableProvider) : Storage
 
 private data class Node(var path: String, val directory: Boolean, val size: Long?)
 
-private class FakeWritableProvider : WritableStorageProvider {
+private class FakeWritableProvider(private val nativeMoves: Boolean = true) : WritableStorageProvider {
     override val id = "fake"
     val root = BrowserLocation(id, "/root", "Root", "/root", "/root", "root", true, true)
     private val nodes = linkedMapOf("/root" to Node("/root", true, null))
     var openOutputCount = 0
 
     fun addFile(path: String, size: Long): FileEntry { nodes[path] = Node(path, false, size); return entry(requireNotNull(nodes[path])) }
+    fun addDirectory(path: String): FileEntry { nodes[path] = Node(path, true, null); return entry(requireNotNull(nodes[path])) }
     fun hasPath(path: String) = path in nodes
     override suspend fun listChildren(location: BrowserLocation): List<FileEntry> {
         val prefix = location.reference.trimEnd('/') + "/"
@@ -128,7 +222,7 @@ private class FakeWritableProvider : WritableStorageProvider {
     override suspend fun findChild(parent: BrowserLocation, name: String): FileEntry? = nodes[parent.reference.trimEnd('/') + "/" + name]?.let(::entry)
     override suspend fun freeBytes(location: BrowserLocation): Long = 1L * 1024L * 1024L * 1024L
     override suspend fun isSameOrDescendant(source: ScopedFileReference, destination: BrowserLocation): Boolean = destination.reference.startsWith(requireNotNull(source.reference.path))
-    override suspend fun canMoveNative(item: ScopedFileReference, destination: BrowserLocation, newName: String): Boolean = destination.storageId == item.storageId && findChild(destination, newName) == null
+    override suspend fun canMoveNative(item: ScopedFileReference, destination: BrowserLocation, newName: String): Boolean = nativeMoves && destination.storageId == item.storageId && findChild(destination, newName) == null
     override suspend fun moveNative(item: ScopedFileReference, destination: BrowserLocation, newName: String): FileEntry? = move(requireNotNull(item.reference.path), destination.reference.trimEnd('/') + "/" + newName)
     override suspend fun replaceAtomically(staged: ScopedFileReference, existing: ScopedFileReference, finalName: String): FileEntry? {
         nodes.remove(requireNotNull(existing.reference.path))
@@ -147,6 +241,16 @@ private class FakeWritableProvider : WritableStorageProvider {
         node.path.substringAfterLast('/').substringAfterLast('.', "").takeIf { it.isNotEmpty() }, null,
         if (node.directory) FileEntryType.DIRECTORY else FileEntryType.GENERIC, node.size, 1L, null, node.path.substringAfterLast('/').startsWith('.'), true, true, null, "root", null,
     )
+}
+
+private class MemoryOperationStore : OperationStore {
+    override val operations = MutableStateFlow<List<FileOperation>>(emptyList())
+    override suspend fun initialize() = Unit
+    override suspend fun enqueue(operation: FileOperation) { operations.value = operations.value + operation }
+    override suspend fun get(id: String): FileOperation? = operations.value.firstOrNull { it.id == id }
+    override suspend fun save(operation: FileOperation) { operations.value = operations.value.map { if (it.id == operation.id) operation else it } }
+    override suspend fun nextRunnable(): FileOperation? = operations.value.firstOrNull { it.state == FileOperationState.QUEUED }
+    override suspend fun prune(nowMillis: Long) = Unit
 }
 
 private class MemoryLibraryStore : UserLibraryStore {

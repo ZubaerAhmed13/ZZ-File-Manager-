@@ -4,11 +4,15 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.zz.filemanager.core.library.FavoriteItem
 import com.zz.filemanager.core.library.UserLibraryRepository
+import com.zz.filemanager.core.library.RecentFile
+import com.zz.filemanager.core.library.ActivityEntry
+import com.zz.filemanager.core.library.ActivityKind
 import com.zz.filemanager.core.library.stableIdentity
 import com.zz.filemanager.core.model.FileEntryType
 import com.zz.filemanager.core.model.FileReference
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -29,5 +33,31 @@ class Step3UserLibraryInstrumentationTest {
         assertEquals("Invoice", recreated.searchHistory.value.first { it.normalizedQuery == "invoice" }.displayQuery)
         recreated.removeFavorite(id)
         recreated.clearSearchHistory()
+    }
+
+    @Test fun recentSearchAndActivityRetentionIsBoundedAndClearable() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val repository = UserLibraryRepository(context)
+        repository.initialize()
+        repository.clearRecentFiles()
+        repository.clearSearchHistory()
+        repository.clearActivityHistory()
+        repeat(60) { index ->
+            val reference = FileReference("local", "recent-$index", path = "/tmp/recent-$index")
+            repository.recordRecentFile(RecentFile("recent-$index", reference, "/tmp", "test", null, "recent-$index.txt", FileEntryType.TEXT, index.toLong()))
+            repository.recordSearch("query-$index", index.toLong())
+        }
+        repeat(110) { index -> repository.recordActivity(ActivityEntry("activity-$index", ActivityKind.COPIED, "Copied item", 1, index.toLong())) }
+        assertEquals(UserLibraryRepository.MAX_RECENT_FILES, repository.recentFiles.value.size)
+        assertEquals(UserLibraryRepository.MAX_SEARCH_HISTORY, repository.searchHistory.value.size)
+        assertEquals(UserLibraryRepository.MAX_ACTIVITY_HISTORY, repository.activityHistory.value.size)
+        repository.recordSearch("query-59", 1_000L)
+        assertEquals(1, repository.searchHistory.value.count { it.normalizedQuery == "query-59" })
+        repository.clearRecentFiles()
+        repository.clearSearchHistory()
+        repository.clearActivityHistory()
+        assertTrue(repository.recentFiles.value.isEmpty())
+        assertTrue(repository.searchHistory.value.isEmpty())
+        assertTrue(repository.activityHistory.value.isEmpty())
     }
 }

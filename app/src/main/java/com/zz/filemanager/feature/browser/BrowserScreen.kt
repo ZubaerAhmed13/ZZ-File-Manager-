@@ -158,6 +158,7 @@ fun BrowserScreen(
     var menuExpanded by remember { mutableStateOf(false) }
     var selectionMenuExpanded by remember { mutableStateOf(false) }
     var deleteRequested by remember { mutableStateOf(false) }
+    var deleteChoiceRequested by remember { mutableStateOf(false) }
     var renameRequested by remember { mutableStateOf(false) }
     var batchRenameRequested by remember { mutableStateOf(false) }
     var propertiesRequested by remember { mutableStateOf(false) }
@@ -292,7 +293,7 @@ fun BrowserScreen(
                     canDelete = selectedEntries.isNotEmpty() && selectedEntries.all { it.isWritable },
                     onCopy = { currentLocation?.let { operationsViewModel.copy(entries, it) } },
                     onMove = { currentLocation?.let { operationsViewModel.cut(entries, it) } },
-                    onTrash = { currentLocation?.let { operationsViewModel.trash(entries, it) } },
+                    onDelete = { deleteChoiceRequested = true },
                     onMore = { selectionMenuExpanded = true },
                 )
                 clipboard != null -> ClipboardBar(
@@ -395,6 +396,24 @@ fun BrowserScreen(
                 )
             }
         }
+    }
+
+    if (deleteChoiceRequested && currentLocation != null) {
+        AlertDialog(
+            onDismissRequest = { deleteChoiceRequested = false },
+            title = { Text(stringResource(R.string.delete)) },
+            text = { Column {
+                Text(stringResource(R.string.move_to_recycle_bin_explanation))
+                Spacer(Modifier.height(8.dp))
+                Text(if (selectedEntries.size == 1) stringResource(R.string.delete_one_permanently, selectedEntries.first().name) else stringResource(R.string.delete_many_permanently, selectedEntries.size))
+                Text(stringResource(R.string.permanent_delete_warning))
+            } },
+            confirmButton = { Button(onClick = { operationsViewModel.trash(entries, currentLocation); deleteChoiceRequested = false }) { Text(stringResource(R.string.move_to_recycle_bin)) } },
+            dismissButton = { Row {
+                TextButton(onClick = { deleteChoiceRequested = false; deleteRequested = true }) { Text(stringResource(R.string.delete_permanently)) }
+                TextButton(onClick = { deleteChoiceRequested = false }) { Text(stringResource(R.string.cancel)) }
+            } },
+        )
     }
 
     if (deleteRequested && currentLocation != null) {
@@ -534,7 +553,7 @@ private fun SelectionTopBar(selectedCount: Int, onClear: () -> Unit, onSelectAll
 }
 
 @Composable
-private fun SelectionActionBar(canDelete: Boolean, onCopy: () -> Unit, onMove: () -> Unit, onTrash: () -> Unit, onMore: () -> Unit) {
+private fun SelectionActionBar(canDelete: Boolean, onCopy: () -> Unit, onMove: () -> Unit, onDelete: () -> Unit, onMore: () -> Unit) {
     Surface(tonalElevation = 3.dp, shadowElevation = 6.dp) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
@@ -542,7 +561,7 @@ private fun SelectionActionBar(canDelete: Boolean, onCopy: () -> Unit, onMove: (
         ) {
             ActionButton(Icons.Default.ContentCopy, stringResource(R.string.copy), onCopy)
             ActionButton(Icons.Default.ContentCut, stringResource(R.string.move), onMove)
-            ActionButton(Icons.Default.Delete, stringResource(R.string.move_to_recycle_bin), onTrash, enabled = canDelete)
+            ActionButton(Icons.Default.Delete, stringResource(R.string.delete), onDelete, enabled = canDelete)
             ActionButton(Icons.Default.MoreVert, stringResource(R.string.more), onMore)
         }
     }

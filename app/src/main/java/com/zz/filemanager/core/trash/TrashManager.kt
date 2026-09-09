@@ -21,6 +21,8 @@ import com.zz.filemanager.core.operation.FileOperationState
 import com.zz.filemanager.core.operation.OperationSource
 import com.zz.filemanager.core.operation.OperationStore
 import java.util.UUID
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 enum class RestoreCollisionPolicy { KEEP_BOTH, REPLACE, CANCEL }
 
@@ -28,6 +30,7 @@ sealed interface TrashResult {
     data class Success(val record: TrashRecord) : TrashResult
     data class Queued(val record: TrashRecord, val operationId: String) : TrashResult
     data class Collision(val existing: FileEntry) : TrashResult
+    data class MissingOriginal(val record: TrashRecord) : TrashResult
     data class Unsupported(val reason: String) : TrashResult
     data class Failed(val reason: String) : TrashResult
 }
@@ -49,6 +52,8 @@ class TrashManager(
     private val operationStore: OperationStore? = null,
     private val now: () -> Long = { System.currentTimeMillis() },
 ) {
+    private val mutationMutex = Mutex()
+    private val activeMutations = mutableSetOf<String>()
     suspend fun recordPlatformTrash(entries: List<FileEntry>, parent: BrowserLocation) {
         val timestamp = now()
         entries.forEach { entry ->
@@ -80,7 +85,16 @@ class TrashManager(
         records.forEach { store.removeTrash(it.id) }
     }
 
-    suspend fun trash(entry: FileEntry, parent: BrowserLocation, operationId: String? = null): TrashResult {
+    suspend fun trash(entry: FileEntry, parent: BrowserLocation, operationId: String? = null): TrashResult = guarded(
+        "source:${entry.reference.providerId}:${entry.reference.opaqueId}",
+        TrashResult.Failed("A recycle operation for this item is already active."),
+    ) { trashInternal(entry, parent, operationId) }
+
+    private suspend fun trashInternal(entry: FileEntry, parent: BrowserLocation, operationId: String?): TrashResult {
+        store.initialize()
+        if (store.trashRecords.value.any { it.originalReference.providerId == entry.reference.providerId && it.originalReference.opaqueId == entry.reference.opaqueId && it.state != TrashState.DELETED }) {
+            return TrashResult.Failed("This item already has a Recycle Bin transaction.")
+        }
         if (entry.reference.providerId == "media") return TrashResult.Unsupported("Platform media confirmation is required.")
         val provider = providers.writableProviderFor(entry.reference.providerId)
             ?: return TrashResult.Unsupported("Recycle Bin is not supported for this location.")
@@ -139,7 +153,12 @@ class TrashManager(
         }
     }
 
-    suspend fun restore(recordId: String, policy: RestoreCollisionPolicy = RestoreCollisionPolicy.CANCEL): TrashResult {
+    suspend fun restore(recordId: String, policy: RestoreCollisionPolicy = RestoreCollisionPolicy.CANCEL): TrashResult = guarded(
+        "record:$recordId",
+        TrashResult.Failed("This Recycle Bin item is already being changed."),
+    ) { restoreInternal(recordId, policy) }
+
+    private suspend fun restoreInternal(recordId: String, policy: RestoreCollisionPolicy): TrashResult {
         val original = store.trashRecords.value.firstOrNull { it.id == recordId }
             ?: return TrashResult.Failed("Recycle item is unavailable.")
         if (original.state !in setOf(TrashState.TRASHED, TrashState.INTERRUPTED, TrashState.FAILED)) return TrashResult.Failed("Recycle item is busy.")
@@ -147,7 +166,7 @@ class TrashManager(
         val provider = providers.writableProviderFor(payload.reference.providerId)
             ?: return TrashResult.Unsupported("Original storage is unavailable.")
         if (!providers.providerFor(original.originalParent.providerId).existsLocation(original.originalParent)) {
-            return TrashResult.Unsupported("Original location is unavailable. Choose another destination.")
+            return TrashResult.MissingOriginal(original)
         }
         val existing = provider.findChild(original.originalParent, original.originalName)
         if (existing != null && policy == RestoreCollisionPolicy.CANCEL) return TrashResult.Collision(existing)
@@ -177,12 +196,58 @@ class TrashManager(
         }
     }
 
-    suspend fun deletePermanently(recordId: String): Boolean {
-        val original = store.trashRecords.value.firstOrNull { it.id == recordId } ?: return false
-        val payload = original.trashReference ?: return false
-        val provider = providers.writableProviderFor(payload.reference.providerId) ?: return false
-        store.upsertTrash(original.copy(state = TrashState.DELETE_PENDING, updatedAtMillis = now()))
+    /** Restores to a user-approved alternate SAF/local location using a native move when possible,
+     * otherwise the durable Step 2 move engine. The trash record is retained until that engine
+     * proves the destination and removes the payload. */
+    suspend fun restoreTo(recordId: String, destination: BrowserLocation): TrashResult = guarded(
+        "record:$recordId",
+        TrashResult.Failed("This Recycle Bin item is already being changed."),
+    ) { restoreToInternal(recordId, destination) }
+
+    private suspend fun restoreToInternal(recordId: String, destination: BrowserLocation): TrashResult {
+        val original = store.trashRecords.value.firstOrNull { it.id == recordId }
+            ?: return TrashResult.Failed("Recycle item is unavailable.")
+        if (original.state !in setOf(TrashState.TRASHED, TrashState.INTERRUPTED, TrashState.FAILED)) return TrashResult.Failed("Recycle item is busy.")
+        val payload = original.trashReference ?: return TrashResult.Failed("Recycle payload is missing.")
+        val payloadProvider = providers.writableProviderFor(payload.reference.providerId)
+            ?: return TrashResult.Unsupported("Recycle storage is unavailable.")
+        val destinationProvider = providers.writableProviderFor(destination.providerId)
+            ?: return TrashResult.Unsupported("Chosen destination is read-only.")
+        destinationProvider.findChild(destination, original.originalName)?.let { return TrashResult.Collision(it) }
         return try {
+            if (payload.reference.providerId == destination.providerId && payloadProvider.canMoveNative(payload, destination, original.originalName)) {
+                val moving = original.copy(state = TrashState.RESTORING, updatedAtMillis = now(), failureReason = null)
+                store.upsertTrash(moving)
+                val restored = payloadProvider.moveNative(payload, destination, original.originalName)
+                    ?: throw IllegalStateException("Native restore did not complete")
+                store.removeTrash(original.id)
+                restoreRelatedItems(original, restored)
+                cleanupContainer(payloadProvider, payload, original)
+                libraryManager.recordActivity(ActivityKind.RESTORED, "Restored ${original.originalName}", 1L, original.operationId)
+                TrashResult.Success(moving.copy(state = TrashState.DELETED, trashReference = ScopedFileReference(restored.reference, destination.rootReference, destination.storageId), updatedAtMillis = now()))
+            } else {
+                val controller = operationController ?: return TrashResult.Unsupported("Safe cross-location restore is unavailable.")
+                val operationId = controller.enqueueMove(
+                    listOf(OperationSource(payload.reference, payload.rootReference, payload.storageId, original.originalName, original.type == com.zz.filemanager.core.model.FileEntryType.DIRECTORY, original.sizeBytes, original.modifiedAtMillis, null)),
+                    destination,
+                )
+                val queued = original.copy(state = TrashState.RESTORING, operationId = operationId, updatedAtMillis = now(), failureReason = null)
+                store.upsertTrash(queued)
+                TrashResult.Queued(queued, operationId)
+            }
+        } catch (error: Throwable) {
+            val interrupted = original.copy(state = TrashState.INTERRUPTED, updatedAtMillis = now(), failureReason = error.message)
+            store.upsertTrash(interrupted)
+            TrashResult.Failed(error.message ?: "Restore was interrupted; the recycle payload was preserved.")
+        }
+    }
+
+    suspend fun deletePermanently(recordId: String): Boolean = guarded("record:$recordId", false) {
+        val original = store.trashRecords.value.firstOrNull { it.id == recordId } ?: return@guarded false
+        val payload = original.trashReference ?: return@guarded false
+        val provider = providers.writableProviderFor(payload.reference.providerId) ?: return@guarded false
+        store.upsertTrash(original.copy(state = TrashState.DELETE_PENDING, updatedAtMillis = now()))
+        return@guarded try {
             deleteTree(provider, payload, original)
             store.removeTrash(recordId)
             cleanupContainer(provider, payload, original)
@@ -239,14 +304,33 @@ class TrashManager(
     }
 
     suspend fun onOperationTerminal(operation: FileOperation): Boolean {
-        val records = store.trashRecords.value.filter { it.operationId == operation.id && it.state in setOf(TrashState.COPYING, TrashState.INTERRUPTED, TrashState.FAILED) }
+        val records = store.trashRecords.value.filter { it.operationId == operation.id && it.state in setOf(TrashState.COPYING, TrashState.RESTORING, TrashState.INTERRUPTED, TrashState.FAILED) }
         records.forEach { finalizeFallbackRecord(it, operation) }
         return records.isNotEmpty()
     }
 
     private suspend fun finalizeFallbackRecord(record: TrashRecord, operation: FileOperation) {
         val rootItem = operation.items.firstOrNull { it.rootItemId == it.id } ?: operation.items.firstOrNull()
+        val isRestoreOperation = record.state == TrashState.RESTORING || operation.items.firstOrNull()?.source?.reference?.opaqueId == record.trashReference?.reference?.opaqueId
         if (operation.state == FileOperationState.COMPLETED && rootItem?.resultReference != null) {
+            if (isRestoreOperation) {
+                val result = rootItem.resultReference
+                val metadata = providers.providerFor(result.reference.providerId).getMetadata(result.reference)
+                    ?: FileEntry(
+                        id = result.reference.opaqueId, reference = result.reference, name = record.originalName,
+                        extension = record.originalName.substringAfterLast('.', "").takeIf { it.isNotEmpty() }, mimeType = null,
+                        type = record.type, sizeBytes = record.sizeBytes, modifiedAtMillis = record.modifiedAtMillis,
+                        createdAtMillis = null, isHidden = false, isReadable = true, isWritable = true,
+                        childCount = null, storageId = result.storageId, thumbnailKey = null,
+                    )
+                store.removeTrash(record.id)
+                restoreRelatedItems(record, metadata)
+                val payload = record.trashReference
+                val provider = payload?.let { providers.writableProviderFor(it.reference.providerId) }
+                if (payload != null && provider != null) cleanupContainer(provider, payload, record)
+                libraryManager.recordActivity(ActivityKind.RESTORED, "Restored ${record.originalName}", 1L, operation.id)
+                return
+            }
             val completed = record.copy(trashReference = rootItem.resultReference, state = TrashState.TRASHED, updatedAtMillis = now(), failureReason = null)
             store.upsertTrash(completed)
             markRelatedItemsTrashed(completed)
@@ -404,5 +488,11 @@ class TrashManager(
             path = location.reference.takeUnless { isContentUri },
         )
         return exists(reference)
+    }
+
+    private suspend fun <T> guarded(key: String, busyResult: T, block: suspend () -> T): T {
+        val acquired = mutationMutex.withLock { activeMutations.add(key) }
+        if (!acquired) return busyResult
+        return try { block() } finally { mutationMutex.withLock { activeMutations.remove(key) } }
     }
 }

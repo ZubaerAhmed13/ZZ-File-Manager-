@@ -40,9 +40,12 @@ import com.zz.filemanager.core.library.RecentFile
 import com.zz.filemanager.core.model.FileEntry
 import com.zz.filemanager.core.model.FileEntryType
 import com.zz.filemanager.core.search.SearchResult
+import com.zz.filemanager.core.operation.ClipboardMode
+import com.zz.filemanager.core.operation.OperationClipboard
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
 import com.zz.filemanager.ui.theme.ZZFileManagerTheme
+import com.zz.filemanager.core.trash.TrashCleanupScheduler
 
 @Composable
 fun ZZFileManagerApp(container: AppContainer) {
@@ -73,6 +76,18 @@ fun ZZFileManagerApp(container: AppContainer) {
                 })
             }
         }
+        fun shareEntry(entry: FileEntry) {
+            val request = container.storage.openRequest(entry) ?: return
+            val uri = Uri.parse(request.uri)
+            runCatching {
+                context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                    type = request.mimeType ?: "*/*"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    clipData = android.content.ClipData.newUri(context.contentResolver, entry.name, uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }, context.getString(R.string.share)))
+            }
+        }
         fun searchResultEntry(result: SearchResult) = FileEntry(
             result.id, result.reference, result.name, result.name.substringAfterLast('.', "").takeIf { it.isNotEmpty() },
             result.mimeType, result.type, result.sizeBytes, result.modifiedAtMillis, null, result.name.startsWith('.'),
@@ -80,6 +95,7 @@ fun ZZFileManagerApp(container: AppContainer) {
         )
 
         LaunchedEffect(Unit) {
+            TrashCleanupScheduler.schedule(context)
             container.operationController.initialize()
             container.userLibrary.initialize()
             launch { container.operationLibrarySynchronizer.run() }
@@ -156,6 +172,32 @@ fun ZZFileManagerApp(container: AppContainer) {
                     },
                     onReveal = { openLocation(it.parentLocation) },
                     onFavorite = { result -> scope.launch { container.userLibraryManager.toggleFavorite(searchResultEntry(result), result.parentLocation) } },
+                    onCopy = { result ->
+                        val entry = searchResultEntry(result)
+                        container.operationClipboard.set(OperationClipboard(ClipboardMode.COPY, listOf(container.operationController.source(entry, result.parentLocation)), result.parentLocation, System.currentTimeMillis()))
+                    },
+                    onMove = { result ->
+                        val entry = searchResultEntry(result)
+                        container.operationClipboard.set(OperationClipboard(ClipboardMode.CUT, listOf(container.operationController.source(entry, result.parentLocation)), result.parentLocation, System.currentTimeMillis()))
+                    },
+                    onShare = { result -> shareEntry(searchResultEntry(result)) },
+                    onTrash = { result ->
+                        val entry = searchResultEntry(result)
+                        if (entry.reference.providerId == "media" && entry.reference.uri != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                            container.mediaStoreTrash.createRequest(listOf(Uri.parse(entry.reference.uri)), true)
+                        } else {
+                            scope.launch {
+                                when (container.trashManager.trash(entry, result.parentLocation)) {
+                                    is com.zz.filemanager.core.trash.TrashResult.Success,
+                                    is com.zz.filemanager.core.trash.TrashResult.Queued -> vm.dismissResult(result.id)
+                                    else -> Unit
+                                }
+                            }
+                            null
+                        }
+                    },
+                    onPlatformTrashConfirmed = { result -> scope.launch { container.trashManager.recordPlatformTrash(listOf(searchResultEntry(result)), result.parentLocation); vm.dismissResult(result.id) } },
+                    onDeletePermanently = { result -> scope.launch { container.operationController.enqueueDelete(listOf(container.operationController.source(searchResultEntry(result), result.parentLocation))); vm.dismissResult(result.id) } },
                     onClearHistory = { scope.launch { container.userLibrary.clearSearchHistory() } },
                 )
             }
@@ -182,7 +224,7 @@ fun ZZFileManagerApp(container: AppContainer) {
                 )
             }
             composable("recycle") {
-                val vm: RecycleBinViewModel = viewModel(factory = RecycleBinViewModel.Factory(container.userLibrary, container.trashManager, container.mediaStoreTrash))
+                val vm: RecycleBinViewModel = viewModel(factory = RecycleBinViewModel.Factory(container.userLibrary, container.trashManager, container.mediaStoreTrash, container.storage))
                 RecycleBinScreen(vm, onBack = { nav.popBackStack() })
             }
             composable("settings") {

@@ -143,6 +143,7 @@ class BrowserOperationsViewModel(
                     is TrashResult.Unsupported -> _messages.emit(R.string.recycle_not_supported)
                     is TrashResult.Failed -> _messages.emit(R.string.generic_operation_error)
                     is TrashResult.Collision -> _messages.emit(R.string.name_conflict_operation)
+                    is TrashResult.MissingOriginal -> _messages.emit(R.string.generic_operation_error)
                 }
             }
             val media = chosen.filter { it.reference.providerId == "media" && it.reference.uri != null }
