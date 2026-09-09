@@ -147,12 +147,12 @@ class ApkManager(
     private fun certificate(bytes: ByteArray): ApkCertificate? = runCatching {
         val cert = CertificateFactory.getInstance("X.509").generateCertificate(ByteArrayInputStream(bytes)) as X509Certificate
         ApkCertificate(
-            sha256 = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString(":") { "%02X".format(it) },
+            sha256 = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02X".format(it) },
             subject = cert.subjectX500Principal?.name,
             issuer = cert.issuerX500Principal?.name,
         )
     }.getOrElse {
-        runCatching { ApkCertificate(MessageDigest.getInstance("SHA-256").digest(bytes).joinToString(":") { b -> "%02X".format(b) }, null, null) }.getOrNull()
+        runCatching { ApkCertificate(MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { b -> "%02X".format(b) }, null, null) }.getOrNull()
     }
 
     @Suppress("DEPRECATION")

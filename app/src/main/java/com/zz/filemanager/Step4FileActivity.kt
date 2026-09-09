@@ -578,9 +578,10 @@ private fun TextViewerEditor(
             val doc = document
             if (doc?.mode == TextOpenMode.EDITABLE) FilledTonalButton(onClick = { edit = !edit }) { Text(if (edit) "View" else "Edit") }
             if (edit) {
+                // Keep the primary save action visible on compact phones; secondary history actions may scroll.
+                IconButton(enabled = dirty, onClick = { scope.launch { save() } }) { Icon(Icons.Default.Save, "Save") }
                 IconButton(enabled = buffer?.canUndo == true, onClick = { editorText = buffer?.undo() ?: editorText }) { Icon(Icons.Default.Undo, "Undo") }
                 IconButton(enabled = buffer?.canRedo == true, onClick = { editorText = buffer?.redo() ?: editorText }) { Icon(Icons.Default.Redo, "Redo") }
-                IconButton(enabled = dirty, onClick = { scope.launch { save() } }) { Icon(Icons.Default.Save, "Save") }
                 TextButton(onClick = { saveAsDialog = true }) { Text("Save As") }
             }
         }
@@ -968,17 +969,7 @@ private fun ApkViewer(container: AppContainer, entry: FileEntry, snackbar: Snack
                 Property("SDK", "min ${meta.minSdk ?: "?"} • target ${meta.targetSdk}")
                 Property("Size", Formatters.bytes(meta.apkSizeBytes ?: 0L))
                 Property("Installed", if (meta.installed) "Yes" else "No")
-                HorizontalDivider()
-                Text("Certificates", style = MaterialTheme.typography.titleMedium)
-                meta.certificates.forEach { cert ->
-                    Property("SHA-256", cert.sha256)
-                    cert.subject?.let { Property("Subject", it) }
-                    cert.issuer?.let { Property("Issuer", it) }
-                }
-                HorizontalDivider()
-                Text("Declared permissions (${meta.permissions.size})", style = MaterialTheme.typography.titleMedium)
-                meta.permissions.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
-                Spacer(Modifier.height(8.dp))
+                // Keep the explicit install action with the primary APK facts instead of below long permission lists.
                 Button(onClick = {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
                         context.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}")))
@@ -1002,6 +993,17 @@ private fun ApkViewer(container: AppContainer, entry: FileEntry, snackbar: Snack
                     }
                 }) { Text("Install with Android Package Installer") }
                 Text("Installation is always explicit and confirmed by Android. APK inspection never executes application code.", style = MaterialTheme.typography.bodySmall)
+                HorizontalDivider()
+                Text("Certificates", style = MaterialTheme.typography.titleMedium)
+                meta.certificates.forEach { cert ->
+                    Property("SHA-256", cert.sha256)
+                    cert.subject?.let { Property("Subject", it) }
+                    cert.issuer?.let { Property("Issuer", it) }
+                }
+                HorizontalDivider()
+                Text("Declared permissions (${meta.permissions.size})", style = MaterialTheme.typography.titleMedium)
+                meta.permissions.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
+                Spacer(Modifier.height(8.dp))
             }
         }
     }
