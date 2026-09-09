@@ -1,4 +1,7 @@
-@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@file:OptIn(
+    androidx.compose.foundation.ExperimentalFoundationApi::class,
+    androidx.compose.material3.ExperimentalMaterial3Api::class,
+)
 
 package com.zz.filemanager
 
@@ -301,7 +304,7 @@ private fun ImageViewer(container: AppContainer, entry: FileEntry) {
     }
 }
 
-private fun decodeSampled(container: AppContainer, entry: FileEntry, reqWidth: Int, reqHeight: Int): Bitmap? {
+private suspend fun decodeSampled(container: AppContainer, entry: FileEntry, reqWidth: Int, reqHeight: Int): Bitmap? {
     val provider = container.storage.providerFor(entry.reference.providerId)
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     provider.openInputStream(entry.reference).use { BitmapFactory.decodeStream(it, null, bounds) }
@@ -635,7 +638,7 @@ private fun ApkViewer(container: AppContainer, entry: FileEntry, snackbar: Snack
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var metadata by remember(entry.id) { mutableStateOf<ApkMetadata?>(null) }
-    var error by remember { mutableStateOf<String?>(null) }
+    var error by remember(entry.id) { mutableStateOf<String?>(null) }
     LaunchedEffect(entry.id) {
         runCatching { container.apkManager.inspect(entry) }
             .onSuccess { metadata = it }
