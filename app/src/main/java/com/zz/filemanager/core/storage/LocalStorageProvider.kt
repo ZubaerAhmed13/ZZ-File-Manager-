@@ -19,6 +19,7 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.OutputStream
+import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.UUID
@@ -115,11 +116,54 @@ class LocalStorageProvider(private val context: Context) : WritableStorageProvid
         destinationFile == sourceFile || (sourceFile.isDirectory && isInside(destinationFile, sourceFile))
     }
 
+    override suspend fun canMoveNative(item: ScopedFileReference, destination: BrowserLocation, newName: String): Boolean = withContext(Dispatchers.IO) {
+        requireSafeLeafName(newName)
+        val source = scoped(item)
+        val destinationDirectory = validated(destination.reference, destination.rootReference)
+        if (!destinationDirectory.canWrite()) return@withContext false
+        val target = File(destinationDirectory, newName)
+        if (target.exists()) return@withContext false
+        runCatching { Files.getFileStore(source.toPath()) == Files.getFileStore(destinationDirectory.toPath()) }.getOrDefault(false)
+    }
+
     override suspend fun moveNative(item: ScopedFileReference, destination: BrowserLocation, newName: String): FileEntry? = withContext(Dispatchers.IO) {
         requireSafeLeafName(newName); val source = scoped(item); val destinationDirectory = validated(destination.reference, destination.rootReference); if (!destinationDirectory.canWrite()) throw StorageAccessException.ReadOnly()
         val target = File(destinationDirectory, newName); if (target.exists()) return@withContext null
         val sameFileStore = runCatching { Files.getFileStore(source.toPath()) == Files.getFileStore(destinationDirectory.toPath()) }.getOrDefault(false); if (!sameFileStore) return@withContext null
         try { runCatching { Files.move(source.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE) }.recoverCatching { Files.move(source.toPath(), target.toPath()) }.getOrThrow(); toEntry(target, destination.storageId) } catch (error: Throwable) { throw mapWriteFailure(error) }
+    }
+
+    override suspend fun replaceAtomically(
+        staged: ScopedFileReference,
+        existing: ScopedFileReference,
+        finalName: String,
+    ): FileEntry? = withContext(Dispatchers.IO) {
+        requireSafeLeafName(finalName)
+        val stagedFile = scoped(staged)
+        val existingFile = scoped(existing)
+        if (!stagedFile.exists() || !existingFile.exists()) throw StorageAccessException.Unavailable()
+        val parent = existingFile.parentFile ?: throw StorageAccessException.Io()
+        val stagedParent = stagedFile.parentFile ?: throw StorageAccessException.Io()
+        if (stagedParent.canonicalFile != parent.canonicalFile) return@withContext null
+        val target = File(parent, finalName).canonicalFile
+        if (target != existingFile.canonicalFile) return@withContext null
+        val sameFileStore = runCatching { Files.getFileStore(stagedFile.toPath()) == Files.getFileStore(existingFile.toPath()) }.getOrDefault(false)
+        if (!sameFileStore) return@withContext null
+        try {
+            Files.move(
+                stagedFile.toPath(),
+                existingFile.toPath(),
+                StandardCopyOption.ATOMIC_MOVE,
+                StandardCopyOption.REPLACE_EXISTING,
+            )
+            toEntry(existingFile, existing.storageId)
+        } catch (_: AtomicMoveNotSupportedException) {
+            null
+        } catch (error: UnsupportedOperationException) {
+            null
+        } catch (error: Throwable) {
+            throw mapWriteFailure(error)
+        }
     }
 
     private fun toEntry(file: File, storageId: String): FileEntry {
