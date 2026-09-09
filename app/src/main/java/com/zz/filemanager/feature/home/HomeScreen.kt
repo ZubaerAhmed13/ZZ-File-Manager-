@@ -174,6 +174,14 @@ fun HomeScreen(
                         Row(Modifier.padding(16.dp)) { Icon(Icons.Default.Search, null); Spacer(Modifier.padding(4.dp)); Text(stringResource(R.string.search_files_folders)) }
                     }
                 }
+                item { SectionTitle(stringResource(R.string.quick_access)) }
+                item {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                        TextButton(onClick = onOpenFavorites) { Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.Star, null); Text(stringResource(R.string.favorites)) } }
+                        TextButton(onClick = onOpenRecent) { Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.History, null); Text(stringResource(R.string.recent)) } }
+                        TextButton(onClick = onOpenTrash) { Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.DeleteOutline, null); Text(stringResource(R.string.recycle_bin)) } }
+                    }
+                }
                 if (!state.broadStorageAccess) item { PermissionCard(::requestBroadAccess) }
                 item { SectionTitle(stringResource(R.string.storage)) }
                 items(state.storageLocations, key = { it.id }) { StorageCard(it, onOpenLocation) }
@@ -206,14 +214,6 @@ fun HomeScreen(
                         CategoryButton(MediaCategory.DOCUMENTS, R.string.documents, Icons.Default.Description, ::openCategory)
                         CategoryButton(MediaCategory.DOWNLOADS, R.string.downloads, Icons.Default.Download, ::openCategory)
                         CategoryButton(MediaCategory.APKS, R.string.apks, Icons.Default.Android, ::openCategory)
-                    }
-                }
-                item { SectionTitle(stringResource(R.string.quick_access)) }
-                item {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                        TextButton(onClick = onOpenFavorites) { Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.Star, null); Text(stringResource(R.string.favorites)) } }
-                        TextButton(onClick = onOpenRecent) { Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.History, null); Text(stringResource(R.string.recent)) } }
-                        TextButton(onClick = onOpenTrash) { Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.DeleteOutline, null); Text(stringResource(R.string.recycle_bin)) } }
                     }
                 }
                 if (state.recentLocations.isNotEmpty()) {
