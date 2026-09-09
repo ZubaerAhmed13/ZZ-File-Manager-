@@ -6,10 +6,14 @@
 package com.zz.filemanager.feature.browser
 
 import android.content.ActivityNotFoundException
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -60,10 +64,12 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Slideshow
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.TableChart
 import androidx.compose.material.icons.filled.VideoFile
 import androidx.compose.material3.AlertDialog
@@ -138,6 +144,7 @@ fun BrowserScreen(
     thumbnails: ThumbnailRepository,
     onExitBrowser: () -> Unit,
     onRequestStorageAccess: () -> Unit,
+    onOpenSearch: (BrowserLocation) -> Unit = {},
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val selectedIds by operationsViewModel.selectedIds.collectAsStateWithLifecycle()
@@ -145,6 +152,9 @@ fun BrowserScreen(
     val operations by operationsViewModel.operations.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
+    val mediaTrashLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        operationsViewModel.onMediaTrashResult(result.resultCode == Activity.RESULT_OK)
+    }
     var menuExpanded by remember { mutableStateOf(false) }
     var selectionMenuExpanded by remember { mutableStateOf(false) }
     var deleteRequested by remember { mutableStateOf(false) }
@@ -195,6 +205,15 @@ fun BrowserScreen(
         }
     }
 
+    LaunchedEffect(operationsViewModel) {
+        operationsViewModel.messages.collect { message -> snackbar.showSnackbar(context.getString(message)) }
+    }
+    LaunchedEffect(operationsViewModel) {
+        operationsViewModel.mediaTrashRequests.collect { request ->
+            mediaTrashLauncher.launch(IntentSenderRequest.Builder(request.intentSender).build())
+        }
+    }
+
     LaunchedEffect(operations) {
         val newest = operations.filter { it.state.isTerminal }.maxByOrNull { it.updatedAtMillis }
         if (newest != null && newest.updatedAtMillis > lastTerminalRefresh) {
@@ -228,6 +247,7 @@ fun BrowserScreen(
                     onRefresh = viewModel::refresh,
                     onToggleView = { mode -> viewModel.setViewMode(if (mode == ViewMode.LIST) ViewMode.GRID else ViewMode.LIST) },
                     onOpenOperations = { showOperations = true },
+                    onOpenSearch = { currentLocation?.let(onOpenSearch) },
                     onMenu = { menuExpanded = true },
                 )
                 DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
@@ -244,6 +264,11 @@ fun BrowserScreen(
                     DropdownMenuItem(
                         text = { Text(stringResource(R.string.show_hidden)) },
                         onClick = { viewModel.toggleHidden(); menuExpanded = false },
+                    )
+                    if (currentLocation != null) DropdownMenuItem(
+                        text = { Text(stringResource(R.string.add_to_favorites)) },
+                        leadingIcon = { Icon(Icons.Default.StarBorder, null) },
+                        onClick = { operationsViewModel.toggleCurrentFolderFavorite(currentLocation); menuExpanded = false },
                     )
                     if (currentLocation?.writable == true) {
                         HorizontalDivider()
@@ -267,7 +292,7 @@ fun BrowserScreen(
                     canDelete = selectedEntries.isNotEmpty() && selectedEntries.all { it.isWritable },
                     onCopy = { currentLocation?.let { operationsViewModel.copy(entries, it) } },
                     onMove = { currentLocation?.let { operationsViewModel.cut(entries, it) } },
-                    onDelete = { deleteRequested = true },
+                    onTrash = { currentLocation?.let { operationsViewModel.trash(entries, it) } },
                     onMore = { selectionMenuExpanded = true },
                 )
                 clipboard != null -> ClipboardBar(
@@ -353,6 +378,16 @@ fun BrowserScreen(
                         onClick = { propertiesRequested = true; selectionMenuExpanded = false },
                     )
                 }
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.add_to_favorites)) },
+                    leadingIcon = { Icon(Icons.Default.StarBorder, null) },
+                    onClick = { currentLocation?.let { operationsViewModel.toggleFavorite(entries, it) }; selectionMenuExpanded = false },
+                )
+                if (selectedEntries.isNotEmpty() && selectedEntries.all { it.isWritable }) DropdownMenuItem(
+                    text = { Text(stringResource(R.string.delete_permanently)) },
+                    leadingIcon = { Icon(Icons.Default.Delete, null) },
+                    onClick = { deleteRequested = true; selectionMenuExpanded = false },
+                )
                 DropdownMenuItem(
                     text = { Text(stringResource(R.string.select_all)) },
                     leadingIcon = { Icon(Icons.Default.SelectAll, null) },
@@ -445,6 +480,7 @@ private fun BrowserTopBar(
     onRefresh: () -> Unit,
     onToggleView: (ViewMode) -> Unit,
     onOpenOperations: () -> Unit,
+    onOpenSearch: () -> Unit,
     onMenu: () -> Unit,
 ) {
     TopAppBar(
@@ -464,6 +500,7 @@ private fun BrowserTopBar(
                 )
             }
             IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.refresh)) }
+            IconButton(onClick = onOpenSearch) { Icon(Icons.Default.Search, contentDescription = stringResource(R.string.search)) }
             IconButton(onClick = onOpenOperations) {
                 Box(contentAlignment = Alignment.TopEnd) {
                     Icon(Icons.Default.Sync, contentDescription = stringResource(R.string.file_operations))
@@ -497,7 +534,7 @@ private fun SelectionTopBar(selectedCount: Int, onClear: () -> Unit, onSelectAll
 }
 
 @Composable
-private fun SelectionActionBar(canDelete: Boolean, onCopy: () -> Unit, onMove: () -> Unit, onDelete: () -> Unit, onMore: () -> Unit) {
+private fun SelectionActionBar(canDelete: Boolean, onCopy: () -> Unit, onMove: () -> Unit, onTrash: () -> Unit, onMore: () -> Unit) {
     Surface(tonalElevation = 3.dp, shadowElevation = 6.dp) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
@@ -505,7 +542,7 @@ private fun SelectionActionBar(canDelete: Boolean, onCopy: () -> Unit, onMove: (
         ) {
             ActionButton(Icons.Default.ContentCopy, stringResource(R.string.copy), onCopy)
             ActionButton(Icons.Default.ContentCut, stringResource(R.string.move), onMove)
-            ActionButton(Icons.Default.Delete, stringResource(R.string.delete), onDelete, enabled = canDelete)
+            ActionButton(Icons.Default.Delete, stringResource(R.string.move_to_recycle_bin), onTrash, enabled = canDelete)
             ActionButton(Icons.Default.MoreVert, stringResource(R.string.more), onMore)
         }
     }
@@ -643,7 +680,7 @@ private fun DeleteConfirmationDialog(selected: List<FileEntry>, onDismiss: () ->
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.delete_permanently)) },
         text = { Column { Text(message); Spacer(Modifier.height(8.dp)); Text(stringResource(R.string.delete_permanent_warning), color = MaterialTheme.colorScheme.error) } },
-        confirmButton = { Button(onClick = onConfirm) { Text(stringResource(R.string.delete)) } },
+        confirmButton = { Button(onClick = onConfirm) { Text(stringResource(R.string.delete_permanently)) } },
         dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) } },
     )
 }

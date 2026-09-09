@@ -1,8 +1,8 @@
-name: Android Step 2 CI
+name: Android Step 3 CI
 
 on:
   push:
-    branches: [ main, 'step1/**', 'step2/**' ]
+    branches: [ main, 'step1/**', 'step2/**', 'step3/**' ]
   pull_request:
     branches: [ main ]
 
@@ -13,11 +13,11 @@ permissions:
 # rapid Step 2 fixes from queuing obsolete full emulator runs while preserving
 # the complete gate for the exact current head.
 concurrency:
-  group: android-step2-${{ github.workflow }}-${{ github.ref }}
+  group: android-step3-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  certify-step2-api35:
+  certify-step3-api35:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

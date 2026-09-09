@@ -16,6 +16,16 @@ import com.zz.filemanager.core.operation.FileOperationController
 import com.zz.filemanager.core.operation.OperationClipboard
 import com.zz.filemanager.core.operation.OperationClipboardRepository
 import com.zz.filemanager.core.storage.StorageRepository
+import com.zz.filemanager.R
+import com.zz.filemanager.core.library.UserLibraryManager
+import com.zz.filemanager.core.trash.TrashManager
+import com.zz.filemanager.core.trash.TrashResult
+import com.zz.filemanager.core.trash.MediaStoreTrashGateway
+import android.app.PendingIntent
+import android.net.Uri
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -25,11 +35,19 @@ class BrowserOperationsViewModel(
     private val controller: FileOperationController,
     private val clipboardRepository: OperationClipboardRepository,
     private val storage: StorageRepository,
+    private val libraryManager: UserLibraryManager? = null,
+    private val trashManager: TrashManager? = null,
+    private val mediaStoreTrash: MediaStoreTrashGateway? = null,
 ) : ViewModel() {
     private val _selectedIds = MutableStateFlow<Set<String>>(emptySet())
     val selectedIds: StateFlow<Set<String>> = _selectedIds.asStateFlow()
     val clipboard: StateFlow<OperationClipboard?> = clipboardRepository.clipboard
     val operations: StateFlow<List<FileOperation>> = controller.operations
+    private val _messages = MutableSharedFlow<Int>(extraBufferCapacity = 4)
+    val messages: SharedFlow<Int> = _messages.asSharedFlow()
+    private val _mediaTrashRequests = MutableSharedFlow<PendingIntent>(extraBufferCapacity = 1)
+    val mediaTrashRequests: SharedFlow<PendingIntent> = _mediaTrashRequests.asSharedFlow()
+    private var pendingMediaTrash: Pair<List<FileEntry>, BrowserLocation>? = null
 
     init {
         viewModelScope.launch { controller.initialize() }
@@ -111,6 +129,51 @@ class BrowserOperationsViewModel(
         viewModelScope.launch { controller.enqueueDelete(sources) }
     }
 
+    fun trash(entries: List<FileEntry>, location: BrowserLocation) {
+        val chosen = selectedEntries(entries)
+        if (chosen.isEmpty()) return
+        clearSelection()
+        viewModelScope.launch {
+            val manager = trashManager
+            if (manager == null) { _messages.emit(R.string.recycle_not_supported); return@launch }
+            chosen.filterNot { it.reference.providerId == "media" }.forEach { entry ->
+                when (manager.trash(entry, location)) {
+                    is TrashResult.Success -> Unit
+                    is TrashResult.Unsupported -> _messages.emit(R.string.recycle_not_supported)
+                    is TrashResult.Failed -> _messages.emit(R.string.generic_operation_error)
+                    is TrashResult.Collision -> _messages.emit(R.string.name_conflict_operation)
+                }
+            }
+            val media = chosen.filter { it.reference.providerId == "media" && it.reference.uri != null }
+            if (media.isNotEmpty()) {
+                val gateway = mediaStoreTrash
+                if (gateway == null || android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.R) {
+                    _messages.emit(R.string.recycle_not_supported)
+                } else {
+                    pendingMediaTrash = media to location
+                    _mediaTrashRequests.emit(gateway.createRequest(media.map { Uri.parse(it.reference.uri) }, true))
+                }
+            }
+        }
+    }
+
+    fun onMediaTrashResult(confirmed: Boolean) {
+        val pending = pendingMediaTrash ?: return
+        pendingMediaTrash = null
+        if (!confirmed) return
+        viewModelScope.launch { trashManager?.recordPlatformTrash(pending.first, pending.second) }
+    }
+
+    fun toggleFavorite(entries: List<FileEntry>, location: BrowserLocation) {
+        val chosen = selectedEntries(entries)
+        if (chosen.isEmpty()) return
+        viewModelScope.launch { chosen.forEach { libraryManager?.toggleFavorite(it, location) }; clearSelection() }
+    }
+
+    fun toggleCurrentFolderFavorite(location: BrowserLocation) {
+        viewModelScope.launch { libraryManager?.favoriteCurrentFolder(location) }
+    }
+
     fun rename(entry: FileEntry, location: BrowserLocation, newName: String) {
         clearSelection()
         viewModelScope.launch {
@@ -168,9 +231,12 @@ class BrowserOperationsViewModel(
         private val controller: FileOperationController,
         private val clipboard: OperationClipboardRepository,
         private val storage: StorageRepository,
+        private val libraryManager: UserLibraryManager? = null,
+        private val trashManager: TrashManager? = null,
+        private val mediaStoreTrash: MediaStoreTrashGateway? = null,
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T =
-            BrowserOperationsViewModel(controller, clipboard, storage) as T
+            BrowserOperationsViewModel(controller, clipboard, storage, libraryManager, trashManager, mediaStoreTrash) as T
     }
 }

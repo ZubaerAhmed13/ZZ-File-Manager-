@@ -220,6 +220,52 @@ class SafStorageProvider(private val context: Context) : WritableStorageProvider
 
     override suspend fun freeBytes(location: BrowserLocation): Long? = null
 
+    override suspend fun canMoveNative(
+        item: ScopedFileReference,
+        destination: BrowserLocation,
+        newName: String,
+    ): Boolean = withContext(Dispatchers.IO) {
+        requireSafeLeafName(newName)
+        if (item.reference.providerId != ID || destination.providerId != ID || item.rootReference != destination.rootReference) return@withContext false
+        val sourceUri = validateScopedUri(item)
+        if (documentFlags(sourceUri) and DocumentsContract.Document.FLAG_SUPPORTS_MOVE == 0) return@withContext false
+        if (findChildInternal(destination, newName) != null) return@withContext false
+        val tree = Uri.parse(item.rootReference)
+        val rootId = treeDocumentId(tree) ?: return@withContext false
+        val sourceId = DocumentsContract.getDocumentId(sourceUri)
+        findPathByTraversal(tree, rootId, sourceId)?.size?.let { it >= 2 } == true
+    }
+
+    override suspend fun moveNative(
+        item: ScopedFileReference,
+        destination: BrowserLocation,
+        newName: String,
+    ): FileEntry? = withContext(Dispatchers.IO) {
+        if (!canMoveNative(item, destination, newName)) return@withContext null
+        val tree = Uri.parse(item.rootReference)
+        val rootId = treeDocumentId(tree) ?: return@withContext null
+        val sourceUri = validateScopedUri(item)
+        val sourceId = DocumentsContract.getDocumentId(sourceUri)
+        val path = findPathByTraversal(tree, rootId, sourceId) ?: return@withContext null
+        val parentId = path.getOrNull(path.lastIndex - 1) ?: return@withContext null
+        val sourceParent = DocumentsContract.buildDocumentUriUsingTree(tree, parentId)
+        val destinationUri = documentUriFor(destination)
+        try {
+            val movedUri = DocumentsContract.moveDocument(context.contentResolver, sourceUri, sourceParent, destinationUri)
+                ?: throw StorageAccessException.Io()
+            val moved = documentForUri(movedUri) ?: throw StorageAccessException.Unavailable()
+            val currentName = moved.name
+            val finalUri = if (currentName != newName) {
+                DocumentsContract.renameDocument(context.contentResolver, movedUri, newName)
+                    ?: throw StorageAccessException.Io()
+            } else movedUri
+            val finalDocument = documentForUri(finalUri) ?: throw StorageAccessException.Unavailable()
+            toEntry(finalDocument, destination.storageId)
+        } catch (error: SecurityException) {
+            throw StorageAccessException.PermissionRequired(error)
+        }
+    }
+
     override suspend fun isSameOrDescendant(
         source: ScopedFileReference,
         destination: BrowserLocation,

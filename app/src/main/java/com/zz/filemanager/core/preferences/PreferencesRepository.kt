@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.zz.filemanager.core.model.BrowserLocation
 import com.zz.filemanager.core.model.SortConfiguration
@@ -28,6 +29,7 @@ class PreferencesRepository(private val context: Context) : BrowserPreferences {
         val recentLocations = stringPreferencesKey("recent_locations")
         val safLocations = stringPreferencesKey("saf_locations")
         val lastLocation = stringPreferencesKey("last_location")
+        val trashRetentionDays = intPreferencesKey("trash_retention_days")
     }
 
     val theme: Flow<ThemeMode> = context.zzPreferences.data.map { prefs -> prefs[Keys.theme]?.let { enumOrNull<ThemeMode>(it) } ?: ThemeMode.SYSTEM }
@@ -44,6 +46,7 @@ class PreferencesRepository(private val context: Context) : BrowserPreferences {
     val recentLocations: Flow<List<BrowserLocation>> = context.zzPreferences.data.map { BrowserLocationCodec.decodeList(it[Keys.recentLocations].orEmpty()) }
     val safLocations: Flow<List<BrowserLocation>> = context.zzPreferences.data.map { BrowserLocationCodec.decodeList(it[Keys.safLocations].orEmpty()) }
     val lastLocation: Flow<BrowserLocation?> = context.zzPreferences.data.map { it[Keys.lastLocation]?.let(BrowserLocationCodec::decode) }
+    val trashRetentionDays: Flow<Int> = context.zzPreferences.data.map { it[Keys.trashRetentionDays] ?: 30 }
 
     suspend fun setTheme(value: ThemeMode) { context.zzPreferences.edit { it[Keys.theme] = value.name } }
     override suspend fun setViewMode(value: ViewMode) { context.zzPreferences.edit { it[Keys.viewMode] = value.name } }
@@ -53,6 +56,7 @@ class PreferencesRepository(private val context: Context) : BrowserPreferences {
     override suspend fun setSortDirection(value: SortDirection) { context.zzPreferences.edit { it[Keys.sortDirection] = value.name } }
     suspend fun setLastLocation(value: BrowserLocation) { context.zzPreferences.edit { it[Keys.lastLocation] = BrowserLocationCodec.encode(value) } }
     suspend fun clearLastLocation() { context.zzPreferences.edit { it.remove(Keys.lastLocation) } }
+    suspend fun setTrashRetentionDays(days: Int) { require(days in setOf(-1, 7, 30, 60, 90)); context.zzPreferences.edit { it[Keys.trashRetentionDays] = days } }
 
     suspend fun addRecent(location: BrowserLocation) = context.zzPreferences.edit { prefs ->
         val current = BrowserLocationCodec.decodeList(prefs[Keys.recentLocations].orEmpty())
@@ -62,6 +66,8 @@ class PreferencesRepository(private val context: Context) : BrowserPreferences {
         }.take(12)
         prefs[Keys.recentLocations] = BrowserLocationCodec.encodeList(next)
     }
+
+    suspend fun clearRecentLocations() = context.zzPreferences.edit { it.remove(Keys.recentLocations) }
 
     suspend fun addSafLocation(location: BrowserLocation) = context.zzPreferences.edit { prefs ->
         val current = BrowserLocationCodec.decodeList(prefs[Keys.safLocations].orEmpty())

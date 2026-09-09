@@ -22,6 +22,7 @@ import com.zz.filemanager.core.model.OpenFileRequest
 import com.zz.filemanager.core.model.StorageLocation
 import com.zz.filemanager.core.model.StorageType
 import com.zz.filemanager.core.preferences.PreferencesRepository
+import com.zz.filemanager.core.search.SearchRootSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -30,7 +31,7 @@ import java.io.File
 class StorageRepository(
     private val context: Context,
     private val preferences: PreferencesRepository,
-) : BrowserStorage, StorageProviderRegistry {
+) : BrowserStorage, StorageProviderRegistry, SearchRootSource {
     private val providers: Map<String, StorageProvider> = listOf(
         LocalStorageProvider(context), SafStorageProvider(context), MediaStoreProvider(context)
     ).associateBy { it.id }
@@ -51,6 +52,12 @@ class StorageRepository(
             )
         }
         local + saf
+    }
+
+    override suspend fun accessibleRoots(): List<BrowserLocation> {
+        val storageRoots = discoverStorageLocations().filter { it.available && it.readable }.map { it.root }
+        val mediaRoots = MediaCategory.entries.map(::mediaLocation)
+        return (storageRoots + mediaRoots).distinctBy { it.identity }
     }
 
     suspend fun validSafLocations(): List<BrowserLocation> = withContext(Dispatchers.IO) {

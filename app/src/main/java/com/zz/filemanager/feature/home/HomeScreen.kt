@@ -28,6 +28,10 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.VideoFile
 import androidx.compose.material3.Button
@@ -64,7 +68,15 @@ import com.zz.filemanager.core.model.StorageLocation
 import com.zz.filemanager.core.util.Formatters
 
 @Composable
-fun HomeScreen(viewModel: HomeViewModel, onOpenLocation: (BrowserLocation) -> Unit, onOpenSettings: () -> Unit) {
+fun HomeScreen(
+    viewModel: HomeViewModel,
+    onOpenLocation: (BrowserLocation) -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenSearch: () -> Unit,
+    onOpenFavorites: () -> Unit,
+    onOpenRecent: () -> Unit,
+    onOpenTrash: () -> Unit,
+) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -157,6 +169,11 @@ fun HomeScreen(viewModel: HomeViewModel, onOpenLocation: (BrowserLocation) -> Un
             }
         } else {
             LazyColumn(Modifier.padding(padding)) {
+                item {
+                    Card(onClick = onOpenSearch, modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+                        Row(Modifier.padding(16.dp)) { Icon(Icons.Default.Search, null); Spacer(Modifier.padding(4.dp)); Text(stringResource(R.string.search_files_folders)) }
+                    }
+                }
                 if (!state.broadStorageAccess) item { PermissionCard(::requestBroadAccess) }
                 item { SectionTitle(stringResource(R.string.storage)) }
                 items(state.storageLocations, key = { it.id }) { StorageCard(it, onOpenLocation) }
@@ -189,6 +206,14 @@ fun HomeScreen(viewModel: HomeViewModel, onOpenLocation: (BrowserLocation) -> Un
                         CategoryButton(MediaCategory.DOCUMENTS, R.string.documents, Icons.Default.Description, ::openCategory)
                         CategoryButton(MediaCategory.DOWNLOADS, R.string.downloads, Icons.Default.Download, ::openCategory)
                         CategoryButton(MediaCategory.APKS, R.string.apks, Icons.Default.Android, ::openCategory)
+                    }
+                }
+                item { SectionTitle(stringResource(R.string.quick_access)) }
+                item {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                        TextButton(onClick = onOpenFavorites) { Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.Star, null); Text(stringResource(R.string.favorites)) } }
+                        TextButton(onClick = onOpenRecent) { Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.History, null); Text(stringResource(R.string.recent)) } }
+                        TextButton(onClick = onOpenTrash) { Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.DeleteOutline, null); Text(stringResource(R.string.recycle_bin)) } }
                     }
                 }
                 if (state.recentLocations.isNotEmpty()) {

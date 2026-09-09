@@ -23,6 +23,7 @@ data class SettingsUiState(
     val foldersFirst: Boolean = true,
     val broadStorageAccess: Boolean = false,
     val safLocations: List<BrowserLocation> = emptyList(),
+    val trashRetentionDays: Int = 30,
 )
 
 class SettingsViewModel(
@@ -34,8 +35,8 @@ class SettingsViewModel(
 
     init {
         viewModelScope.launch {
-            combine(preferences.theme, preferences.viewMode, preferences.showHidden, preferences.foldersFirst) { theme, view, hidden, folders ->
-                SettingsUiState(theme, view, hidden, folders, storage.broadStorageAccess(), emptyList())
+            combine(preferences.theme, preferences.viewMode, preferences.showHidden, preferences.foldersFirst, preferences.trashRetentionDays) { theme, view, hidden, folders, retention ->
+                SettingsUiState(theme, view, hidden, folders, storage.broadStorageAccess(), emptyList(), retention)
             }.collect { base ->
                 _state.value = base.copy(safLocations = storage.validSafLocations())
             }
@@ -53,6 +54,7 @@ class SettingsViewModel(
     fun setViewMode(mode: ViewMode) = viewModelScope.launch { preferences.setViewMode(mode) }
     fun setShowHidden(value: Boolean) = viewModelScope.launch { preferences.setShowHidden(value) }
     fun setFoldersFirst(value: Boolean) = viewModelScope.launch { preferences.setFoldersFirst(value) }
+    fun setTrashRetentionDays(value: Int) = viewModelScope.launch { preferences.setTrashRetentionDays(value) }
     fun removeSaf(location: BrowserLocation) = viewModelScope.launch { storage.removeSafLocation(location); refreshStorageStatus() }
 
     class Factory(

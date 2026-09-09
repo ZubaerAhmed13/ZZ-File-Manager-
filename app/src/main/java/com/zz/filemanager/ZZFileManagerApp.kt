@@ -8,6 +8,7 @@ import android.provider.Settings
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -18,6 +19,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.zz.filemanager.app.AppContainer
 import com.zz.filemanager.core.model.ThemeMode
+import com.zz.filemanager.core.model.BrowserLocation
 import com.zz.filemanager.core.util.BrowserLocationCodec
 import com.zz.filemanager.feature.browser.BrowserOperationsViewModel
 import com.zz.filemanager.feature.browser.BrowserScreen
@@ -26,6 +28,20 @@ import com.zz.filemanager.feature.home.HomeScreen
 import com.zz.filemanager.feature.home.HomeViewModel
 import com.zz.filemanager.feature.settings.SettingsScreen
 import com.zz.filemanager.feature.settings.SettingsViewModel
+import com.zz.filemanager.feature.search.SearchScreen
+import com.zz.filemanager.feature.search.SearchViewModel
+import com.zz.filemanager.feature.library.FavoritesScreen
+import com.zz.filemanager.feature.library.RecentScreen
+import com.zz.filemanager.feature.library.LibraryViewModel
+import com.zz.filemanager.feature.trash.RecycleBinScreen
+import com.zz.filemanager.feature.trash.RecycleBinViewModel
+import com.zz.filemanager.core.library.FavoriteItem
+import com.zz.filemanager.core.library.RecentFile
+import com.zz.filemanager.core.model.FileEntry
+import com.zz.filemanager.core.model.FileEntryType
+import com.zz.filemanager.core.search.SearchResult
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
 import com.zz.filemanager.ui.theme.ZZFileManagerTheme
 
 @Composable
@@ -34,6 +50,7 @@ fun ZZFileManagerApp(container: AppContainer) {
     ZZFileManagerTheme(theme) {
         val nav = rememberNavController()
         val context = LocalContext.current
+        val scope = rememberCoroutineScope()
         fun openLocation(location: com.zz.filemanager.core.model.BrowserLocation) {
             nav.navigate("browser?location=${Uri.encode(BrowserLocationCodec.encode(location))}")
         }
@@ -47,16 +64,42 @@ fun ZZFileManagerApp(container: AppContainer) {
                 )
             }
         }
+        fun openRequest(entry: FileEntry) {
+            val request = container.storage.openRequest(entry) ?: return
+            runCatching {
+                context.startActivity(Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(Uri.parse(request.uri), request.mimeType ?: "*/*")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                })
+            }
+        }
+        fun searchResultEntry(result: SearchResult) = FileEntry(
+            result.id, result.reference, result.name, result.name.substringAfterLast('.', "").takeIf { it.isNotEmpty() },
+            result.mimeType, result.type, result.sizeBytes, result.modifiedAtMillis, null, result.name.startsWith('.'),
+            result.readable, result.writable, null, result.storageId, null,
+        )
 
         LaunchedEffect(Unit) {
             container.operationController.initialize()
+            container.userLibrary.initialize()
+            launch { container.operationLibrarySynchronizer.run() }
+            container.trashManager.reconcile()
+            val retentionDays = container.preferences.trashRetentionDays.first()
+            container.trashManager.cleanupExpired(if (retentionDays < 0) Long.MAX_VALUE else retentionDays.toLong() * 24L * 60L * 60L * 1000L)
             container.storage.restorableLastLocation()?.let(::openLocation)
         }
 
         NavHost(navController = nav, startDestination = "home") {
             composable("home") {
                 val vm: HomeViewModel = viewModel(factory = HomeViewModel.Factory(container.storage, container.preferences))
-                HomeScreen(vm, ::openLocation, onOpenSettings = { nav.navigate("settings") })
+                HomeScreen(
+                    vm, ::openLocation,
+                    onOpenSettings = { nav.navigate("settings") },
+                    onOpenSearch = { nav.navigate("search?location=") },
+                    onOpenFavorites = { nav.navigate("favorites") },
+                    onOpenRecent = { nav.navigate("recent") },
+                    onOpenTrash = { nav.navigate("recycle") },
+                )
             }
             composable(
                 route = "browser?location={location}",
@@ -66,7 +109,7 @@ fun ZZFileManagerApp(container: AppContainer) {
                 val location = BrowserLocationCodec.decode(encoded) ?: return@composable
                 val vm: BrowserViewModel = viewModel(
                     key = "browser:${location.identity}",
-                    factory = BrowserViewModel.Factory(container.storage, container.preferences),
+                    factory = BrowserViewModel.Factory(container.storage, container.preferences, container.userLibraryManager),
                 )
                 val operationsVm: BrowserOperationsViewModel = viewModel(
                     key = "operations:${location.identity}",
@@ -74,6 +117,9 @@ fun ZZFileManagerApp(container: AppContainer) {
                         container.operationController,
                         container.operationClipboard,
                         container.storage,
+                        container.userLibraryManager,
+                        container.trashManager,
+                        container.mediaStoreTrash,
                     ),
                 )
                 BrowserScreen(
@@ -83,7 +129,61 @@ fun ZZFileManagerApp(container: AppContainer) {
                     thumbnails = container.thumbnails,
                     onExitBrowser = { nav.popBackStack() },
                     onRequestStorageAccess = ::requestBroadAccess,
+                    onOpenSearch = { searchLocation -> nav.navigate("search?location=${Uri.encode(BrowserLocationCodec.encode(searchLocation))}") },
                 )
+            }
+            composable(
+                route = "search?location={location}",
+                arguments = listOf(navArgument("location") { type = NavType.StringType; defaultValue = "" }),
+            ) { backStack ->
+                val current = BrowserLocationCodec.decode(backStack.arguments?.getString("location").orEmpty())
+                val vm: SearchViewModel = viewModel(factory = SearchViewModel.Factory(container.searchRepository, container.userLibrary, current))
+                SearchScreen(
+                    vm,
+                    onBack = { nav.popBackStack() },
+                    onOpen = { result ->
+                        if (result.isDirectory) openLocation(
+                            result.parentLocation.copy(
+                                id = result.id, displayName = result.name,
+                                reference = result.reference.uri ?: result.reference.path ?: result.reference.opaqueId,
+                                readable = result.readable, writable = result.writable,
+                            ),
+                        ) else {
+                            val entry = searchResultEntry(result)
+                            scope.launch { container.userLibraryManager.recordOpened(entry, result.parentLocation) }
+                            openRequest(entry)
+                        }
+                    },
+                    onReveal = { openLocation(it.parentLocation) },
+                    onFavorite = { result -> scope.launch { container.userLibraryManager.toggleFavorite(searchResultEntry(result), result.parentLocation) } },
+                    onClearHistory = { scope.launch { container.userLibrary.clearSearchHistory() } },
+                )
+            }
+            composable("favorites") {
+                val vm: LibraryViewModel = viewModel(factory = LibraryViewModel.Factory(container.userLibrary, container.userLibraryManager, container.preferences))
+                FavoritesScreen(vm, onBack = { nav.popBackStack() }) { item: FavoriteItem ->
+                    if (item.type == FileEntryType.DIRECTORY) {
+                        openLocation(BrowserLocation(
+                            item.reference.providerId, item.id, item.displayName,
+                            item.reference.uri ?: item.reference.path ?: item.reference.opaqueId,
+                            item.rootReference, item.storageId, true, true,
+                        ))
+                    } else {
+                        openRequest(FileEntry(item.id, item.reference, item.displayName, item.displayName.substringAfterLast('.', "").takeIf { it.isNotEmpty() }, null, item.type, null, null, null, false, true, false, null, item.storageId, null))
+                    }
+                }
+            }
+            composable("recent") {
+                val vm: LibraryViewModel = viewModel(factory = LibraryViewModel.Factory(container.userLibrary, container.userLibraryManager, container.preferences))
+                RecentScreen(
+                    vm, onBack = { nav.popBackStack() },
+                    onOpenFile = { item: RecentFile -> openRequest(FileEntry(item.id, item.reference, item.displayName, item.displayName.substringAfterLast('.', "").takeIf { it.isNotEmpty() }, null, item.type, null, null, null, false, true, false, null, item.storageId, null)) },
+                    onOpenLocation = ::openLocation,
+                )
+            }
+            composable("recycle") {
+                val vm: RecycleBinViewModel = viewModel(factory = RecycleBinViewModel.Factory(container.userLibrary, container.trashManager, container.mediaStoreTrash))
+                RecycleBinScreen(vm, onBack = { nav.popBackStack() })
             }
             composable("settings") {
                 val vm: SettingsViewModel = viewModel(factory = SettingsViewModel.Factory(container.storage, container.preferences))

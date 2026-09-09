@@ -11,6 +11,7 @@ import com.zz.filemanager.core.model.OpenFileRequest
 import com.zz.filemanager.core.model.SortDirection
 import com.zz.filemanager.core.model.SortField
 import com.zz.filemanager.core.model.ViewMode
+import com.zz.filemanager.core.library.UserLibraryManager
 import com.zz.filemanager.core.preferences.BrowserPreferences
 import com.zz.filemanager.core.preferences.PreferencesRepository
 import com.zz.filemanager.core.storage.BrowserHistory
@@ -18,6 +19,7 @@ import com.zz.filemanager.core.storage.BrowserStorage
 import com.zz.filemanager.core.storage.StorageAccessException
 import com.zz.filemanager.core.storage.StorageRepository
 import com.zz.filemanager.core.util.FileSorter
+import com.zz.filemanager.core.search.SearchCoordinator
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -42,6 +44,7 @@ class BrowserViewModel(
     private val storage: BrowserStorage,
     private val preferences: BrowserPreferences,
     private val sortDispatcher: CoroutineDispatcher = Dispatchers.Default,
+    private val libraryManager: UserLibraryManager? = null,
 ) : ViewModel() {
     private val history = BrowserHistory()
     private val _state = MutableStateFlow<BrowserUiState>(BrowserUiState.Loading)
@@ -62,6 +65,7 @@ class BrowserViewModel(
 
     fun openEntry(entry: FileEntry) {
         if (!entry.isDirectory) {
+            currentLocation?.let { parent -> viewModelScope.launch { libraryManager?.recordOpened(entry, parent) } }
             val request = storage.openRequest(entry)
             if (request != null) _events.tryEmit(BrowserEvent.OpenFile(request)) else _events.tryEmit(BrowserEvent.OpenFailed)
             return
@@ -146,7 +150,11 @@ class BrowserViewModel(
                 val crumbs = storage.breadcrumbs(location)
                 val raw = storage.listChildren(location)
                 val entries = withContext(sortDispatcher) {
-                    FileSorter.sort(if (showHidden) raw else raw.filterNot { it.isHidden }, sort)
+                    val safe = raw.filterNot {
+                        it.name.equals(SearchCoordinator.RESERVED_RECYCLE_DIRECTORY, ignoreCase = true) ||
+                            it.name.startsWith(".zztrash-", ignoreCase = true)
+                    }
+                    FileSorter.sort(if (showHidden) safe else safe.filterNot { it.isHidden }, sort)
                 }
                 if (requestGeneration != navigationGeneration || currentLocation?.identity != location.identity) return@launch
                 storage.remember(location)
@@ -175,8 +183,9 @@ class BrowserViewModel(
     class Factory(
         private val storage: StorageRepository,
         private val preferences: PreferencesRepository,
+        private val libraryManager: UserLibraryManager? = null,
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
-        override fun <T : ViewModel> create(modelClass: Class<T>): T = BrowserViewModel(storage, preferences) as T
+        override fun <T : ViewModel> create(modelClass: Class<T>): T = BrowserViewModel(storage, preferences, libraryManager = libraryManager) as T
     }
 }
