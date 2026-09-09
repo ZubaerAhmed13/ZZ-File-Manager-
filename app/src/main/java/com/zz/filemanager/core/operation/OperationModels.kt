@@ -68,6 +68,14 @@ enum class BatchRenamePhase {
     ROLLED_BACK,
 }
 
+enum class ReplacePhase {
+    NONE,
+    BACKUP_PLANNED,
+    BACKED_UP,
+    COMMITTING,
+    COMMITTED,
+}
+
 enum class OperationFailureCode {
     PERMISSION_DENIED,
     SOURCE_MISSING,
@@ -132,6 +140,15 @@ data class OperationItem(
     // reference/name, resultReference is the live current reference, requestedName is the target.
     val batchRenameTemporaryName: String? = null,
     val batchRenamePhase: BatchRenamePhase = BatchRenamePhase.ORIGINAL,
+    // Replace transaction ledger for non-atomic providers. The old destination is never deleted
+    // until a complete staged file has committed and COMMITTED has been journaled.
+    val replacePhase: ReplacePhase = ReplacePhase.NONE,
+    val replaceFinalName: String? = null,
+    val replaceOriginalReference: ScopedFileReference? = null,
+    val replaceOriginalSizeBytes: Long? = null,
+    val replaceOriginalModifiedAtMillis: Long? = null,
+    val replaceBackupName: String? = null,
+    val replaceBackupReference: ScopedFileReference? = null,
 )
 
 data class PendingCollision(
