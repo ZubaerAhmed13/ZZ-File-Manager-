@@ -197,7 +197,13 @@ class StorageAnalyzer(
         while (queue.isNotEmpty()) {
             coroutineContext.ensureActive()
             val location = queue.removeLast()
-            val children = runCatching { providers.providerFor(location.providerId).listChildren(location) }.getOrElse { continue }
+            val children = try {
+        providers.providerFor(location.providerId).listChildren(location)
+    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        throw cancelled
+    } catch (_: Throwable) {
+        continue
+    }
             for (entry in children) {
                 coroutineContext.ensureActive()
                 if (entry.isDirectory && !entry.isSymbolicLink) {

@@ -253,7 +253,7 @@ class ArchiveManager(
             sevenZ(file, password).use { seven ->
                 val entries = seven.entries.map { entry ->
                     val path = ArchivePathValidator.normalize(entry.name ?: throw ArchiveFailure.UnsafePath("<unnamed>"))
-                    ArchiveEntryInfo(path, path.substringAfterLast('/'), entry.isDirectory, entry.compressedSize.takeIf { it >= 0L }, entry.size.takeIf { it >= 0L })
+                    ArchiveEntryInfo(path, path.substringAfterLast('/'), entry.isDirectory, null, entry.size.takeIf { it >= 0L })
                 }.toList()
                 ArchivePathValidator.validateUnique(entries.map { it.path })
                 ArchiveListing(ArchiveFormat.SEVEN_Z, entries, encrypted = password != null, stagedForRandomAccess = staged)
@@ -274,7 +274,13 @@ class ArchiveManager(
                     val all = seven.entries.toList()
                     val paths = all.associateWith { ArchivePathValidator.normalize(it.name ?: throw ArchiveFailure.UnsafePath("<unnamed>")) }
                     ArchivePathValidator.validateUnique(paths.values)
-                    paths.forEach { (entry, _) -> guard.observeHeader(entry.compressedSize.takeIf { it >= 0L }, entry.size.takeIf { it >= 0L }) }
+                    val totalDeclared = paths.keys.fold(0L) { total, entry ->
+            safeAdd(total, if (entry.isDirectory) 0L else entry.size.coerceAtLeast(0L))
+        }
+        // SevenZArchiveEntry intentionally keeps per-entry compressed size package-private.
+        // Use the whole archive byte size against total declared output for the expansion-ratio
+        // guard, then continue enforcing actual extracted bytes and free-space during writes.
+        guard.observeHeader(request.source.entry.sizeBytes?.takeIf { it > 0L }, totalDeclared)
                     val selected = paths.filterValues { selected(it, request.selectedPaths) }
                     var done = 0L
                     var processed = 0L
@@ -425,7 +431,7 @@ class ArchiveManager(
                     val path = if (entry.isDirectory) archivePath.trimEnd('/') + "/" else archivePath
                     val tarEntry = TarArchiveEntry(path).apply {
                         size = if (entry.isDirectory) 0L else entry.sizeBytes ?: 0L
-                        entry.modifiedAtMillis?.takeIf { it > 0L }?.let { modTime = it }
+                        entry.modifiedAtMillis?.takeIf { it > 0L }?.let { setModTime(it) }
                     }
                     tar.putArchiveEntry(tarEntry)
                     if (!entry.isDirectory) {

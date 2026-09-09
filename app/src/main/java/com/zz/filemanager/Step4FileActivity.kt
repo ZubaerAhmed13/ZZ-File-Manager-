@@ -208,7 +208,7 @@ private fun Step4FileScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = share) { Icon(Icons.Default.Share, contentDescription = "Share") }
+                    IconButton(onClick = { share() }) { Icon(Icons.Default.Share, contentDescription = "Share") }
                     IconButton(onClick = { showInfo = true }) { Icon(Icons.Default.Info, contentDescription = "Properties") }
                     IconButton(onClick = { menu = true }) { Icon(Icons.Default.OpenInNew, contentDescription = "More actions") }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
@@ -692,7 +692,7 @@ private fun TextViewerEditor(
                 editorText = document?.text.orEmpty()
                 buffer = TextUndoRedoBuffer(editorText)
                 edit = false
-                LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher?.onBackPressed()
+                backDispatcher?.onBackPressed()
             }) { Text("Discard") }
         },
         dismissButton = { TextButton(onClick = { discardDialog = false }) { Text("Keep editing") } },
