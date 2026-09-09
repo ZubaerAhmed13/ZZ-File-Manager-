@@ -57,6 +57,17 @@ enum class CollisionKind {
     SAME_RESOURCE,
 }
 
+enum class BatchRenamePhase {
+    ORIGINAL,
+    TEMPORARY_PLANNED,
+    TEMPORARY,
+    FINALIZING,
+    FINAL,
+    ROLLBACK_TO_TEMP,
+    ROLLBACK_TO_ORIGINAL,
+    ROLLED_BACK,
+}
+
 enum class OperationFailureCode {
     PERMISSION_DENIED,
     SOURCE_MISSING,
@@ -73,6 +84,8 @@ enum class OperationFailureCode {
     CANCELLED,
     SOURCE_CHANGED,
     SYMBOLIC_LINK_UNSUPPORTED,
+    SAFE_FINALIZATION_UNSUPPORTED,
+    TRANSACTION_ROLLBACK_FAILED,
     UNKNOWN,
 }
 
@@ -108,6 +121,10 @@ data class OperationItem(
     val failure: OperationFailure? = null,
     val resultReference: ScopedFileReference? = null,
     val partialOutput: ScopedFileReference? = null,
+    // Batch-rename transaction ledger. source.scoped/source.name are the immutable original
+    // reference/name, resultReference is the live current reference, requestedName is the target.
+    val batchRenameTemporaryName: String? = null,
+    val batchRenamePhase: BatchRenamePhase = BatchRenamePhase.ORIGINAL,
 )
 
 data class PendingCollision(
@@ -143,6 +160,9 @@ data class FileOperation(
     val collisionDecisions: Map<String, CollisionPolicy> = emptyMap(),
     val applyToAllCollisionPolicy: CollisionPolicy? = null,
     val retryOfOperationId: String? = null,
+    // Set before a batch-rename rollback begins. If Android/process interruption occurs during
+    // rollback, resume continues rollback instead of accidentally continuing the forward rename.
+    val batchRenameRollbackRequired: Boolean = false,
 ) {
     val failedItems: Long get() = items.count { it.state == OperationItemState.FAILED }.toLong()
     val skippedItems: Long get() = items.count { it.state == OperationItemState.SKIPPED }.toLong()
