@@ -84,20 +84,23 @@ class TextFileEngine(
         maxMatches: Int = 10_000,
         onProgress: suspend (TextSearchProgress) -> Unit = {},
     ): List<TextSearchMatch> = withContext(Dispatchers.IO) {
-        if (query.isEmpty()) return@withContext emptyList()
+        if (query.isEmpty() || maxMatches <= 0) return@withContext emptyList()
         val provider = providers.providerFor(document.source.entry.reference.providerId)
         val counting = CountingInputStream(provider.openInputStream(document.source.entry.reference))
         skipBom(counting, document.encoding)
         val matches = mutableListOf<TextSearchMatch>()
         BufferedReader(InputStreamReader(counting, charset(document.encoding)), 64 * 1024).use { reader ->
             var lineNumber = 0L
-            while (true) {
+            while (matches.size < maxMatches) {
                 coroutineContext.ensureActive()
                 val line = reader.readLine() ?: break
                 lineNumber++
-                val column = if (caseSensitive) line.indexOf(query) else line.indexOf(query, ignoreCase = true)
-                if (column >= 0 && matches.size < maxMatches) {
+                var fromIndex = 0
+                while (fromIndex <= line.length - query.length && matches.size < maxMatches) {
+                    val column = if (caseSensitive) line.indexOf(query, fromIndex) else line.indexOf(query, fromIndex, ignoreCase = true)
+                    if (column < 0) break
                     matches += TextSearchMatch(lineNumber, column, line.take(240))
+                    fromIndex = (column + query.length).coerceAtLeast(column + 1)
                 }
                 if (lineNumber % 256L == 0L) onProgress(TextSearchProgress(counting.count, document.source.entry.sizeBytes, matches.size.toLong()))
             }
