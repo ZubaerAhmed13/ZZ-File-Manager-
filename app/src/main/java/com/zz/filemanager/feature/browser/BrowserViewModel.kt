@@ -3,6 +3,7 @@ package com.zz.filemanager.feature.browser
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.zz.filemanager.core.library.UserLibraryManager
 import com.zz.filemanager.core.model.BrowserLocation
 import com.zz.filemanager.core.model.BrowserProblem
 import com.zz.filemanager.core.model.BrowserUiState
@@ -11,15 +12,15 @@ import com.zz.filemanager.core.model.OpenFileRequest
 import com.zz.filemanager.core.model.SortDirection
 import com.zz.filemanager.core.model.SortField
 import com.zz.filemanager.core.model.ViewMode
-import com.zz.filemanager.core.library.UserLibraryManager
 import com.zz.filemanager.core.preferences.BrowserPreferences
 import com.zz.filemanager.core.preferences.PreferencesRepository
+import com.zz.filemanager.core.search.SearchCoordinator
+import com.zz.filemanager.core.step4.Step4OpenCodec
 import com.zz.filemanager.core.storage.BrowserHistory
 import com.zz.filemanager.core.storage.BrowserStorage
 import com.zz.filemanager.core.storage.StorageAccessException
 import com.zz.filemanager.core.storage.StorageRepository
 import com.zz.filemanager.core.util.FileSorter
-import com.zz.filemanager.core.search.SearchCoordinator
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -65,8 +66,13 @@ class BrowserViewModel(
 
     fun openEntry(entry: FileEntry) {
         if (!entry.isDirectory) {
-            currentLocation?.let { parent -> viewModelScope.launch { libraryManager?.recordOpened(entry, parent) } }
-            val request = storage.openRequest(entry)
+            val parent = currentLocation ?: return
+            viewModelScope.launch { libraryManager?.recordOpened(entry, parent) }
+            val request = if (Step4OpenCodec.supports(entry)) {
+                Step4OpenCodec.request(entry, parent)
+            } else {
+                storage.openRequest(entry)
+            }
             if (request != null) _events.tryEmit(BrowserEvent.OpenFile(request)) else _events.tryEmit(BrowserEvent.OpenFailed)
             return
         }
