@@ -134,6 +134,37 @@ class FileOperationSafetyRegressionTest {
     }
 
     @Test
+    fun renameWithoutDeleteDoesNotOfferUnsafeReplace() = runBlocking {
+        val provider = SafetyProvider().apply {
+            directory("/src")
+            directory("/dest")
+            file("/src/holiday.mp4", newHoliday)
+            file("/dest/holiday.mp4", oldHoliday)
+            advertisedCapabilities = setOf(
+                StorageCapability.READ,
+                StorageCapability.WRITE,
+                StorageCapability.CREATE_FILE,
+                StorageCapability.CREATE_DIRECTORY,
+                StorageCapability.RENAME,
+            )
+        }
+        val store = SafetyOperationStore()
+        val controller = FileOperationController(store, OperationExecutionHost { }) { 1L }
+        val engine = FileOperationEngine(store, provider, now = { 1L }, bufferSize = 16, progressIntervalMillis = 1L)
+        val id = controller.enqueueCopy(listOf(provider.source("/src/holiday.mp4")), provider.location("/dest"))
+
+        engine.runAvailable()
+
+        val collision = store.get(id)?.pendingCollision
+        assertEquals(FileOperationState.WAITING_FOR_USER, store.get(id)?.state)
+        assertTrue(collision != null)
+        assertFalse(CollisionPolicy.REPLACE in collision!!.allowedPolicies)
+        assertTrue(CollisionPolicy.KEEP_BOTH in collision.allowedPolicies)
+        assertArrayEquals(oldHoliday, provider.rawBytes("/dest/holiday.mp4"))
+        assertFalse(provider.rawHasHiddenTransferArtifacts())
+    }
+
+    @Test
     fun providerWithoutRenameNeverCreatesVisiblePartialFinal() = runBlocking {
         val provider = SafetyProvider().apply {
             directory("/src")

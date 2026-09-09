@@ -476,16 +476,23 @@ class FileOperationEngine(
 
         val capabilities = destinationProvider.capabilities(parent)
         val safeFinalizationAvailable = StorageCapability.RENAME in capabilities
+        val safeReplaceAvailable =
+            StorageCapability.ATOMIC_RENAME in capabilities ||
+                (StorageCapability.RENAME in capabilities && StorageCapability.DELETE in capabilities)
         var finalName = leafName(item.destinationRelativePath)
         var existing = destinationProvider.findChild(parent, finalName)
         var replaceExisting: FileEntry? = null
 
         if (existing != null) {
             var collision = collisionFor(operation, item, existing, finalName)
-            if (!safeFinalizationAvailable) {
-                collision = collision.copy(
+            collision = when {
+                !safeFinalizationAvailable -> collision.copy(
                     allowedPolicies = collision.allowedPolicies - setOf(CollisionPolicy.REPLACE, CollisionPolicy.KEEP_BOTH),
                 )
+                !safeReplaceAvailable -> collision.copy(
+                    allowedPolicies = collision.allowedPolicies - CollisionPolicy.REPLACE,
+                )
+                else -> collision
             }
             val policy = collisionDecision(operation, collision)
             if (policy == null) return waitForCollision(operation, collision)
