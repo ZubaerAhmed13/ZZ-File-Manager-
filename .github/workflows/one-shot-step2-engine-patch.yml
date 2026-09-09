@@ -1,0 +1,38 @@
+name: One-shot Step 2 engine patch
+
+on:
+  push:
+    branches:
+      - step2/file-operations-engine
+    paths:
+      - .github/workflows/one-shot-step2-engine-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-engine-patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repair branch
+        uses: actions/checkout@v4
+        with:
+          ref: step2/file-operations-engine
+          fetch-depth: 0
+
+      - name: Apply exact-match engine patch
+        run: python3 tools/apply_step2_replace_recovery.py
+
+      - name: Verify only intended engine change
+        run: |
+          git diff --check
+          git diff --exit-code -- tools/apply_step2_replace_recovery.py .github/workflows/one-shot-step2-engine-patch.yml
+          test -n "$(git status --short app/src/main/java/com/zz/filemanager/core/operation/FileOperationEngine.kt)"
+
+      - name: Commit patched engine
+        run: |
+          git config user.name "Zubaer Ahmed"
+          git config user.email "zubaerknight@gmail.com"
+          git add app/src/main/java/com/zz/filemanager/core/operation/FileOperationEngine.kt
+          git commit -m "fix: recover replace transactions across process death"
+          git push origin HEAD:step2/file-operations-engine
