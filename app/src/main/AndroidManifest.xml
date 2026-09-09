@@ -9,6 +9,16 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Required only so an explicit user-selected APK can be handed to Android Package Installer. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!-- Narrow package discovery for launchable applications. QUERY_ALL_PACKAGES is deliberately absent. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
 
     <application
         android:name=".ZZFileManagerApplication"
@@ -24,6 +34,21 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".Step4ToolsActivity"
+            android:exported="false" />
+
+        <!-- Internal-only viewer route. The zzfm URI carries no new authority and cannot be invoked externally. -->
+        <activity
+            android:name=".Step4FileActivity"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="zzfm" android:host="open" />
             </intent-filter>
         </activity>
 
