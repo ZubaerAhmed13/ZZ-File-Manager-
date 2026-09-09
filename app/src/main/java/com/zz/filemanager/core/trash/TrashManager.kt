@@ -11,6 +11,7 @@ import com.zz.filemanager.core.model.BrowserLocation
 import com.zz.filemanager.core.model.FileEntry
 import com.zz.filemanager.core.model.ScopedFileReference
 import com.zz.filemanager.core.search.SearchCoordinator
+import com.zz.filemanager.core.search.SearchRootSource
 import com.zz.filemanager.core.storage.StorageCapability
 import com.zz.filemanager.core.storage.StorageProviderRegistry
 import com.zz.filemanager.core.storage.WritableStorageProvider
@@ -37,6 +38,7 @@ class TrashManager(
     private val providers: StorageProviderRegistry,
     private val store: UserLibraryStore,
     private val libraryManager: UserLibraryManager,
+    private val rootSource: SearchRootSource? = null,
     private val now: () -> Long = { System.currentTimeMillis() },
 ) {
     suspend fun recordPlatformTrash(entries: List<FileEntry>, parent: BrowserLocation) {
@@ -208,6 +210,47 @@ class TrashManager(
                 else -> record.copy(state = TrashState.CORRUPTED, updatedAtMillis = now(), failureReason = "Neither source nor recycle payload can be verified.")
             }
             store.upsertTrash(reconciled)
+        }
+        reconcileOrphanPayloads()
+    }
+
+    private suspend fun reconcileOrphanPayloads() {
+        val roots = rootSource?.accessibleRoots().orEmpty().filter { it.writable && it.providerId != "media" }
+        val knownContainers = store.trashRecords.value.mapNotNull { it.containerReference?.reference?.opaqueId }.toHashSet()
+        roots.forEach { root ->
+            val provider = providers.writableProviderFor(root.providerId) ?: return@forEach
+            val recycle = runCatching { provider.findChild(rootLocation(root), SearchCoordinator.RESERVED_RECYCLE_DIRECTORY) }.getOrNull()
+                ?: return@forEach
+            if (!recycle.isDirectory) return@forEach
+            val recycleLocation = recycle.asLocation(root)
+            val containers = runCatching { provider.listChildren(recycleLocation) }.getOrDefault(emptyList())
+            containers.filter { it.isDirectory && it.reference.opaqueId !in knownContainers }.forEach { container ->
+                val containerLocation = container.asLocation(recycleLocation)
+                val payloads = runCatching { provider.listChildren(containerLocation) }.getOrDefault(emptyList())
+                val payload = payloads.singleOrNull()
+                val timestamp = now()
+                val containerScoped = ScopedFileReference(container.reference, root.rootReference, root.storageId)
+                val payloadScoped = payload?.let { ScopedFileReference(it.reference, root.rootReference, root.storageId) } ?: containerScoped
+                val id = "orphan-${container.reference.opaqueId.hashCode().toUInt().toString(16)}"
+                store.upsertTrash(
+                    TrashRecord(
+                        id = id,
+                        backend = TrashBackendType.APP_MANAGED,
+                        originalReference = payload?.reference ?: container.reference,
+                        originalParent = root,
+                        originalName = payload?.name ?: container.name,
+                        type = payload?.type ?: container.type,
+                        sizeBytes = payload?.sizeBytes,
+                        modifiedAtMillis = payload?.modifiedAtMillis,
+                        trashReference = payloadScoped,
+                        containerReference = containerScoped,
+                        trashedAtMillis = timestamp,
+                        updatedAtMillis = timestamp,
+                        state = TrashState.CORRUPTED,
+                        failureReason = "Recycle payload has no trusted catalog record. It was preserved for manual recovery.",
+                    ),
+                )
+            }
         }
     }
 

@@ -16,7 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.InsertDriveFile
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material3.AssistChip
@@ -189,7 +189,7 @@ private fun ResultList(results: List<SearchResult>, onOpen: (SearchResult) -> Un
                         result.sizeBytes?.let { Text(Formatters.bytes(it), style = MaterialTheme.typography.bodySmall) }
                     }
                 },
-                leadingContent = { Icon(if (result.isDirectory) Icons.Default.Folder else Icons.Default.InsertDriveFile, null) },
+                leadingContent = { Icon(if (result.isDirectory) Icons.Default.Folder else Icons.AutoMirrored.Filled.InsertDriveFile, null) },
                 trailingContent = {
                     Row {
                         IconButton(onClick = { onFavorite(result) }) { Icon(Icons.Default.StarBorder, stringResource(R.string.add_to_favorites)) }

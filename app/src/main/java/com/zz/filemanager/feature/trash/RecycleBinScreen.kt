@@ -21,7 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.InsertDriveFile
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -115,7 +115,7 @@ private fun TrashRow(record: TrashRecord, selected: Boolean, toggle: (TrashRecor
     ListItem(
         headlineContent = { Text(record.originalName, maxLines = 1) },
         supportingContent = { Column { Text(stringResource(R.string.original_location) + ": " + record.originalParent.displayName); Text(stringResource(R.string.deleted_date) + ": " + DateFormat.getDateTimeInstance().format(Date(record.trashedAtMillis))); record.sizeBytes?.let { Text(Formatters.bytes(it)) }; if (record.failureReason != null) Text(record.failureReason, color = MaterialTheme.colorScheme.error) } },
-        leadingContent = { Icon(if (record.type == com.zz.filemanager.core.model.FileEntryType.DIRECTORY) Icons.Default.Folder else Icons.Default.InsertDriveFile, null) },
+        leadingContent = { Icon(if (record.type == com.zz.filemanager.core.model.FileEntryType.DIRECTORY) Icons.Default.Folder else Icons.AutoMirrored.Filled.InsertDriveFile, null) },
         modifier = Modifier.fillMaxWidth().combinedClickable(onClick = { toggle(record) }, onLongClick = { toggle(record) }),
         tonalElevation = if (selected) 4.dp else 0.dp,
     )

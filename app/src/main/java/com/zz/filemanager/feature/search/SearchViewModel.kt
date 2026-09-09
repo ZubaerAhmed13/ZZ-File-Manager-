@@ -53,7 +53,11 @@ class SearchViewModel(
         _query.value = value
         val requestGeneration = ++generation
         searchJob?.cancel()
-        if (value.text.isBlank() && value.typeFilter == SearchTypeFilter.ALL && value.extensions.isEmpty()) {
+        if (
+            value.text.isBlank() && value.typeFilter == SearchTypeFilter.ALL && value.extensions.isEmpty() &&
+            value.minSizeBytes == null && value.maxSizeBytes == null && value.modifiedAfter == null && value.modifiedBefore == null &&
+            !value.includeHidden && value.includeFiles && value.includeDirectories
+        ) {
             _state.value = SearchUiState.Idle
             return
         }

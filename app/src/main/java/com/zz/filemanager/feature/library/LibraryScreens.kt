@@ -13,7 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.InsertDriveFile
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -73,7 +73,7 @@ fun RecentScreen(
                 ListItem(
                     headlineContent = { Text(item.displayName, maxLines = 1) },
                     supportingContent = { StatusAndLocation(item.status, item.parentLocation?.displayName) },
-                    leadingContent = { Icon(Icons.Default.InsertDriveFile, null) },
+                    leadingContent = { Icon(Icons.AutoMirrored.Filled.InsertDriveFile, null) },
                     modifier = Modifier.clickable(enabled = item.status == LibraryItemStatus.AVAILABLE) { onOpenFile(item) },
                 )
             }
