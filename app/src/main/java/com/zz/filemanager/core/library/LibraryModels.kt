@@ -71,6 +71,9 @@ data class TrashRecord(
     val state: TrashState,
     val operationId: String? = null,
     val failureReason: String? = null,
+    val restoreDestination: BrowserLocation? = null,
+    val restoreName: String? = null,
+    val restoreReplace: Boolean = false,
 )
 
 fun FileReference.stableIdentity(rootReference: String, storageId: String): String =

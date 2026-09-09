@@ -193,6 +193,7 @@ internal object LibraryCodec {
         put("trashReference", item.trashReference?.let { JSONObject().apply { put("reference", reference(it.reference)); put("rootReference", it.rootReference); put("storageId", it.storageId) } })
         put("containerReference", item.containerReference?.let { JSONObject().apply { put("reference", reference(it.reference)); put("rootReference", it.rootReference); put("storageId", it.storageId) } })
         put("trashedAt", item.trashedAtMillis); put("updatedAt", item.updatedAtMillis); put("state", item.state.name); put("operationId", item.operationId); put("failure", item.failureReason)
+        put("restoreDestination", location(item.restoreDestination)); put("restoreName", item.restoreName); put("restoreReplace", item.restoreReplace)
     }.toString()
     fun decodeTrash(raw: String): TrashRecord? = runCatching { JSONObject(raw).let { o ->
         val scoped = o.optJSONObject("trashReference")?.let { ScopedFileReference(decodeReference(it.getJSONObject("reference")), it.getString("rootReference"), it.getString("storageId")) }
@@ -200,7 +201,8 @@ internal object LibraryCodec {
         TrashRecord(o.getString("id"), enumValueOf(o.getString("backend")), decodeReference(o.getJSONObject("originalReference")),
             requireNotNull(decodeLocation(o.getJSONObject("originalParent"))), o.getString("originalName"), enumValueOf(o.getString("type")),
             o.optLongOrNull("size"), o.optLongOrNull("modified"), scoped, container, o.getLong("trashedAt"), o.getLong("updatedAt"), enumValueOf(o.getString("state")),
-            o.optStringOrNull("operationId"), o.optStringOrNull("failure"))
+            o.optStringOrNull("operationId"), o.optStringOrNull("failure"), decodeLocation(o.optJSONObject("restoreDestination")),
+            o.optStringOrNull("restoreName"), o.optBoolean("restoreReplace", false))
     } }.getOrNull()
     private fun JSONObject.optStringOrNull(name: String): String? = if (isNull(name)) null else optString(name).takeIf { it.isNotEmpty() }
     private fun JSONObject.optLongOrNull(name: String): Long? = if (isNull(name) || !has(name)) null else getLong(name)

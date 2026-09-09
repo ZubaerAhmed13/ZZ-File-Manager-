@@ -153,7 +153,7 @@ fun ZZFileManagerApp(container: AppContainer) {
                 arguments = listOf(navArgument("location") { type = NavType.StringType; defaultValue = "" }),
             ) { backStack ->
                 val current = BrowserLocationCodec.decode(backStack.arguments?.getString("location").orEmpty())
-                val vm: SearchViewModel = viewModel(factory = SearchViewModel.Factory(container.searchRepository, container.userLibrary, current))
+                val vm: SearchViewModel = viewModel(factory = SearchViewModel.Factory(container.searchRepository, container.userLibrary, current, container.preferences.showHidden))
                 SearchScreen(
                     vm,
                     onBack = { nav.popBackStack() },
@@ -211,7 +211,10 @@ fun ZZFileManagerApp(container: AppContainer) {
                             item.rootReference, item.storageId, true, true,
                         ))
                     } else {
-                        openRequest(FileEntry(item.id, item.reference, item.displayName, item.displayName.substringAfterLast('.', "").takeIf { it.isNotEmpty() }, null, item.type, null, null, null, false, true, false, null, item.storageId, null))
+                        val entry = FileEntry(item.id, item.reference, item.displayName, item.displayName.substringAfterLast('.', "").takeIf { it.isNotEmpty() }, null, item.type, null, null, null, false, true, false, null, item.storageId, null)
+                        val parent = item.parentLocation ?: BrowserLocation(item.reference.providerId, "${item.reference.providerId}:${item.rootReference}", item.storageId, item.rootReference, item.rootReference, item.storageId, true, false)
+                        scope.launch { container.userLibraryManager.recordOpened(entry, parent) }
+                        openRequest(entry)
                     }
                 }
             }
@@ -219,7 +222,12 @@ fun ZZFileManagerApp(container: AppContainer) {
                 val vm: LibraryViewModel = viewModel(factory = LibraryViewModel.Factory(container.userLibrary, container.userLibraryManager, container.preferences))
                 RecentScreen(
                     vm, onBack = { nav.popBackStack() },
-                    onOpenFile = { item: RecentFile -> openRequest(FileEntry(item.id, item.reference, item.displayName, item.displayName.substringAfterLast('.', "").takeIf { it.isNotEmpty() }, null, item.type, null, null, null, false, true, false, null, item.storageId, null)) },
+                    onOpenFile = { item: RecentFile ->
+                        val entry = FileEntry(item.id, item.reference, item.displayName, item.displayName.substringAfterLast('.', "").takeIf { it.isNotEmpty() }, null, item.type, null, null, null, false, true, false, null, item.storageId, null)
+                        val parent = item.parentLocation ?: BrowserLocation(item.reference.providerId, "${item.reference.providerId}:${item.rootReference}", item.storageId, item.rootReference, item.rootReference, item.storageId, true, false)
+                        scope.launch { container.userLibraryManager.recordOpened(entry, parent) }
+                        openRequest(entry)
+                    },
                     onOpenLocation = ::openLocation,
                 )
             }

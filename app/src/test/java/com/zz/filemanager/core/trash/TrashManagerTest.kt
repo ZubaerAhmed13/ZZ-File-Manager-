@@ -167,6 +167,69 @@ class TrashManagerTest {
         assertTrue(store.trashRecords.value.isEmpty())
     }
 
+    @Test fun startupReconciliationFinishesProvenRestoreAfterMoveBeforeCatalogWrite() = runTest {
+        val provider = FakeWritableProvider()
+        val store = MemoryLibraryStore()
+        val manager = manager(provider, store)
+        val source = provider.addFile("/root/restoring.txt", 10)
+        manager.trash(source, provider.root)
+        val record = store.trashRecords.value.single()
+        val payload = requireNotNull(record.trashReference)
+        store.upsertTrash(record.copy(state = com.zz.filemanager.core.library.TrashState.RESTORING, operationId = null, restoreDestination = provider.root, restoreName = record.originalName))
+        provider.moveNative(payload, provider.root, record.originalName)
+
+        manager.reconcile()
+
+        assertTrue(provider.hasPath("/root/restoring.txt"))
+        assertTrue(store.trashRecords.value.isEmpty())
+    }
+
+    @Test fun failedPermanentDeleteRetainsRecoverableCatalogRecord() = runTest {
+        val provider = FakeWritableProvider()
+        val store = MemoryLibraryStore()
+        val manager = manager(provider, store)
+        val source = provider.addFile("/root/keep.txt", 10)
+        manager.trash(source, provider.root)
+        val record = store.trashRecords.value.single()
+        provider.refuseDeletePaths += requireNotNull(record.trashReference).reference.path!!
+
+        assertFalse(manager.deletePermanently(record.id))
+        assertEquals(com.zz.filemanager.core.library.TrashState.FAILED, store.trashRecords.value.single().state)
+        assertTrue(provider.exists(requireNotNull(record.trashReference).reference))
+    }
+
+    @Test fun retentionDeletesOnlyExpiredProvenTrash() = runTest {
+        val provider = FakeWritableProvider()
+        val store = MemoryLibraryStore()
+        val manager = TrashManager(FakeRegistry(provider), store, UserLibraryManager(store, FakeRegistry(provider)), now = { 10_000L })
+        manager.trash(provider.addFile("/root/expired.txt", 10), provider.root)
+        manager.trash(provider.addFile("/root/interrupted.txt", 10), provider.root)
+        val expired = store.trashRecords.value.first { it.originalName == "expired.txt" }
+        val interrupted = store.trashRecords.value.first { it.originalName == "interrupted.txt" }
+        store.upsertTrash(expired.copy(trashedAtMillis = 1L))
+        store.upsertTrash(interrupted.copy(trashedAtMillis = 1L, state = com.zz.filemanager.core.library.TrashState.INTERRUPTED))
+
+        val result = manager.cleanupExpired(5_000L)
+
+        assertEquals(1, result.deleted)
+        assertEquals(listOf("interrupted.txt"), store.trashRecords.value.map { it.originalName })
+    }
+
+    @Test fun directoryHierarchyAndEmptyDirectoryRoundTrip() = runTest {
+        val provider = FakeWritableProvider()
+        val store = MemoryLibraryStore()
+        val manager = manager(provider, store)
+        val directory = provider.addDirectory("/root/project")
+        provider.addDirectory("/root/project/empty")
+        provider.addFile("/root/project/readme.txt", 10)
+
+        assertTrue(manager.trash(directory, provider.root) is TrashResult.Success)
+        assertFalse(provider.hasPath("/root/project"))
+        assertTrue(manager.restore(store.trashRecords.value.single().id) is TrashResult.Success)
+        assertTrue(provider.hasPath("/root/project/empty"))
+        assertTrue(provider.hasPath("/root/project/readme.txt"))
+    }
+
     private fun manager(provider: FakeWritableProvider, store: MemoryLibraryStore): TrashManager {
         val registry = FakeRegistry(provider)
         return TrashManager(registry, store, UserLibraryManager(store, registry), now = { 1_000L })
@@ -185,6 +248,7 @@ private class FakeWritableProvider(private val nativeMoves: Boolean = true) : Wr
     val root = BrowserLocation(id, "/root", "Root", "/root", "/root", "root", true, true)
     private val nodes = linkedMapOf("/root" to Node("/root", true, null))
     var openOutputCount = 0
+    val refuseDeletePaths = mutableSetOf<String>()
 
     fun addFile(path: String, size: Long): FileEntry { nodes[path] = Node(path, false, size); return entry(requireNotNull(nodes[path])) }
     fun addDirectory(path: String): FileEntry { nodes[path] = Node(path, true, null); return entry(requireNotNull(nodes[path])) }
@@ -210,6 +274,7 @@ private class FakeWritableProvider(private val nativeMoves: Boolean = true) : Wr
     }
     override suspend fun delete(item: ScopedFileReference): Boolean {
         val path = requireNotNull(item.reference.path)
+        if (path in refuseDeletePaths) return false
         if (nodes.keys.any { it.startsWith("$path/") }) return false
         return nodes.remove(path) != null
     }

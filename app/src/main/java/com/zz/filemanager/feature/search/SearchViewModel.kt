@@ -21,12 +21,15 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 class SearchViewModel(
     private val repository: SearchRepository,
     library: UserLibraryStore,
     private val currentLocation: BrowserLocation?,
+    initialHiddenSetting: Flow<Boolean>? = null,
     private val debounceMillis: Long = 300L,
     private val resultWindow: Int = 5_000,
 ) : ViewModel() {
@@ -37,6 +40,12 @@ class SearchViewModel(
     val history = library.searchHistory
     private var searchJob: Job? = null
     private var generation = 0L
+
+    init {
+        if (initialHiddenSetting != null) viewModelScope.launch {
+            _query.value = _query.value.copy(includeHidden = initialHiddenSetting.first())
+        }
+    }
 
     fun setText(value: String) { update(_query.value.copy(text = value), debounce = true) }
     fun setScope(value: SearchScope) { update(_query.value.copy(scope = value)) }
@@ -105,8 +114,9 @@ class SearchViewModel(
         private val repository: SearchRepository,
         private val library: UserLibraryStore,
         private val currentLocation: BrowserLocation?,
+        private val initialHiddenSetting: Flow<Boolean>? = null,
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
-        override fun <T : ViewModel> create(modelClass: Class<T>): T = SearchViewModel(repository, library, currentLocation) as T
+        override fun <T : ViewModel> create(modelClass: Class<T>): T = SearchViewModel(repository, library, currentLocation, initialHiddenSetting) as T
     }
 }

@@ -170,12 +170,21 @@ class TrashManager(
         }
         val existing = provider.findChild(original.originalParent, original.originalName)
         if (existing != null && policy == RestoreCollisionPolicy.CANCEL) return TrashResult.Collision(existing)
-        var record = original.copy(state = TrashState.RESTORING, updatedAtMillis = now(), failureReason = null)
+        val plannedName = when {
+            existing == null -> original.originalName
+            policy == RestoreCollisionPolicy.KEEP_BOTH -> keepBothName(provider, original.originalParent, original.originalName)
+            else -> original.originalName
+        }
+        var record = original.copy(
+            state = TrashState.RESTORING, updatedAtMillis = now(), failureReason = null, operationId = null,
+            restoreDestination = original.originalParent, restoreName = plannedName,
+            restoreReplace = existing != null && policy == RestoreCollisionPolicy.REPLACE,
+        )
         store.upsertTrash(record)
         return try {
             val restored = when {
-                existing == null -> movePayload(provider, payload, original.originalParent, original.originalName)
-                policy == RestoreCollisionPolicy.KEEP_BOTH -> movePayload(provider, payload, original.originalParent, keepBothName(provider, original.originalParent, original.originalName))
+                existing == null -> movePayload(provider, payload, original.originalParent, plannedName)
+                policy == RestoreCollisionPolicy.KEEP_BOTH -> movePayload(provider, payload, original.originalParent, plannedName)
                 policy == RestoreCollisionPolicy.REPLACE -> replaceFromTrash(provider, payload, existing, original)
                 else -> return TrashResult.Collision(existing)
             }
@@ -214,9 +223,14 @@ class TrashManager(
         val destinationProvider = providers.writableProviderFor(destination.providerId)
             ?: return TrashResult.Unsupported("Chosen destination is read-only.")
         destinationProvider.findChild(destination, original.originalName)?.let { return TrashResult.Collision(it) }
+        var recoveryRecord = original
         return try {
             if (payload.reference.providerId == destination.providerId && payloadProvider.canMoveNative(payload, destination, original.originalName)) {
-                val moving = original.copy(state = TrashState.RESTORING, updatedAtMillis = now(), failureReason = null)
+                val moving = original.copy(
+                    state = TrashState.RESTORING, updatedAtMillis = now(), failureReason = null, operationId = null,
+                    restoreDestination = destination, restoreName = original.originalName, restoreReplace = false,
+                )
+                recoveryRecord = moving
                 store.upsertTrash(moving)
                 val restored = payloadProvider.moveNative(payload, destination, original.originalName)
                     ?: throw IllegalStateException("Native restore did not complete")
@@ -231,12 +245,16 @@ class TrashManager(
                     listOf(OperationSource(payload.reference, payload.rootReference, payload.storageId, original.originalName, original.type == com.zz.filemanager.core.model.FileEntryType.DIRECTORY, original.sizeBytes, original.modifiedAtMillis, null)),
                     destination,
                 )
-                val queued = original.copy(state = TrashState.RESTORING, operationId = operationId, updatedAtMillis = now(), failureReason = null)
+                val queued = original.copy(
+                    state = TrashState.RESTORING, operationId = operationId, updatedAtMillis = now(), failureReason = null,
+                    restoreDestination = destination, restoreName = original.originalName, restoreReplace = false,
+                )
+                recoveryRecord = queued
                 store.upsertTrash(queued)
                 TrashResult.Queued(queued, operationId)
             }
         } catch (error: Throwable) {
-            val interrupted = original.copy(state = TrashState.INTERRUPTED, updatedAtMillis = now(), failureReason = error.message)
+            val interrupted = recoveryRecord.copy(state = TrashState.INTERRUPTED, updatedAtMillis = now(), failureReason = error.message)
             store.upsertTrash(interrupted)
             TrashResult.Failed(error.message ?: "Restore was interrupted; the recycle payload was preserved.")
         }
@@ -284,7 +302,7 @@ class TrashManager(
         store.trashRecords.value.forEach { record ->
             if (record.backend != TrashBackendType.APP_MANAGED || record.state == TrashState.TRASHED) return@forEach
             val linkedOperation = record.operationId?.let { operationStore?.get(it) }
-            if (linkedOperation != null && (linkedOperation.state.isTerminal || linkedOperation.state == FileOperationState.INTERRUPTED)) {
+            if (linkedOperation != null && linkedOperation.state.isTerminal) {
                 finalizeFallbackRecord(record, linkedOperation)
                 return@forEach
             }
@@ -292,6 +310,18 @@ class TrashManager(
             val provider = runCatching { providers.providerFor(record.originalReference.providerId) }.getOrNull() ?: return@forEach
             val sourceExists = runCatching { provider.exists(record.originalReference) }.getOrDefault(false)
             val trashExists = ref?.let { runCatching { provider.exists(it.reference) }.getOrDefault(false) } == true
+            if (record.state == TrashState.RESTORING && !trashExists) {
+                val destination = record.restoreDestination
+                val restored = if (destination != null && record.restoreName != null) runCatching {
+                    providers.writableProviderFor(destination.providerId)?.findChild(destination, record.restoreName)
+                }.getOrNull() else null
+                if (restored != null && !record.restoreReplace) {
+                    store.removeTrash(record.id)
+                    restoreRelatedItems(record, restored)
+                    libraryManager.recordActivity(ActivityKind.RESTORED, "Recovered restored ${record.originalName}", 1L, record.operationId)
+                    return@forEach
+                }
+            }
             val reconciled = when {
                 trashExists && !sourceExists -> record.copy(state = TrashState.TRASHED, updatedAtMillis = now(), failureReason = null)
                 sourceExists && !trashExists -> record.copy(state = TrashState.FAILED, updatedAtMillis = now(), failureReason = "Source is safe; recycle move did not complete.")
