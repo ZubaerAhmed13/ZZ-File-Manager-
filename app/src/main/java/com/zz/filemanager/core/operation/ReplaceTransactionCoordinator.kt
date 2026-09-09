@@ -6,6 +6,7 @@ import com.zz.filemanager.core.model.ScopedFileReference
 import com.zz.filemanager.core.storage.StorageCapability
 import com.zz.filemanager.core.storage.StorageProviderRegistry
 import com.zz.filemanager.core.storage.WritableStorageProvider
+import kotlinx.coroutines.CancellationException
 import java.io.IOException
 import kotlin.math.abs
 
@@ -64,6 +65,8 @@ internal class ReplaceTransactionCoordinator(
 
         val backup = try {
             provider.rename(existingRef, backupName)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (error: Throwable) {
             return recoverAfterMutationError(currentOperation, currentItem, provider, parent, error)
         }
@@ -79,6 +82,8 @@ internal class ReplaceTransactionCoordinator(
 
         val committed = try {
             provider.rename(staged, finalName)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (error: Throwable) {
             return recoverAfterMutationError(currentOperation, currentItem, provider, parent, error)
         }
