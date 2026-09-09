@@ -2,6 +2,7 @@ package com.zz.filemanager.core.storage
 
 import android.content.Context
 import android.net.Uri
+import android.os.Build
 import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
 import com.zz.filemanager.R
@@ -17,6 +18,7 @@ import kotlinx.coroutines.withContext
 import java.io.FileNotFoundException
 import java.io.InputStream
 import java.io.OutputStream
+import java.util.ArrayDeque
 import kotlin.coroutines.coroutineContext
 
 class SafStorageProvider(private val context: Context) : WritableStorageProvider {
@@ -71,50 +73,21 @@ class SafStorageProvider(private val context: Context) : WritableStorageProvider
     override suspend fun resolveParent(location: BrowserLocation): BrowserLocation? = withContext(Dispatchers.IO) {
         if (location.reference == location.rootReference) return@withContext null
         val tree = Uri.parse(location.rootReference)
-        val current = Uri.parse(location.reference)
-        val rootDocId = runCatching { DocumentsContract.getTreeDocumentId(tree) }.getOrNull() ?: return@withContext null
-        val currentDocId = runCatching { DocumentsContract.getDocumentId(current) }.getOrNull() ?: return@withContext null
-        if (currentDocId == rootDocId || !currentDocId.startsWith("$rootDocId/")) return@withContext null
-        val parentDocId = currentDocId.substringBeforeLast('/')
-        if (parentDocId.length < rootDocId.length) return@withContext null
-        if (parentDocId == rootDocId) {
-            return@withContext location.copy(
-                id = "saf:$rootDocId",
-                displayName = rootName(location),
-                reference = location.rootReference,
-            )
-        }
-        val parentUri = DocumentsContract.buildDocumentUriUsingTree(tree, parentDocId)
-        val label = parentDocId.substringAfterLast('/').substringAfterLast(':')
-        location.copy(id = "saf:$parentDocId", displayName = label, reference = parentUri.toString())
+        val path = documentPathIds(location) ?: return@withContext null
+        if (path.size < 2) return@withContext null
+        val parentDocId = path[path.lastIndex - 1]
+        locationForDocumentId(location, tree, parentDocId)
     }
 
     override suspend fun breadcrumbs(location: BrowserLocation): List<Breadcrumb> = withContext(Dispatchers.IO) {
         val tree = Uri.parse(location.rootReference)
-        val rootDocId = runCatching { DocumentsContract.getTreeDocumentId(tree) }.getOrNull()
-            ?: return@withContext listOf(Breadcrumb(rootName(location), location))
-        val rootLocation = location.copy(
-            id = "saf:$rootDocId",
-            displayName = rootName(location),
-            reference = location.rootReference,
-        )
-        val result = mutableListOf(Breadcrumb(rootName(location), rootLocation))
-        if (location.reference == location.rootReference) return@withContext result
-
-        val currentDocId = runCatching { DocumentsContract.getDocumentId(Uri.parse(location.reference)) }.getOrNull()
-            ?: return@withContext result
-        if (!currentDocId.startsWith("$rootDocId/")) return@withContext result
-        val relative = currentDocId.removePrefix("$rootDocId/")
-        var docId = rootDocId
-        relative.split('/').filter { it.isNotBlank() }.forEach { segment ->
-            docId += "/$segment"
-            val uri = DocumentsContract.buildDocumentUriUsingTree(tree, docId)
-            result += Breadcrumb(
-                segment,
-                location.copy(id = "saf:$docId", displayName = segment, reference = uri.toString()),
-            )
+        val rootDocId = treeDocumentId(tree) ?: return@withContext listOf(Breadcrumb(rootName(location), location))
+        val path = documentPathIds(location) ?: listOf(rootDocId)
+        path.mapIndexed { index, documentId ->
+            val crumbLocation = locationForDocumentId(location, tree, documentId)
+            val label = if (index == 0) rootName(location) else crumbLocation.displayName
+            Breadcrumb(label, crumbLocation.copy(displayName = label))
         }
-        result
     }
 
     override suspend fun capabilities(location: BrowserLocation): ProviderCapabilities {
@@ -225,17 +198,25 @@ class SafStorageProvider(private val context: Context) : WritableStorageProvider
         destination: BrowserLocation,
     ): Boolean = withContext(Dispatchers.IO) {
         if (source.reference.providerId != ID || destination.providerId != ID) return@withContext false
-        val tree = Uri.parse(source.rootReference)
+
+        val sourceTree = Uri.parse(source.rootReference)
+        val destinationTree = Uri.parse(destination.rootReference)
+        if (sourceTree.authority == null || sourceTree.authority != destinationTree.authority) return@withContext false
+
         val sourceUri = validateScopedUri(source)
-        val destinationUri = Uri.parse(destination.reference)
-        val rootDocId = runCatching { DocumentsContract.getTreeDocumentId(tree) }.getOrNull() ?: return@withContext false
-        val sourceDocId = runCatching {
-            if (sourceUri == tree) rootDocId else DocumentsContract.getDocumentId(sourceUri)
-        }.getOrNull() ?: return@withContext false
-        val destinationDocId = runCatching {
-            if (destinationUri == tree) rootDocId else DocumentsContract.getDocumentId(destinationUri)
-        }.getOrNull() ?: return@withContext false
-        destinationDocId == sourceDocId || destinationDocId.startsWith("$sourceDocId/")
+        val sourceDocId = DocumentsContract.getDocumentId(sourceUri)
+        val destinationDocId = documentIdFor(destination)
+        if (sourceDocId == destinationDocId) return@withContext true
+
+        val destinationUri = DocumentsContract.buildDocumentUriUsingTree(destinationTree, destinationDocId)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val platformResult = runCatching {
+                DocumentsContract.isChildDocument(context.contentResolver, sourceUri, destinationUri)
+            }.getOrNull()
+            if (platformResult != null) return@withContext platformResult
+        }
+
+        findPathByTraversal(sourceTree, sourceDocId, destinationDocId) != null
     }
 
     private fun findChildInternal(parent: BrowserLocation, name: String): FileEntry? {
@@ -247,7 +228,10 @@ class SafStorageProvider(private val context: Context) : WritableStorageProvider
 
     private fun childDocumentUris(location: BrowserLocation): List<Uri> {
         val tree = Uri.parse(location.rootReference)
-        val parentDocId = documentIdFor(location)
+        return childDocumentUris(tree, documentIdFor(location))
+    }
+
+    private fun childDocumentUris(tree: Uri, parentDocId: String): List<Uri> {
         val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentDocId)
         val projection = arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
         val result = mutableListOf<Uri>()
@@ -255,9 +239,6 @@ class SafStorageProvider(private val context: Context) : WritableStorageProvider
             val documentIdColumn = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
             while (cursor.moveToNext()) {
                 val childDocId = cursor.getString(documentIdColumn)
-                if (childDocId != parentDocId && !childDocId.startsWith("$parentDocId/")) {
-                    throw StorageAccessException.PermissionRequired()
-                }
                 result += DocumentsContract.buildDocumentUriUsingTree(tree, childDocId)
             }
         } ?: throw StorageAccessException.Unavailable()
@@ -277,31 +258,137 @@ class SafStorageProvider(private val context: Context) : WritableStorageProvider
 
     private fun documentIdFor(location: BrowserLocation): String {
         val tree = Uri.parse(location.rootReference)
-        val rootDocId = runCatching { DocumentsContract.getTreeDocumentId(tree) }
-            .getOrElse { throw StorageAccessException.PermissionRequired(it) }
+        val rootDocId = treeDocumentId(tree) ?: throw StorageAccessException.PermissionRequired()
         val referenceUri = Uri.parse(location.reference)
+        requireMatchingAuthority(tree, referenceUri)
         val documentId = runCatching {
             if (location.reference == location.rootReference) rootDocId
             else DocumentsContract.getDocumentId(referenceUri)
         }.getOrElse { throw StorageAccessException.PermissionRequired(it) }
-        if (documentId != rootDocId && !documentId.startsWith("$rootDocId/")) {
-            throw StorageAccessException.PermissionRequired()
-        }
+        if (!isWithinTree(tree, rootDocId, documentId)) throw StorageAccessException.PermissionRequired()
         return documentId
     }
 
     private fun validateScopedUri(item: ScopedFileReference): Uri {
         val tree = Uri.parse(item.rootReference)
         val uri = item.reference.uri?.let(Uri::parse) ?: throw StorageAccessException.Unavailable()
-        val rootDocId = runCatching { DocumentsContract.getTreeDocumentId(tree) }
-            .getOrElse { throw StorageAccessException.PermissionRequired(it) }
+        val rootDocId = treeDocumentId(tree) ?: throw StorageAccessException.PermissionRequired()
+        requireMatchingAuthority(tree, uri)
         val itemDocId = runCatching {
             if (uri == tree) rootDocId else DocumentsContract.getDocumentId(uri)
         }.getOrElse { throw StorageAccessException.PermissionRequired(it) }
-        if (itemDocId != rootDocId && !itemDocId.startsWith("$rootDocId/")) {
+        if (!isWithinTree(tree, rootDocId, itemDocId)) throw StorageAccessException.PermissionRequired()
+        return DocumentsContract.buildDocumentUriUsingTree(tree, itemDocId)
+    }
+
+    private fun isWithinTree(tree: Uri, rootDocId: String, documentId: String): Boolean {
+        if (documentId == rootDocId) return true
+        val rootDocumentUri = DocumentsContract.buildDocumentUriUsingTree(tree, rootDocId)
+        val candidateUri = DocumentsContract.buildDocumentUriUsingTree(tree, documentId)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val platformResult = runCatching {
+                DocumentsContract.isChildDocument(context.contentResolver, rootDocumentUri, candidateUri)
+            }.getOrNull()
+            if (platformResult != null) return platformResult
+        }
+
+        val platformPath = runCatching {
+            DocumentsContract.findDocumentPath(context.contentResolver, candidateUri)?.path
+        }.getOrNull()
+        if (platformPath != null) {
+            return platformPath.firstOrNull() == rootDocId && platformPath.lastOrNull() == documentId
+        }
+
+        return runCatching { findPathByTraversal(tree, rootDocId, documentId) != null }.getOrDefault(false)
+    }
+
+    private fun documentPathIds(location: BrowserLocation): List<String>? {
+        val tree = Uri.parse(location.rootReference)
+        val rootDocId = treeDocumentId(tree) ?: return null
+        val currentDocId = documentIdFor(location)
+        if (currentDocId == rootDocId) return listOf(rootDocId)
+
+        val currentUri = DocumentsContract.buildDocumentUriUsingTree(tree, currentDocId)
+        val platformPath = runCatching {
+            DocumentsContract.findDocumentPath(context.contentResolver, currentUri)?.path
+        }.getOrNull()
+        if (
+            platformPath != null &&
+            platformPath.firstOrNull() == rootDocId &&
+            platformPath.lastOrNull() == currentDocId
+        ) {
+            return platformPath
+        }
+
+        return findPathByTraversal(tree, rootDocId, currentDocId)
+    }
+
+    private fun findPathByTraversal(tree: Uri, startDocId: String, targetDocId: String): List<String>? {
+        if (startDocId == targetDocId) return listOf(startDocId)
+
+        val parents = mutableMapOf<String, String?>(startDocId to null)
+        val queue = ArrayDeque<String>()
+        queue.add(startDocId)
+
+        while (queue.isNotEmpty()) {
+            val parentDocId = queue.removeFirst()
+            val children = childDocumentUris(tree, parentDocId)
+            for (childUri in children) {
+                val childDocId = runCatching { DocumentsContract.getDocumentId(childUri) }.getOrNull() ?: continue
+                if (childDocId in parents) continue
+                parents[childDocId] = parentDocId
+                if (childDocId == targetDocId) return reconstructPath(parents, targetDocId)
+
+                val childDocument = documentForUri(childUri)
+                if (childDocument?.isDirectory == true) queue.add(childDocId)
+            }
+        }
+        return null
+    }
+
+    private fun reconstructPath(parents: Map<String, String?>, targetDocId: String): List<String> {
+        val reversePath = mutableListOf<String>()
+        var current: String? = targetDocId
+        while (current != null) {
+            reversePath += current
+            current = parents[current]
+        }
+        reversePath.reverse()
+        return reversePath
+    }
+
+    private fun locationForDocumentId(location: BrowserLocation, tree: Uri, documentId: String): BrowserLocation {
+        val rootDocId = treeDocumentId(tree) ?: throw StorageAccessException.PermissionRequired()
+        val reference = if (documentId == rootDocId) {
+            location.rootReference
+        } else {
+            DocumentsContract.buildDocumentUriUsingTree(tree, documentId).toString()
+        }
+        val label = if (documentId == rootDocId) {
+            rootName(location)
+        } else {
+            documentForUri(Uri.parse(reference))?.name ?: context.getString(R.string.unnamed_item)
+        }
+        return location.copy(
+            id = "saf:$documentId",
+            displayName = label,
+            reference = reference,
+        )
+    }
+
+    private fun treeDocumentId(tree: Uri): String? =
+        runCatching { DocumentsContract.getTreeDocumentId(tree) }.getOrNull()
+
+    private fun requireMatchingAuthority(tree: Uri, document: Uri) {
+        if (
+            tree.scheme != "content" ||
+            document.scheme != "content" ||
+            tree.authority.isNullOrBlank() ||
+            tree.authority != document.authority
+        ) {
             throw StorageAccessException.PermissionRequired()
         }
-        return DocumentsContract.buildDocumentUriUsingTree(tree, itemDocId)
     }
 
     private fun toEntry(file: DocumentFile, storageId: String): FileEntry {
