@@ -7,6 +7,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
+import android.widget.ImageView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -34,6 +36,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -68,11 +71,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import com.zz.filemanager.app.AppContainer
 import com.zz.filemanager.core.analyzer.AnalyzerSnapshot
 import com.zz.filemanager.core.analyzer.DuplicateGroup
+import com.zz.filemanager.core.analyzer.DuplicateMember
 import com.zz.filemanager.core.analyzer.DuplicateProgress
-import com.zz.filemanager.core.analyzer.StorageCategory
 import com.zz.filemanager.core.apk.ApkBackupMode
 import com.zz.filemanager.core.apk.InstalledAppInfo
 import com.zz.filemanager.core.archive.ArchiveCreateRequest
@@ -83,8 +87,12 @@ import com.zz.filemanager.core.archive.ZipCompressionLevel
 import com.zz.filemanager.core.model.BrowserLocation
 import com.zz.filemanager.core.model.FileEntry
 import com.zz.filemanager.core.model.StorageLocation
+import com.zz.filemanager.core.step4.Step4OpenCodec
+import com.zz.filemanager.core.trash.TrashResult
 import com.zz.filemanager.core.util.Formatters
 import com.zz.filemanager.ui.theme.ZZFileManagerTheme
+import java.text.DateFormat
+import java.util.Date
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -179,7 +187,15 @@ private fun AppsTool(container: AppContainer, onBack: () -> Unit) {
                     ListItem(
                         headlineContent = { Text(app.label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                         supportingContent = { Text("${app.packageName} • ${app.versionName.orEmpty()}${if (app.isSystemApp) " • System" else " • User"}") },
-                        leadingContent = { Icon(Icons.Default.Android, null) },
+                        leadingContent = {
+                            app.icon?.let { drawable ->
+                                AndroidView(
+                                    factory = { ctx -> ImageView(ctx).apply { setImageDrawable(drawable); contentDescription = app.label } },
+                                    update = { it.setImageDrawable(drawable) },
+                                    modifier = Modifier.size(42.dp),
+                                )
+                            } ?: Icon(Icons.Default.Android, null)
+                        },
                         modifier = Modifier.clickable { selected = app },
                     )
                     HorizontalDivider()
@@ -196,6 +212,8 @@ private fun AppsTool(container: AppContainer, onBack: () -> Unit) {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(app.packageName)
                     Text("Version ${app.versionName.orEmpty()} (${app.versionCode})")
+                    app.firstInstallTime?.let { Text("Installed ${DateFormat.getDateTimeInstance().format(Date(it))}") }
+                    app.lastUpdateTime?.let { Text("Updated ${DateFormat.getDateTimeInstance().format(Date(it))}") }
                     Text("Base APK: ${app.baseApkSizeBytes?.let(Formatters::bytes) ?: "Unknown"}")
                     Text(if (app.hasSplits) "Split APK package: ${app.splitApkPaths.size} split component(s)" else "Single APK package")
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -221,7 +239,6 @@ private fun AppsTool(container: AppContainer, onBack: () -> Unit) {
                         }) { Icon(Icons.Default.Archive, null); Text("All splits") }
                     }
                     OutlinedButton(onClick = {
-                        // Android owns the confirmation UI; the file manager never silently removes apps.
                         context.startActivity(Intent(Intent.ACTION_DELETE, Uri.parse("package:${app.packageName}")))
                         selected = null
                     }) { Icon(Icons.Default.Delete, null); Text("Uninstall through Android") }
@@ -234,6 +251,7 @@ private fun AppsTool(container: AppContainer, onBack: () -> Unit) {
 
 @Composable
 private fun AnalyzerTool(container: AppContainer, onBack: () -> Unit) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
     var roots by remember { mutableStateOf<List<StorageLocation>>(emptyList()) }
@@ -243,6 +261,7 @@ private fun AnalyzerTool(container: AppContainer, onBack: () -> Unit) {
     var duplicateJob by remember { mutableStateOf<Job?>(null) }
     var duplicateProgress by remember { mutableStateOf<DuplicateProgress?>(null) }
     var duplicates by remember { mutableStateOf<List<DuplicateGroup>>(emptyList()) }
+    var duplicateProperties by remember { mutableStateOf<DuplicateMember?>(null) }
     var rootMenu by remember { mutableStateOf(false) }
     val treeLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) scope.launch {
@@ -289,6 +308,57 @@ private fun AnalyzerTool(container: AppContainer, onBack: () -> Unit) {
         }
     }
 
+    fun openMember(member: DuplicateMember) {
+        val internal = Step4OpenCodec.supports(member.entry)
+        val request = if (internal) Step4OpenCodec.request(member.entry, member.parent) else container.storage.openRequest(member.entry)
+        if (request == null) {
+            scope.launch { snackbar.showSnackbar("This file cannot be opened") }
+            return
+        }
+        runCatching {
+            if (internal) {
+                context.startActivity(Intent(context, Step4FileActivity::class.java).setData(Uri.parse(request.uri)))
+            } else {
+                context.startActivity(Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(Uri.parse(request.uri), request.mimeType ?: "*/*")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                })
+            }
+        }.onFailure { scope.launch { snackbar.showSnackbar("No compatible viewer is available") } }
+    }
+
+    fun revealMember(member: DuplicateMember) {
+        scope.launch {
+            container.storage.remember(member.parent)
+            context.startActivity(
+                Intent(context, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK),
+            )
+        }
+    }
+
+    fun favoriteMember(member: DuplicateMember) {
+        scope.launch {
+            container.userLibraryManager.toggleFavorite(member.entry, member.parent)
+            snackbar.showSnackbar("Favorite updated")
+        }
+    }
+
+    fun recycleMember(member: DuplicateMember) {
+        scope.launch {
+            when (container.trashManager.trash(member.entry, member.parent)) {
+                is TrashResult.Success, is TrashResult.Queued -> {
+                    duplicates = duplicates.mapNotNull { group ->
+                        if (group.sha256 != member.sha256 || group.sizeBytes != member.entry.sizeBytes) group
+                        else group.copy(members = group.members.filterNot { it.entry.id == member.entry.id }).takeIf { it.members.size >= 2 }
+                    }
+                    snackbar.showSnackbar("Moved to Recycle Bin")
+                }
+                else -> snackbar.showSnackbar("Could not move this duplicate to Recycle Bin")
+            }
+        }
+    }
+
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = { TopAppBar(title = { Text("Analyze Storage") }, navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } }) },
@@ -298,9 +368,7 @@ private fun AnalyzerTool(container: AppContainer, onBack: () -> Unit) {
                 Box {
                     OutlinedButton(onClick = { rootMenu = true }) { Icon(Icons.Default.Storage, null); Text(selectedRoot?.displayName ?: "Choose storage") }
                     DropdownMenu(rootMenu, { rootMenu = false }) {
-                        roots.forEach { storage ->
-                            DropdownMenuItem(text = { Text(storage.displayName) }, onClick = { selectedRoot = storage.root; rootMenu = false })
-                        }
+                        roots.forEach { storage -> DropdownMenuItem(text = { Text(storage.displayName) }, onClick = { selectedRoot = storage.root; rootMenu = false }) }
                     }
                 }
                 OutlinedButton(onClick = { treeLauncher.launch(null) }) { Text("Choose folder") }
@@ -326,9 +394,7 @@ private fun AnalyzerTool(container: AppContainer, onBack: () -> Unit) {
                 snapshot?.let { result ->
                     item { AnalyzerOverview(result) }
                     item { Section("Categories") }
-                    result.categoryBytes.toList().sortedByDescending { it.second }.forEach { (category, bytes) ->
-                        item { ResultRow(category.name.replace('_', ' '), Formatters.bytes(bytes)) }
-                    }
+                    result.categoryBytes.toList().sortedByDescending { it.second }.forEach { (category, bytes) -> item { ResultRow(category.name.replace('_', ' '), Formatters.bytes(bytes)) } }
                     item { Section("Largest files") }
                     items(result.largestFiles.take(50), key = { it.entry.id }) { file -> ResultRow(file.entry.name, Formatters.bytes(file.sizeBytes)) }
                     item { Section("Largest folders") }
@@ -345,14 +411,43 @@ private fun AnalyzerTool(container: AppContainer, onBack: () -> Unit) {
                             Column(Modifier.padding(12.dp)) {
                                 Text("${group.members.size} exact copies • ${Formatters.bytes(group.sizeBytes)} each", style = MaterialTheme.typography.titleSmall)
                                 Text("SHA-256 ${group.sha256.take(20)}…", style = MaterialTheme.typography.bodySmall)
-                                group.members.take(8).forEach { Text(it.entry.name, style = MaterialTheme.typography.bodySmall) }
-                                Text("No duplicate is deleted automatically.", style = MaterialTheme.typography.labelSmall)
+                                group.members.forEach { member ->
+                                    Column(Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                                        Text(member.entry.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        Text(member.parent.displayName, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                            TextButton(onClick = { openMember(member) }) { Text("Open") }
+                                            TextButton(onClick = { revealMember(member) }) { Text("Reveal") }
+                                            TextButton(onClick = { favoriteMember(member) }) { Icon(Icons.Default.StarBorder, null); Text("Favorite") }
+                                            TextButton(onClick = { duplicateProperties = member }) { Text("Info") }
+                                            TextButton(onClick = { recycleMember(member) }) { Text("Recycle") }
+                                        }
+                                    }
+                                }
+                                Text("Every group above passed full SHA-256 verification. Nothing is deleted automatically.", style = MaterialTheme.typography.labelSmall)
                             }
                         }
                     }
                 }
             }
         }
+    }
+
+    duplicateProperties?.let { member ->
+        AlertDialog(
+            onDismissRequest = { duplicateProperties = null },
+            title = { Text("Duplicate properties") },
+            text = {
+                Column {
+                    ResultRow("Name", member.entry.name)
+                    ResultRow("Size", Formatters.bytes(member.entry.sizeBytes ?: 0L))
+                    ResultRow("Folder", member.parent.displayName)
+                    ResultRow("SHA-256", member.sha256)
+                    member.entry.modifiedAtMillis?.let { ResultRow("Modified", DateFormat.getDateTimeInstance().format(Date(it))) }
+                }
+            },
+            confirmButton = { TextButton(onClick = { duplicateProperties = null }) { Text("Close") } },
+        )
     }
 }
 
