@@ -43,7 +43,27 @@ interface WritableStorageProvider : StorageProvider {
     suspend fun findChild(parent: BrowserLocation, name: String): FileEntry?
     suspend fun freeBytes(location: BrowserLocation): Long?
     suspend fun isSameOrDescendant(source: ScopedFileReference, destination: BrowserLocation): Boolean
+
+    /**
+     * Non-mutating feasibility check used only for planning/free-space decisions. Returning false
+     * must never prevent a later safe copy fallback. Returning true means [moveNative] is expected
+     * to move this item into [destination] without allocating another full copy of its payload.
+     */
+    suspend fun canMoveNative(item: ScopedFileReference, destination: BrowserLocation, newName: String): Boolean = false
+
     suspend fun moveNative(item: ScopedFileReference, destination: BrowserLocation, newName: String): FileEntry? = null
+
+    /**
+     * Optional atomic staged-file replacement. Implementations must either replace [existing] with
+     * [staged] atomically and return the committed entry, return null without mutating either item
+     * when atomic replacement is unavailable, or throw while preserving the pre-call destination.
+     * The engine falls back to a reversible backup/commit transaction when this returns null.
+     */
+    suspend fun replaceAtomically(
+        staged: ScopedFileReference,
+        existing: ScopedFileReference,
+        finalName: String,
+    ): FileEntry? = null
 }
 
 interface StorageProviderRegistry {
