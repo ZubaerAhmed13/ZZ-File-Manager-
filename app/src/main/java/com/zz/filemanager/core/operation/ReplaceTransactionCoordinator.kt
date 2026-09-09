@@ -87,13 +87,31 @@ internal class ReplaceTransactionCoordinator(
         } catch (error: Throwable) {
             return recoverAfterMutationError(currentOperation, currentItem, provider, parent, error)
         }
-        verifySize(committed, expectedBytes)
+        // Persist proof of the destructive staged -> final mutation immediately, before
+        // post-commit verification. A crash or verification failure at this boundary must
+        // remain recoverable and must never be reported as a completed operation.
         val committedRef = ScopedFileReference(committed.reference, destination.rootReference, destination.storageId)
         currentItem = currentItem.copy(
-            replacePhase = ReplacePhase.COMMITTED,
+            replacePhase = ReplacePhase.COMMITTING,
             resultReference = committedRef,
             partialOutput = null,
         )
+        currentOperation = saveItem(currentOperation, currentItem)
+
+        try {
+            verifySize(committed, expectedBytes)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            val interrupted = interrupt(
+                currentOperation,
+                currentItem,
+                "Replacement reached the final filename, but post-commit verification did not complete. The original safety backup is preserved for recovery.",
+            )
+            throw ReplaceTransactionNeedsRecovery(interrupted.id, error)
+        }
+
+        currentItem = currentItem.copy(replacePhase = ReplacePhase.COMMITTED)
         currentOperation = saveItem(currentOperation, currentItem)
 
         val backupDeleted = runCatching { provider.delete(backupRef) }.getOrDefault(false)
@@ -180,27 +198,13 @@ internal class ReplaceTransactionCoordinator(
                     restoreOriginal(saveItem(currentOperation, updated), updated, provider, parent)
                 }
 
-                backup != null && final != null && stagedRef != null && stagedExists == false && sameReference(final, stagedRef) -> {
-                    val updated = currentItem.copy(
-                        replacePhase = ReplacePhase.COMMITTED,
-                        replaceBackupReference = scoped(backup, currentItem),
-                        resultReference = scoped(final, currentItem),
-                        partialOutput = null,
-                    )
-                    finishCommitted(saveItem(currentOperation, updated), updated, provider, backup, final)
-                }
+                backup != null && final != null && (
+                    currentItem.resultReference?.let { sameReference(final, it) } == true ||
+                        (stagedRef != null && stagedExists == false)
+                    ) -> recoverCommittedCandidate(currentOperation, currentItem, provider, backup, final)
 
                 backup == null && final != null && matchesOriginalSnapshot(currentItem, final) ->
                     resetUncommitted(currentOperation, currentItem, provider)
-
-                backup == null && final != null && stagedRef != null && stagedExists == false && sameReference(final, stagedRef) -> {
-                    val updated = currentItem.copy(
-                        replacePhase = ReplacePhase.COMMITTED,
-                        resultReference = scoped(final, currentItem),
-                        partialOutput = null,
-                    )
-                    finishCommitted(saveItem(currentOperation, updated), updated, provider, null, final)
-                }
 
                 else -> unresolved(
                     currentOperation,
@@ -210,7 +214,7 @@ internal class ReplaceTransactionCoordinator(
             }
 
             ReplacePhase.COMMITTED -> when {
-                final != null -> finishCommitted(currentOperation, currentItem, provider, backup, final)
+                final != null -> recoverCommittedCandidate(currentOperation, currentItem, provider, backup, final)
                 backup != null -> restoreOriginal(currentOperation, currentItem.copy(replaceBackupReference = scoped(backup, currentItem)), provider, parent)
                 else -> unresolved(
                     currentOperation,
@@ -288,6 +292,94 @@ internal class ReplaceTransactionCoordinator(
             state = OperationItemState.QUEUED,
             resultReference = null,
             partialOutput = if (cleaned) null else staged,
+            processedBytes = 0L,
+        )
+        val saved = saveItem(operation, reset)
+        return RecoveryResult(saved, reset, canContinue = true)
+    }
+
+    private suspend fun recoverCommittedCandidate(
+        operation: FileOperation,
+        item: OperationItem,
+        provider: WritableStorageProvider,
+        backup: FileEntry?,
+        final: FileEntry,
+    ): RecoveryResult {
+        val candidateItem = item.copy(
+            replaceBackupReference = backup?.let { scoped(it, item) } ?: item.replaceBackupReference,
+            resultReference = scoped(final, item),
+            partialOutput = null,
+        )
+        val candidateOperation = saveItem(operation, candidateItem)
+
+        try {
+            verifySize(final, candidateItem.source.sizeBytes)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Throwable) {
+            if (backup != null) {
+                return rollbackCommittedCandidate(candidateOperation, candidateItem, provider, backup, final)
+            }
+            return unresolved(
+                candidateOperation,
+                candidateItem,
+                "The replacement final exists but cannot be verified and its safety backup is unavailable. The operation remains interrupted.",
+            )
+        }
+
+        val committedItem = candidateItem.copy(replacePhase = ReplacePhase.COMMITTED)
+        val committedOperation = if (candidateItem.replacePhase == ReplacePhase.COMMITTED) {
+            candidateOperation
+        } else {
+            saveItem(candidateOperation, committedItem)
+        }
+        return finishCommitted(committedOperation, committedItem, provider, backup, final)
+    }
+
+    private suspend fun rollbackCommittedCandidate(
+        operation: FileOperation,
+        item: OperationItem,
+        provider: WritableStorageProvider,
+        backup: FileEntry,
+        final: FileEntry,
+    ): RecoveryResult {
+        val finalName = item.replaceFinalName
+            ?: return unresolved(operation, item, "Replace rollback is missing its final filename.")
+        val backupRef = scoped(backup, item)
+        val finalRef = scoped(final, item)
+
+        val removed = try {
+            provider.delete(finalRef)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Throwable) {
+            false
+        }
+        if (!removed) {
+            return unresolved(
+                operation,
+                item.copy(replaceBackupReference = backupRef, resultReference = finalRef, partialOutput = null),
+                "The unverified replacement final could not be removed. The original safety backup is preserved.",
+            )
+        }
+
+        try {
+            provider.rename(backupRef, finalName)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Throwable) {
+            return unresolved(
+                operation,
+                item.copy(replaceBackupReference = backupRef, resultReference = null, partialOutput = null),
+                "The unverified replacement was removed, but the original safety backup could not yet be restored.",
+            )
+        }
+
+        val reset = clearLedger(item).copy(
+            state = OperationItemState.QUEUED,
+            failure = null,
+            resultReference = null,
+            partialOutput = null,
             processedBytes = 0L,
         )
         val saved = saveItem(operation, reset)

@@ -1478,7 +1478,37 @@ class FileOperationEngine(
         return operation
     }
 
-    private suspend fun finishFromItems(input: FileOperation) {
+    internal suspend fun finishFromItems(input: FileOperation) {
+        val activeItem = input.items.firstOrNull {
+            it.state == OperationItemState.QUEUED || it.state == OperationItemState.RUNNING
+        }
+        val unresolvedReplace = input.items.firstOrNull { it.replacePhase != ReplacePhase.NONE }
+        val unresolvedBatch = input.batchRenameRollbackRequired ||
+            (input.type == FileOperationType.BATCH_RENAME && input.items.any {
+                it.batchRenamePhase !in setOf(BatchRenamePhase.FINAL, BatchRenamePhase.ROLLED_BACK)
+            })
+
+        if (activeItem != null || unresolvedReplace != null || unresolvedBatch) {
+            val itemName = unresolvedReplace?.source?.name ?: activeItem?.source?.name ?: input.currentItemName
+            val failure = OperationFailure(
+                OperationFailureCode.TRANSACTION_ROLLBACK_FAILED,
+                "Operation completion is not proven because an item or transaction is still unresolved. Recovery must finish before success can be reported.",
+                itemName,
+            )
+            val interrupted = recalculate(
+                input.copy(
+                    state = FileOperationState.INTERRUPTED,
+                    completedAtMillis = null,
+                    updatedAtMillis = now(),
+                    currentItemName = null,
+                    pendingCollision = null,
+                    failure = failure,
+                ),
+            )
+            save(interrupted)
+            return
+        }
+
         val failed = input.items.count { it.state == OperationItemState.FAILED }
         val warnings = input.warningCount + input.items.count { it.state == OperationItemState.SKIPPED }.toLong()
         val state = when {
