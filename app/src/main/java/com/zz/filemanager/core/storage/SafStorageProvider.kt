@@ -177,10 +177,17 @@ class SafStorageProvider(private val context: Context) : WritableStorageProvider
         if (documentFlags(uri) and DocumentsContract.Document.FLAG_SUPPORTS_RENAME == 0) {
             throw StorageAccessException.ReadOnly()
         }
-        val document = DocumentFile.fromSingleUri(context, uri) ?: throw StorageAccessException.Unavailable()
         try {
-            if (!document.renameTo(newName)) throw StorageAccessException.Io()
-            toEntry(document, item.storageId)
+            val renamedUri = DocumentsContract.renameDocument(context.contentResolver, uri, newName)
+                ?: throw StorageAccessException.Io()
+            val tree = Uri.parse(item.rootReference)
+            requireMatchingAuthority(tree, renamedUri)
+            val renamedDocId = DocumentsContract.getDocumentId(renamedUri)
+            val rootDocId = treeDocumentId(tree) ?: throw StorageAccessException.PermissionRequired()
+            if (!isWithinTree(tree, rootDocId, renamedDocId)) throw StorageAccessException.PermissionRequired()
+            val scopedRenamedUri = DocumentsContract.buildDocumentUriUsingTree(tree, renamedDocId)
+            val renamed = documentForUri(scopedRenamedUri) ?: throw StorageAccessException.Unavailable()
+            toEntry(renamed, item.storageId)
         } catch (error: SecurityException) {
             throw StorageAccessException.PermissionRequired(error)
         }
