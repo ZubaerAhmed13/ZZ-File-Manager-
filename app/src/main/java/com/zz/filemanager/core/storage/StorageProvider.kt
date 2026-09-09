@@ -31,6 +31,13 @@ interface StorageProvider {
     suspend fun exists(item: FileReference): Boolean
     suspend fun resolveParent(location: BrowserLocation): BrowserLocation?
     suspend fun breadcrumbs(location: BrowserLocation): List<Breadcrumb>
+
+    /**
+     * Optional provider-stable identity for proving that the same underlying object survived a
+     * rename/atomic move even when its path/URI reference changes. This is deliberately not a
+     * display identity and must return null when the provider cannot make that guarantee.
+     */
+    suspend fun mutationIdentity(item: FileReference): String? = null
 }
 
 interface WritableStorageProvider : StorageProvider {
