@@ -1,0 +1,55 @@
+name: Step4 one-shot editor back dispatcher fix
+
+on:
+  push:
+    branches: [ 'step4/archive-media-text-apk-analyzer' ]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: "github.event.head_commit.message == 'step4: bootstrap editor back dispatcher fix'"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: step4/archive-media-text-apk-analyzer
+          fetch-depth: 0
+      - name: Patch TextViewerEditor dispatcher scope
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('app/src/main/java/com/zz/filemanager/Step4FileActivity.kt')
+          text = path.read_text()
+          old = '''private fun TextViewerEditor(
+              container: AppContainer,
+              entry: FileEntry,
+              parent: BrowserLocation,
+              snackbar: SnackbarHostState,
+          ) {
+              val scope = rememberCoroutineScope()
+          '''
+          new = '''private fun TextViewerEditor(
+              container: AppContainer,
+              entry: FileEntry,
+              parent: BrowserLocation,
+              snackbar: SnackbarHostState,
+          ) {
+              val scope = rememberCoroutineScope()
+              val backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f'Expected exactly one TextViewerEditor header, found {text.count(old)}')
+          path.write_text(text.replace(old, new, 1))
+          PY
+      - name: Commit source fix
+        shell: bash
+        run: |
+          git config user.name 'Zubaer Ahmed'
+          git config user.email 'zubaerknight@gmail.com'
+          git add app/src/main/java/com/zz/filemanager/Step4FileActivity.kt
+          git diff --cached --check
+          git commit -m 'step4: fix editor back dispatcher scope'
+          git push origin HEAD:step4/archive-media-text-apk-analyzer
