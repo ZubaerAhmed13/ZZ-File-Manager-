@@ -60,7 +60,13 @@ The local provider implements create file/folder, delete, rename, output streami
 
 ### SAF provider
 
-The SAF provider implements writable tree operations through `DocumentFile`, `DocumentsContract`, and `ContentResolver`, including create, delete, rename, input/output streaming, child lookup, and scoped-tree validation. Provider capability differences remain explicit; the engine does not assume atomic rename, random access, or reliable free-space capacity for SAF.
+The production SAF provider uses `DocumentsContract`, `ContentResolver`, and single-document `DocumentFile` metadata access under the authorized tree. Directory enumeration uses `buildChildDocumentsUriUsingTree()` queries rather than unsupported `SingleDocumentFile.listFiles()` behavior. File/folder creation uses `DocumentsContract.createDocument()`, and rename/finalization uses `DocumentsContract.renameDocument()` so providers that change document IDs on rename are handled correctly.
+
+SAF document IDs are treated as opaque values. Root containment, parent/breadcrumb resolution, and descendant checks use platform tree/path APIs where available (`isChildDocument`, `findDocumentPath`) with iterative tree traversal fallback rather than parsing document IDs as filesystem paths.
+
+Mutation capability reporting honors provider flags: `FLAG_DIR_SUPPORTS_CREATE`, `FLAG_SUPPORTS_DELETE`, `FLAG_SUPPORTS_RENAME`, and `FLAG_SUPPORTS_WRITE`. A writable URI grant therefore does not falsely imply that every mutation is supported. SAF free-space capacity is considered unknown unless a provider can report it reliably.
+
+API-35 instrumentation exercises the unchanged production `SafStorageProvider` against a debug-only deterministic `DocumentsProvider`. The test grant replaces only unreliable headless system-picker UI automation; all resolver calls and production provider logic still pass through Android's scoped tree-permission contract.
 
 ## Operation model
 
@@ -175,7 +181,7 @@ Android execution components in Step 2 are:
 
 The manifest declares the foreground-service and notification permissions required for the file-operation channel and `dataSync` service type. Notifications expose live operation type/current item/progress plus pause and cancel actions where meaningful.
 
-If notification permission is denied, the operation architecture remains guarded and no storage code depends on a notification callback to preserve file correctness; final permission-behavior certification on real OEM devices remains part of Step 7.
+If notification permission is denied, storage correctness does not depend on a notification callback. Device/OEM-specific notification-permission behavior remains part of Step 7 physical certification.
 
 ## Progress throttling
 
@@ -185,7 +191,7 @@ If total bytes are unknown, UI uses item progress/indeterminate progress and nev
 
 ## Low-space and provider-loss behavior
 
-Before known-size copy/move, free space is checked when the destination provider exposes reliable capacity. Unknown SAF capacity does not block valid work. Mid-stream write/provider failures close resources, preserve source data, clean temporary outputs where possible, and result in typed operation failure/warning state.
+Before known-size copy/move, free space is checked when the destination provider exposes reliable capacity. Unknown SAF capacity does not block valid work. Mid-stream write/provider failures close resources, preserve source data, clean temporary outputs where possible, and result in typed operation failure/warning state. If a provider disappears before a tracked partial can be deleted, that partial reference remains in the journal for safe retry/reconciliation instead of being forgotten.
 
 ## Security
 
@@ -196,6 +202,9 @@ Step 2 preserves and expands Step 1 storage safety:
 - no path separators/NUL in generated names
 - no shell command construction from file names
 - no SAF URI-to-path conversion
+- opaque SAF document IDs
+- SAF authorized-tree containment checks
+- provider mutation flags honored before writes
 - no recursive symbolic-link following
 - self/descendant copy validation
 - provider-scoped references persisted instead of Android framework objects
@@ -207,6 +216,12 @@ There is no application-level 2 GB/4 GB/10 GB/30 GB ceiling. Size/progress field
 
 Byte-level resume after process death is intentionally not claimed for non-seekable providers. Recovery is correct at file boundaries: completed items remain complete; an interrupted current file is restarted after source/destination revalidation.
 
+A controller scale test queues 10,000 source metadata records without allocating file payloads, and progress/state persistence remains item/interval bounded rather than source-size proportional.
+
+## Automated certification
+
+Implementation head `52fad0bd6be9043ff091c495426c853cbe2f27e5` passed GitHub Actions run `34324743879` (#105): clean debug build, JVM unit tests, lint, release assembly, instrumentation compilation, and API-35 `connectedDebugAndroidTest`. The emulator executed 9 tests with 0 skipped and 0 failed, including production local-provider operations, production SAF-provider CRUD/navigation/ancestry and engine copy/move, Step 2 browser UI coverage, and Step 1 persistence/smoke regressions.
+
 ## Physical-device boundary
 
-Physical-device certification is intentionally deferred to Step 7. Step 2 certification uses JVM tests, fake providers, static/lint checks, release compilation, API-35 emulator instrumentation, and app-private Android filesystem I/O.
+Physical-device certification is intentionally deferred to Step 7. Step 2 certification uses JVM tests, fake providers, static/lint checks, release compilation, API-35 emulator instrumentation, real app-private Android filesystem I/O, and production SAF-provider integration against an instrumented DocumentsProvider.
