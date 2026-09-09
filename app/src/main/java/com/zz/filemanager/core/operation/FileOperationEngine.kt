@@ -28,6 +28,7 @@ class FileOperationEngine(
     private val executionMutex = Mutex()
     private val _events = MutableSharedFlow<OperationEvent>(extraBufferCapacity = 32)
     val events: SharedFlow<OperationEvent> = _events.asSharedFlow()
+    private val replaceTransactions = ReplaceTransactionCoordinator(store, providers, now)
 
     suspend fun runAvailable() = executionMutex.withLock {
         store.initialize()
@@ -391,8 +392,51 @@ class FileOperationEngine(
             )
         }
 
-        // A process/service interruption can leave a recorded staged output. It is never the
-        // final visible filename. Clean it before starting this item again.
+        val parent = destinationParentLocation(operation, item)
+            ?: return markItemFailed(operation, item, OperationFailure(OperationFailureCode.DESTINATION_MISSING, "Destination folder is missing.", item.source.name))
+
+        // A process/service interruption inside a reversible Replace is recovered before generic
+        // partial cleanup. The safety backup must never be mistaken for disposable temp data.
+        if (item.replacePhase != ReplacePhase.NONE) {
+            val recovery = replaceTransactions.recover(operation, item, destinationProvider, parent)
+            operation = recovery.operation
+            item = recovery.item
+            if (!recovery.canContinue) return operation
+            if (recovery.committedEntry != null) {
+                item = item.copy(
+                    state = OperationItemState.RUNNING,
+                    resultReference = ScopedFileReference(
+                        recovery.committedEntry.reference,
+                        destination.rootReference,
+                        destination.storageId,
+                    ),
+                    partialOutput = null,
+                    processedBytes = item.source.sizeBytes ?: item.processedBytes,
+                )
+                operation = replaceItem(operation, item)
+                save(recalculate(operation.copy(updatedAtMillis = now())))
+                if (move) {
+                    val sourceStillExists = runCatching {
+                        providers.providerFor(item.source.reference.providerId).exists(item.source.reference)
+                    }.getOrDefault(true)
+                    if (sourceStillExists) {
+                        val sourceWritable = providers.writableProviderFor(item.source.reference.providerId)
+                        if (sourceWritable == null) {
+                            return markItemWarning(operation, item, "Item was replaced, but the original could not be removed.")
+                        }
+                        try {
+                            sourceWritable.delete(item.source.scoped)
+                        } catch (_: Throwable) {
+                            return markItemWarning(operation, item, "Item was replaced, but the original could not be removed.")
+                        }
+                    }
+                }
+                return markItemCompleted(operation, item)
+            }
+        }
+
+        // A non-transactional process/service interruption can leave a recorded staged output.
+        // It is never the final visible filename and can be cleaned before restarting the copy.
         item.partialOutput?.let { stalePartial ->
             val staleProvider = providers.writableProviderFor(stalePartial.reference.providerId)
                 ?: return markItemFailed(
@@ -430,8 +474,6 @@ class FileOperationEngine(
             return markItemFailed(operation, item, OperationFailure(OperationFailureCode.SOURCE_CHANGED, "Source item changed since the operation was created.", item.source.name))
         }
 
-        val parent = destinationParentLocation(operation, item)
-            ?: return markItemFailed(operation, item, OperationFailure(OperationFailureCode.DESTINATION_MISSING, "Destination folder is missing.", item.source.name))
         val capabilities = destinationProvider.capabilities(parent)
         val safeFinalizationAvailable = StorageCapability.RENAME in capabilities
         var finalName = leafName(item.destinationRelativePath)
@@ -659,11 +701,16 @@ class FileOperationEngine(
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Throwable) {
-            val cleaned = cleanupPartial(destinationProvider, outputRef)
+            val latest = store.get(operation.id) ?: operation
+            val latestItem = latest.items.firstOrNull { it.id == item.id } ?: item
+            if (error is ReplaceTransactionNeedsRecovery || latest.state == FileOperationState.INTERRUPTED || latestItem.replacePhase != ReplacePhase.NONE) {
+                return latest
+            }
+            val cleaned = cleanupPartial(destinationProvider, latestItem.partialOutput ?: outputRef)
             return markItemFailed(
-                operation,
-                item.copy(partialOutput = if (cleaned) null else outputRef),
-                mapFailure(error, item.source.name),
+                latest,
+                latestItem.copy(partialOutput = if (cleaned) null else (latestItem.partialOutput ?: outputRef)),
+                mapFailure(error, latestItem.source.name),
             )
         }
     }
@@ -699,91 +746,17 @@ class FileOperationEngine(
             throw SafeFinalizationException("Provider cannot safely replace an existing destination.")
         }
 
-        val backupName = uniqueReplaceBackupName(provider, parent, operation.id, item.id)
-        var backupRef: ScopedFileReference? = null
-        try {
-            val backup = try {
-                provider.rename(existingRef, backupName)
-            } catch (renameError: Throwable) {
-                // Some providers can report an error after performing a rename. Detect that
-                // narrow case and restore the old name before propagating the failure.
-                val backupAfterError = provider.findChild(parent, backupName)
-                val finalAfterError = provider.findChild(parent, finalName)
-                if (backupAfterError != null && finalAfterError == null) {
-                    val recoveredBackup = ScopedFileReference(
-                        backupAfterError.reference,
-                        destination.rootReference,
-                        destination.storageId,
-                    )
-                    try {
-                        provider.rename(recoveredBackup, finalName)
-                    } catch (rollbackError: Throwable) {
-                        throw TransactionRollbackException("Existing destination was preserved as $backupName but could not be restored to its original name.", rollbackError)
-                    }
-                }
-                throw renameError
-            }
-            backupRef = ScopedFileReference(backup.reference, destination.rootReference, destination.storageId)
-
-            val committed = try {
-                provider.rename(staged, finalName)
-            } catch (commitError: Throwable) {
-                val stagedStillExists = providers.providerFor(staged.reference.providerId).exists(staged.reference)
-                val finalAfterError = provider.findChild(parent, finalName)
-                if (!stagedStillExists && finalAfterError != null && committedSizeMatches(finalAfterError, expectedBytes)) {
-                    finalAfterError
-                } else {
-                    if (finalAfterError != null) {
-                        throw TransactionRollbackException(
-                            "Replacement commit failed and an unexpected final-name entry prevents safe automatic rollback. The original remains in safety backup $backupName.",
-                            commitError,
-                        )
-                    }
-                    try {
-                        provider.rename(backupRef, finalName)
-                        backupRef = null
-                    } catch (rollbackError: Throwable) {
-                        throw TransactionRollbackException(
-                            "Replacement commit failed. The original destination remains in safety backup $backupName but could not be restored automatically.",
-                            rollbackError,
-                        )
-                    }
-                    throw commitError
-                }
-            }
-
-            verifyCommittedSize(committed, expectedBytes)
-            val backupToDelete = backupRef
-            val cleanupWarning = if (backupToDelete != null) {
-                runCatching { provider.delete(backupToDelete) }.getOrDefault(false).not()
-            } else {
-                false
-            }
-            return ReplaceCommitResult(committed, cleanupWarning)
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: TransactionRollbackException) {
-            throw error
-        } catch (error: Throwable) {
-            // If the old file has already been moved to backup and no new final exists, always
-            // restore the original name before leaving this method.
-            val backup = backupRef
-            if (backup != null) {
-                val finalNow = runCatching { provider.findChild(parent, finalName) }.getOrNull()
-                if (finalNow == null) {
-                    try {
-                        provider.rename(backup, finalName)
-                        backupRef = null
-                    } catch (rollbackError: Throwable) {
-                        throw TransactionRollbackException(
-                            "Replacement failed. The original destination remains in safety backup $backupName but could not be restored automatically.",
-                            rollbackError,
-                        )
-                    }
-                }
-            }
-            throw error
-        }
+        val committed = replaceTransactions.commit(
+            operation = operation,
+            item = item,
+            provider = provider,
+            parent = parent,
+            staged = staged,
+            existing = existing,
+            finalName = finalName,
+            expectedBytes = expectedBytes,
+        )
+        return ReplaceCommitResult(committed, false)
     }
 
     private fun committedSizeMatches(entry: FileEntry, expectedBytes: Long?): Boolean =
@@ -1438,6 +1411,7 @@ class FileOperationEngine(
         var updated = operation
         for (snapshot in operation.items) {
             val partial = snapshot.partialOutput ?: continue
+            if (snapshot.replacePhase != ReplacePhase.NONE) continue
             val provider = providers.writableProviderFor(partial.reference.providerId) ?: continue
             if (cleanupPartial(provider, partial)) {
                 val current = updated.items.firstOrNull { it.id == snapshot.id } ?: snapshot
