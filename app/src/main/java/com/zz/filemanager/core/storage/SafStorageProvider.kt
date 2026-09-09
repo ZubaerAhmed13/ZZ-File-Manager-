@@ -90,24 +90,37 @@ class SafStorageProvider(private val context: Context) : WritableStorageProvider
         }
     }
 
-    override suspend fun capabilities(location: BrowserLocation): ProviderCapabilities {
-        val values = mutableSetOf(StorageCapability.READ)
-        if (location.writable) {
-            values += setOf(
-                StorageCapability.WRITE,
-                StorageCapability.CREATE_FILE,
-                StorageCapability.CREATE_DIRECTORY,
-                StorageCapability.DELETE,
-                StorageCapability.RENAME,
-            )
+    override suspend fun capabilities(location: BrowserLocation): ProviderCapabilities = withContext(Dispatchers.IO) {
+        try {
+            val uri = documentUriFor(location)
+            val document = documentForUri(uri) ?: return@withContext ProviderCapabilities.ReadOnly
+            val values = mutableSetOf<StorageCapability>()
+            if (document.canRead() && location.readable) values += StorageCapability.READ
+            if (!location.writable) return@withContext ProviderCapabilities(values)
+
+            val flags = documentFlags(uri)
+            if (flags and DocumentsContract.Document.FLAG_DIR_SUPPORTS_CREATE != 0) {
+                values += setOf(
+                    StorageCapability.WRITE,
+                    StorageCapability.CREATE_FILE,
+                    StorageCapability.CREATE_DIRECTORY,
+                )
+            }
+            if (flags and DocumentsContract.Document.FLAG_SUPPORTS_DELETE != 0) {
+                values += StorageCapability.DELETE
+            }
+            if (flags and DocumentsContract.Document.FLAG_SUPPORTS_RENAME != 0) {
+                values += StorageCapability.RENAME
+            }
+            ProviderCapabilities(values)
+        } catch (error: SecurityException) {
+            throw StorageAccessException.PermissionRequired(error)
         }
-        return ProviderCapabilities(values)
     }
 
     override suspend fun createDirectory(parent: BrowserLocation, name: String): FileEntry = withContext(Dispatchers.IO) {
         requireSafeLeafName(name)
-        val directory = documentFor(parent) ?: throw StorageAccessException.Unavailable()
-        if (!directory.canWrite()) throw StorageAccessException.ReadOnly()
+        if (StorageCapability.CREATE_DIRECTORY !in capabilities(parent)) throw StorageAccessException.ReadOnly()
         if (findChildInternal(parent, name) != null) {
             throw StorageAccessException.Io(IllegalStateException("destination exists"))
         }
@@ -127,8 +140,7 @@ class SafStorageProvider(private val context: Context) : WritableStorageProvider
 
     override suspend fun createFile(parent: BrowserLocation, name: String, mimeType: String?): FileEntry = withContext(Dispatchers.IO) {
         requireSafeLeafName(name)
-        val directory = documentFor(parent) ?: throw StorageAccessException.Unavailable()
-        if (!directory.canWrite()) throw StorageAccessException.ReadOnly()
+        if (StorageCapability.CREATE_FILE !in capabilities(parent)) throw StorageAccessException.ReadOnly()
         if (findChildInternal(parent, name) != null) {
             throw StorageAccessException.Io(IllegalStateException("destination exists"))
         }
@@ -147,8 +159,11 @@ class SafStorageProvider(private val context: Context) : WritableStorageProvider
     }
 
     override suspend fun delete(item: ScopedFileReference): Boolean = withContext(Dispatchers.IO) {
-        val document = DocumentFile.fromSingleUri(context, validateScopedUri(item))
-            ?: throw StorageAccessException.Unavailable()
+        val uri = validateScopedUri(item)
+        if (documentFlags(uri) and DocumentsContract.Document.FLAG_SUPPORTS_DELETE == 0) {
+            throw StorageAccessException.ReadOnly()
+        }
+        val document = DocumentFile.fromSingleUri(context, uri) ?: throw StorageAccessException.Unavailable()
         try {
             if (!document.exists()) false else document.delete()
         } catch (error: SecurityException) {
@@ -158,9 +173,11 @@ class SafStorageProvider(private val context: Context) : WritableStorageProvider
 
     override suspend fun rename(item: ScopedFileReference, newName: String): FileEntry = withContext(Dispatchers.IO) {
         requireSafeLeafName(newName)
-        val document = DocumentFile.fromSingleUri(context, validateScopedUri(item))
-            ?: throw StorageAccessException.Unavailable()
-        if (!document.canWrite()) throw StorageAccessException.ReadOnly()
+        val uri = validateScopedUri(item)
+        if (documentFlags(uri) and DocumentsContract.Document.FLAG_SUPPORTS_RENAME == 0) {
+            throw StorageAccessException.ReadOnly()
+        }
+        val document = DocumentFile.fromSingleUri(context, uri) ?: throw StorageAccessException.Unavailable()
         try {
             if (!document.renameTo(newName)) throw StorageAccessException.Io()
             toEntry(document, item.storageId)
@@ -171,6 +188,9 @@ class SafStorageProvider(private val context: Context) : WritableStorageProvider
 
     override suspend fun openOutputStream(item: ScopedFileReference, truncate: Boolean): OutputStream = withContext(Dispatchers.IO) {
         val uri = validateScopedUri(item)
+        if (documentFlags(uri) and DocumentsContract.Document.FLAG_SUPPORTS_WRITE == 0) {
+            throw StorageAccessException.ReadOnly()
+        }
         try {
             runCatching {
                 context.contentResolver.openOutputStream(uri, if (truncate) "rwt" else "wa")
@@ -243,6 +263,19 @@ class SafStorageProvider(private val context: Context) : WritableStorageProvider
             }
         } ?: throw StorageAccessException.Unavailable()
         return result
+    }
+
+    private fun documentFlags(uri: Uri): Int {
+        val projection = arrayOf(DocumentsContract.Document.COLUMN_FLAGS)
+        return try {
+            context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+                if (!cursor.moveToFirst()) throw StorageAccessException.Unavailable()
+                val flagsColumn = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_FLAGS)
+                cursor.getInt(flagsColumn)
+            } ?: throw StorageAccessException.Unavailable()
+        } catch (error: SecurityException) {
+            throw StorageAccessException.PermissionRequired(error)
+        }
     }
 
     private fun documentFor(location: BrowserLocation): DocumentFile? =
