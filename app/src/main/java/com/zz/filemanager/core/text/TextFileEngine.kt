@@ -115,14 +115,23 @@ class TextFileEngine(
         val current = fingerprint(document.source)
         if (!forceOverwriteExternalChange && materiallyChanged(document.fingerprint, current)) throw TextFailure.ExternalModification()
         val encoded = encode(normalizeLineEndings(editedText, document.lineEnding), document.encoding)
-        val result = safeWriter.write(
-            parent = document.source.parent,
-            requestedName = document.source.entry.name,
-            mimeType = document.source.entry.mimeType,
-            input = ByteArrayInputStream(encoded),
-            expectedBytes = encoded.size.toLong(),
-            collisionPolicy = CollisionPolicy.REPLACE,
-        )
+        val result = try {
+            safeWriter.write(
+                parent = document.source.parent,
+                requestedName = document.source.entry.name,
+                mimeType = document.source.entry.mimeType,
+                input = ByteArrayInputStream(encoded),
+                expectedBytes = encoded.size.toLong(),
+                collisionPolicy = CollisionPolicy.REPLACE,
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: IllegalStateException) {
+            if (error.message?.contains("cannot safely replace", ignoreCase = true) == true) throw TextFailure.SaveAsRequired()
+            throw TextFailure.Io(error)
+        } catch (error: Throwable) {
+            throw TextFailure.Io(error)
+        }
         val entry = (result as? SafeWriteResult.Written)?.entry ?: throw TextFailure.Io(IllegalStateException("Save was unexpectedly skipped"))
         val updatedSource = TextSource(entry, document.source.parent)
         document.copy(source = updatedSource, text = editedText, fingerprint = fingerprint(updatedSource))
@@ -131,14 +140,20 @@ class TextFileEngine(
     suspend fun saveAs(document: TextDocument, editedText: String, newName: String): TextDocument = withContext(Dispatchers.IO) {
         if (document.mode != TextOpenMode.EDITABLE) throw TextFailure.TooLargeToEdit()
         val encoded = encode(normalizeLineEndings(editedText, document.lineEnding), document.encoding)
-        val result = safeWriter.write(
-            parent = document.source.parent,
-            requestedName = newName,
-            mimeType = document.source.entry.mimeType,
-            input = ByteArrayInputStream(encoded),
-            expectedBytes = encoded.size.toLong(),
-            collisionPolicy = CollisionPolicy.KEEP_BOTH,
-        )
+        val result = try {
+            safeWriter.write(
+                parent = document.source.parent,
+                requestedName = newName,
+                mimeType = document.source.entry.mimeType,
+                input = ByteArrayInputStream(encoded),
+                expectedBytes = encoded.size.toLong(),
+                collisionPolicy = CollisionPolicy.KEEP_BOTH,
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            throw TextFailure.Io(error)
+        }
         val entry = (result as? SafeWriteResult.Written)?.entry ?: throw TextFailure.Io(IllegalStateException("Save As was unexpectedly skipped"))
         val source = TextSource(entry, document.source.parent)
         document.copy(source = source, text = editedText, fingerprint = fingerprint(source))
@@ -164,8 +179,6 @@ class TextFileEngine(
     }
 
     fun editableLimitBytes(): Long {
-        // Editing holds decoded UTF-16 chars plus Compose/editor state and undo snapshots. Keep a
-        // dynamic fraction of the actual VM heap, not a fixed product file-size limit.
         val heap = runtimeMaxMemory().coerceAtLeast(32L * 1024L * 1024L)
         return (heap / 16L).coerceIn(4L * 1024L * 1024L, 128L * 1024L * 1024L)
     }
@@ -327,7 +340,6 @@ class TextFileEngine(
     }
 }
 
-/** Simple bounded editor history model used by the Compose editor and JVM tests. */
 class TextUndoRedoBuffer(initial: String, private val maxSnapshots: Int = 64) {
     private val undo = ArrayDeque<String>()
     private val redo = ArrayDeque<String>()
