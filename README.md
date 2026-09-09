@@ -8,7 +8,7 @@ The project may study common file-manager workflows and navigation patterns, but
 
 ## Current status
 
-**Step 2 of 7 — Professional file operations engine** is implemented and functionally certified on `step2/file-operations-engine` at repaired implementation head `9f5fd474f64cbbd43308a147479bdaa3668a1170`. GitHub Actions run `34346037170` (#159) passed the clean build/JVM/lint/release/instrumentation-compile gate and the API-35 emulator suite with **9 tests, 0 skipped, 0 failed**. Step 1 remains preserved as the approved native browsing foundation. Final physical-phone certification is intentionally deferred to Step 7.
+**Step 3 of 7 — Search, Favorites, History and Professional Recycle Bin** is implemented on `step3/search-favorites-recycle-history`, based exactly on approved Step 2 head `f18fcbd5e808bd23283c9d7f25f425795cdb7909`. Final exact-head CI evidence is recorded in the Step 3 completion report. Step 1 browsing and Step 2 file-operation/recovery behavior remain preserved. Physical-phone certification is intentionally deferred to Step 7.
 
 The verified Step 1 baseline commit is `2be3a6933931a1f7aa9ae3857e7adf2f910bca9e`.
 
@@ -57,6 +57,21 @@ The verified Step 1 baseline commit is `2be3a6933931a1f7aa9ae3857e7adf2f910bca9e
 - basic properties and Android-standard one/multiple file sharing through content URIs
 - automatic browser refresh after terminal operations
 
+### Step 3 capabilities
+
+- live provider-neutral search across current folder, recursive folder, current storage or all accessible locations
+- debounced/cancellable incremental results with deterministic relevance and advanced filters/sorts
+- local bounded search history
+- persistent file/folder Favorites with validation and sorting
+- persistent recent files plus preserved recent locations and derived activity history
+- app-managed per-storage Recycle Bin with unique payload containers and durable transaction states
+- safe native local/SAF trash and restore where providers support it
+- Step 2 copy→verify→delete fallback when native trash/alternate restore is unavailable
+- API-30+ MediaStore trash/restore/delete confirmation
+- original or user-chosen restore destination with collision handling
+- verified permanent deletion, partial Empty Bin reporting and configurable retention
+- startup/orphan reconciliation plus persistent daily cleanup scheduling
+
 ## Operation architecture
 
 ```text
@@ -92,6 +107,7 @@ Android 14+ user-initiated JobScheduler jobs are intentionally not used for Step
 - Gradle: 8.9
 - Java/JDK: 17
 - Step 2 app version: `0.2.0-step2`
+- Step 3 app version: `0.3.0-step3`
 
 ## Build and verification
 
@@ -152,6 +168,11 @@ Step 2 writes retain logical-root containment, canonical local-path validation, 
 **Physical phone certification is intentionally deferred to Step 7.** Step 2 uses JVM tests, fake providers, static/lint analysis, release compilation, API-35 emulator instrumentation, real app-private local-provider I/O and production SAF-provider integration against an instrumented DocumentsProvider. Hardware/OEM-specific final certification remains a Step 7 requirement.
 
 ## Step documentation
+
+- [`docs/STEP3_ARCHITECTURE.md`](docs/STEP3_ARCHITECTURE.md)
+- [`docs/STEP3_FEATURE_MATRIX.md`](docs/STEP3_FEATURE_MATRIX.md)
+- [`docs/STEP3_TEST_MATRIX.md`](docs/STEP3_TEST_MATRIX.md)
+- [`docs/STEP3_COMPLETION_REPORT.md`](docs/STEP3_COMPLETION_REPORT.md)
 
 - [`docs/STEP2_ARCHITECTURE.md`](docs/STEP2_ARCHITECTURE.md)
 - [`docs/STEP2_FEATURE_MATRIX.md`](docs/STEP2_FEATURE_MATRIX.md)

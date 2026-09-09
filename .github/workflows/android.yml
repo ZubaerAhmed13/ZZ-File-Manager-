@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 # Only the newest commit on the same branch/ref needs certification. This keeps
-# rapid Step 2 fixes from queuing obsolete full emulator runs while preserving
+# rapid Step 3 fixes from queuing obsolete full emulator runs while preserving
 # the complete gate for the exact current head.
 concurrency:
   group: android-step3-${{ github.workflow }}-${{ github.ref }}
