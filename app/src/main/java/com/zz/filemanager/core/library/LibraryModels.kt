@@ -55,6 +55,16 @@ data class ActivityEntry(
 enum class TrashBackendType { APP_MANAGED, MEDIA_STORE }
 enum class TrashState { PREPARING, MOVING, COPYING, TRASHED, RESTORING, DELETE_PENDING, DELETED, INTERRUPTED, FAILED, CORRUPTED }
 
+/**
+ * Durable phases for the only-good-copy Restore + Replace path.
+ *
+ * STAGING is persisted before the recycle payload leaves its container. STAGED proves that the
+ * payload is at the hidden destination sibling. COMMITTING is persisted before the atomic replace
+ * boundary together with a provider mutation identity. COMMITTED is persisted immediately after
+ * the final entry is proven to be the staged payload. NONE is used for every non-Replace restore.
+ */
+enum class RestoreReplacePhase { NONE, STAGING, STAGED, COMMITTING, COMMITTED }
+
 data class TrashRecord(
     val id: String,
     val backend: TrashBackendType,
@@ -74,6 +84,10 @@ data class TrashRecord(
     val restoreDestination: BrowserLocation? = null,
     val restoreName: String? = null,
     val restoreReplace: Boolean = false,
+    val restoreReplacePhase: RestoreReplacePhase = RestoreReplacePhase.NONE,
+    val restoreStageName: String? = null,
+    val restoreCommitIdentity: String? = null,
+    val restoreCommittedReference: ScopedFileReference? = null,
 )
 
 fun FileReference.stableIdentity(rootReference: String, storageId: String): String =
