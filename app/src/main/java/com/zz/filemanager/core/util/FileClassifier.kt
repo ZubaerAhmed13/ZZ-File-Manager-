@@ -7,11 +7,14 @@ object FileClassifier {
     private val image = setOf("jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "bmp", "avif")
     private val video = setOf("mp4", "mkv", "webm", "avi", "mov", "m4v", "3gp", "ts")
     private val audio = setOf("mp3", "m4a", "aac", "flac", "wav", "ogg", "opus", "amr")
-    private val text = setOf("txt", "md", "log", "csv", "json", "xml", "yaml", "yml", "ini", "properties", "kt", "java", "html", "css", "js")
+    private val text = setOf(
+        "txt", "md", "log", "csv", "json", "xml", "yaml", "yml", "ini", "cfg", "properties",
+        "kt", "java", "html", "css", "js", "ts", "py", "sh",
+    )
     private val docs = setOf("doc", "docx", "odt", "rtf")
     private val sheets = setOf("xls", "xlsx", "ods")
     private val presentations = setOf("ppt", "pptx", "odp")
-    private val archives = setOf("zip", "rar", "7z", "tar", "gz", "bz2", "xz", "tgz")
+    private val archives = setOf("zip", "rar", "7z", "tar", "gz", "bz2", "xz", "tgz", "tbz2", "txz")
 
     fun extensionFor(name: String): String? {
         val index = name.lastIndexOf('.')
@@ -33,7 +36,7 @@ object FileClassifier {
                 mime.contains("spreadsheet") || mime.contains("excel") -> return FileEntryType.SPREADSHEET
                 mime.contains("presentation") || mime.contains("powerpoint") -> return FileEntryType.PRESENTATION
                 mime.contains("wordprocessing") || mime.contains("msword") || mime.contains("opendocument.text") -> return FileEntryType.DOCUMENT
-                mime.contains("zip") || mime.contains("rar") || mime.contains("7z") || mime.contains("compressed") -> return FileEntryType.ARCHIVE
+                mime.contains("zip") || mime.contains("rar") || mime.contains("7z") || mime.contains("compressed") || mime.contains("tar") || mime.contains("gzip") || mime.contains("bzip") || mime.contains("xz") -> return FileEntryType.ARCHIVE
             }
         }
         return when (extensionFor(name)) {
