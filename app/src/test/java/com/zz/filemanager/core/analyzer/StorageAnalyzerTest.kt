@@ -120,7 +120,7 @@ class StorageAnalyzerTest {
             id = path,
             reference = FileReference(id, path),
             name = path.substringAfterLast('/'),
-            extension = path.substringAfterLast('.', "").ifBlank { null },
+            extension = path.substringAfterLast('.', "").takeIf { it.isNotBlank() },
             mimeType = "text/plain",
             type = type,
             sizeBytes = size,
