@@ -41,16 +41,10 @@
             android:name=".Step4ToolsActivity"
             android:exported="false" />
 
-        <!-- Internal-only viewer route. The zzfm URI carries no new authority and cannot be invoked externally. -->
+        <!-- Internal-only viewer route. It is always launched explicitly with a zzfm data URI. -->
         <activity
             android:name=".Step4FileActivity"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <data android:scheme="zzfm" android:host="open" />
-            </intent-filter>
-        </activity>
+            android:exported="false" />
 
         <service
             android:name=".core.operation.android.OperationForegroundService"
