@@ -4,6 +4,10 @@
 
 Step 2 establishes the durable professional file-operation subsystem while preserving the approved Step 1 browser/storage architecture. It does not implement recycle bin, global search, archives, network/cloud providers, media editing, text editing, APK management, or final physical-device certification.
 
+Verified Step 1 baseline: `2be3a6933931a1f7aa9ae3857e7adf2f910bca9e`.
+
+Certified Step 2 functional implementation head: `f21bd3705087cc65620e772e4a549c69baf4b443`, GitHub Actions run `34336655608` (#139).
+
 ## Data flow
 
 ```text
@@ -15,7 +19,7 @@ FileOperationController
     ↓
 OperationStore / OperationRepository
     ↓
-OperationJournal (SQLite v1)
+OperationJournal (SQLite)
     ↓
 FileOperationEngine
     ↓
@@ -40,35 +44,31 @@ The engine remains independently JVM-testable and has no dependency on Compose, 
 
 ## Android execution policy
 
-Step 2 operations are local-filesystem and Storage Access Framework transfers initiated directly by the user. They therefore use a user-started foreground service rather than Android 14+ `JobInfo.Builder.setUserInitiated(true)`: Android's user-initiated JobScheduler mode is intended for user-requested **network data transfers**, not arbitrary local/SAF file copies.
+Step 2 operations are local-filesystem and Storage Access Framework transfers initiated directly by the user. They use a user-started foreground service rather than Android 14+ user-initiated JobScheduler mode, which is intended for user-requested network data transfers.
 
-`OperationForegroundService` starts immediately from the user's operation request, posts a dedicated ongoing file-operation notification, runs the provider-neutral engine, and updates notification progress from the persistent operation store.
+`OperationForegroundService` starts from the operation request, posts an ongoing file-operation notification, runs the provider-neutral engine, and updates notification progress from the persistent operation store.
 
-For Android 15's time-limited `dataSync` foreground-service execution, `Service.onTimeout(startId, fgsType)` is handled explicitly. Before stopping, the persistent journal is reconciled so an operation formerly marked `RUNNING` is never left falsely running or marked successful. It becomes interrupted/recoverable and can resume correctly at a safe file boundary.
-
-The host remains replaceable behind `OperationExecutionHost`, so future Android execution-policy changes can be absorbed without rewriting the operation engine.
+For Android 15's time-limited `dataSync` foreground-service execution, `Service.onTimeout(startId, fgsType)` explicitly reconciles unsafe journal state before stopping. An unfinished operation becomes interrupted/recoverable instead of remaining falsely RUNNING or being marked successful.
 
 ## Provider write architecture
 
-`StorageProvider` remains the common read contract. Step 2 adds `WritableStorageProvider` and explicit `StorageCapability` values for write, create file/directory, delete, rename, native move, random access, atomic rename, and timestamp support.
+`StorageProvider` is the common read contract. `WritableStorageProvider` adds explicit capabilities for write, create file/directory, delete, rename, native move, random access, atomic rename, and timestamp support.
 
-All operations use provider-neutral `FileReference` / `ScopedFileReference` values. SAF URIs are never converted into fake filesystem paths. Local operations retain the Step 1 logical root in each scoped reference, and every local write path is canonicalized and checked against that root.
+All operations use provider-neutral `FileReference` / `ScopedFileReference` values. SAF URIs are never converted into fake filesystem paths. Local operations retain the logical root in each scoped reference, and every local write path is canonicalized and checked against that root.
 
 ### Local provider
 
-The local provider implements create file/folder, delete, rename, output streaming, collision lookup, free-space reporting, safe same-filesystem native move, case-only rename handling, and symbolic-link detection. It rejects unsafe leaf names and root escapes.
+The local provider implements create file/folder, delete, rename, output streaming, collision lookup, free-space reporting, safe same-filesystem native move, case-only rename handling, symbolic-link awareness, and atomic staged replacement where the filesystem supports `ATOMIC_MOVE + REPLACE_EXISTING`.
 
 ### SAF provider
 
-The production SAF provider uses `DocumentsContract`, `ContentResolver`, and single-document `DocumentFile` metadata access under the authorized tree. Directory enumeration uses `buildChildDocumentsUriUsingTree()` queries rather than unsupported `SingleDocumentFile.listFiles()` behavior. File/folder creation uses `DocumentsContract.createDocument()`, and rename/finalization uses `DocumentsContract.renameDocument()` so providers that change document IDs on rename are handled correctly.
+The production SAF provider uses `DocumentsContract`, `ContentResolver`, and scoped tree permissions. Directory enumeration uses tree-aware child-document queries. Creation uses `DocumentsContract.createDocument()`, and rename/finalization uses `DocumentsContract.renameDocument()` so providers that change document IDs on rename are handled correctly.
 
-SAF document IDs are treated as opaque values. Root containment, parent/breadcrumb resolution, and descendant checks use platform tree/path APIs where available (`isChildDocument`, `findDocumentPath`) with iterative tree traversal fallback rather than parsing document IDs as filesystem paths.
+SAF document IDs are treated as opaque values. Mutation capability reporting honors provider flags rather than assuming a writable URI implies every mutation is possible. Unknown SAF free capacity is treated as unknown, not as zero.
 
-Mutation capability reporting honors provider flags: `FLAG_DIR_SUPPORTS_CREATE`, `FLAG_SUPPORTS_DELETE`, `FLAG_SUPPORTS_RENAME`, and `FLAG_SUPPORTS_WRITE`. A writable URI grant therefore does not falsely imply that every mutation is supported. SAF free-space capacity is considered unknown unless a provider can report it reliably.
+API-35 instrumentation exercises the unchanged production `SafStorageProvider` against a debug-only deterministic `DocumentsProvider`. The test grant substitutes only unreliable headless picker UI automation; resolver calls and production provider logic still execute through Android scoped-tree rules.
 
-API-35 instrumentation exercises the unchanged production `SafStorageProvider` against a debug-only deterministic `DocumentsProvider`. The test grant replaces only unreliable headless system-picker UI automation; all resolver calls and production provider logic still pass through Android's scoped tree-permission contract.
-
-## Operation model
+## Operation model and persistent journal
 
 Operations have stable UUID-backed IDs and explicit states:
 
@@ -85,113 +85,99 @@ Operations have stable UUID-backed IDs and explicit states:
 - `FAILED`
 - `INTERRUPTED`
 
-Each multi-item operation also stores item-level state so partial success is never flattened into an inaccurate generic result.
+Operation types implemented in Step 2 are copy, move, permanent delete, rename, batch rename, create directory, and create empty file.
 
-Operation types implemented in Step 2:
+`OperationRepository` is FIFO by creation time and persists typed operation snapshots through `OperationJournal`. Important persisted boundaries include queueing, preparation/running state, throttled progress, item completion, pause/cancel, collision wait, failure, transactional rename/replace phase changes, interruption and terminal completion.
 
-- copy
-- move
-- permanent delete
-- rename
-- batch rename
-- create directory
-- create empty file
-
-Open/share/properties are immediate UI actions and do not need to enter the long-running queue.
-
-## Persistent queue and journal
-
-`OperationRepository` is FIFO by creation time and persists every important transition through `OperationJournal`. The journal uses an additive SQLite schema (version 1), stores the complete typed snapshot as JSON, and keeps indexed operation state/timestamps for recovery and bounded retention.
-
-Important persisted boundaries include queueing, preparation/running state, periodic progress, item completion, pause/cancel, collision wait, failure, and terminal completion.
-
-Process death never converts unfinished work to success. Unsafe runtime states are reconciled to `INTERRUPTED`; a running item returns to `QUEUED` with the unsafe current-file byte offset discarded. Completed item boundaries remain recorded.
+Process death never converts unfinished work to success. Unsafe runtime states reconcile to `INTERRUPTED`; completed item boundaries remain recorded while unsafe current-file offsets are discarded when correct byte-level continuation cannot be proven.
 
 ## Copy and move safety
 
-File content is copied with a fixed bounded buffer (`256 KiB` by default). No operation uses `readBytes()` or allocates memory based on source size. All byte counters are `Long`.
+File content is copied with a fixed bounded buffer of **256 KiB** by default. No operation uses `readBytes()` or allocates memory proportional to source size. All byte counters are `Long`.
 
-For providers that can safely rename, a copy writes to a temporary `.zzpart-*` destination, closes/flushes it, verifies the expected byte count when source size is known, then renames it to the final name. Cancellation, pause, failure, or host interruption attempts to remove tracked partial output.
+For providers that support safe rename finalization, copy writes to a hidden `.zzpart-*` output, closes/flushes it, verifies expected byte count when known, and only then exposes the final filename.
 
-A cross-provider move is:
+Cross-provider move is:
 
 ```text
 copy source → destination
-verify completed destination
+verify destination completion
 then delete source
 ```
 
-If copy fails, the source remains intact. If copy succeeds but source deletion fails, the item completes with a warning rather than falsely reporting a clean move.
+If copy fails, source remains intact. If copy succeeds but source deletion fails, the item completes with a warning rather than falsely claiming a clean move. Same-provider local moves may use native move only after the provider confirms feasibility.
 
-Same-provider local moves may use a native move only when the provider confirms it can do so safely.
+Free-space planning accounts for this distinction: a native move can proceed without requiring a second full payload copy, while a fallback move must satisfy copy-space requirements before allocation.
 
-## Directory traversal
+## Durable Replace transaction
 
-Tree preparation uses an iterative `ArrayDeque` traversal rather than unbounded recursion. Empty directories are represented as operation items and copied. Symbolic links are detected on local storage and are not recursively followed, preventing traversal loops and root escapes.
+Replacing an existing file is capability-gated. `Replace` is offered only if the provider can either perform atomic replacement or support the full reversible rename+delete transaction. Rename-only providers can still safely finalize Keep-Both but do not advertise unsafe Replace.
 
-Copy/move validates folder → self and folder → descendant targets before execution.
+The engine never deletes the known-good destination before a complete replacement has been staged.
 
-## Collision engine
+For atomic-capable local storage:
 
-Collision handling is centralized in the operation engine. It distinguishes:
+```text
+stage replacement
+verify size
+atomic replace existing destination
+```
 
-- file → file
-- directory → directory
-- file → directory
-- directory → file
-- same resource
+For providers without atomic replace but with safe rename+delete support, `ReplaceTransactionCoordinator` uses a durable reversible protocol:
 
-Supported decisions are capability/kind dependent:
+```text
+journal BACKUP_PLANNED + old destination snapshot + staged ref
+rename old destination → hidden .zzreplace-backup-* name
+journal BACKED_UP
+journal COMMITTING
+rename staged output → final name
+verify committed size
+journal COMMITTED + committed ref
+remove safety backup
+clear Replace ledger
+```
 
-- replace
-- skip
-- keep both
-- merge directories
-- apply compatible decision to all collisions in the active operation
+The operation item persists the phase, final name, original destination reference/size/modified timestamp, backup name/reference and staged partial reference. These fields are serialized by `OperationJsonCodec`, so process recreation does not lose the transaction ledger.
 
-Keep-both naming preserves extensions (`report.pdf` → `report (1).pdf`). Directory batch operations rewrite descendant relative paths when the root directory receives a keep-both name.
+If process/service cancellation occurs during a destructive boundary, `CancellationException` propagates without speculative rollback in the cancelled coroutine. The persisted phase is left intact for deterministic recovery on resume.
 
-A collision moves the operation to `WAITING_FOR_USER`; no worker thread is blocked on a modal wait. The pending collision is persisted and resumed through `FileOperationController.resolveCollision()`.
+Recovery is conservative. It compares final/backup/staged existence and known destination snapshots. When it can prove the old file is still the valid destination, it resets safely. When it can prove the old file is in the safety backup and no committed final exists, it restores the original name before retrying. When it can prove the staged file became the committed final, it completes backup cleanup and returns that result. If state is ambiguous, the operation remains `INTERRUPTED`, preserves all safety references, and does not guess or delete data.
 
-## Batch rename
+A failed backup cleanup after commit also remains recoverable instead of silently orphaning the hidden backup. Retry never clones an unfinished Replace transaction into a new operation; the existing ledger must be reconciled in place first.
 
-`BatchRenamePlanner` provides a preview before enqueueing. Supported rules include find/replace, prefix, suffix, and sequential numbering. Proposed names are validated for invalid leaf names and duplicates.
+## Transactional batch rename
 
-Execution uses temporary names first, preventing intermediate collisions such as `A → B` and `B → C`. If the temporary/final sequence fails, the engine attempts rollback to original names.
+`BatchRenamePlanner` previews find/replace, prefix, suffix and sequential numbering rules before enqueueing. Proposed names are validated for invalid leaf names and duplicates.
 
-## Selection and clipboard UX
+Execution uses persisted per-item phases and unique temporary names. Phase 1 moves every selected item from original → temporary. Phase 2 moves temporary → final. Current references and phases are saved at every mutation boundary.
 
-`BrowserOperationsViewModel` owns stable-ID selection state and reconciles it with currently displayed entries after refresh. Selection does not persist large `FileEntry` objects.
+If execution fails, rollback first moves any final-name items back to their unique temporary namespace and then restores temporary → original in reverse order. If rollback itself is interrupted or fails, `batchRenameRollbackRequired` remains true with live references/phases preserved; resume continues rollback before any new forward execution.
 
-Long press enters selection mode. While selection mode is active, normal taps toggle selection instead of opening files. Select-all acts only on currently displayed entries. Back exits selection before directory navigation.
+Process-death regressions cover interruption after original→temp mutation, between temp/final phases, and after a final rename mutation before its journal save.
 
-The internal copy/cut clipboard is stored in `OperationClipboardRepository` and survives activity/process recreation when references remain valid. CUT items remain visible and are visually dimmed; source deletion happens only during successful move execution.
+## Directory traversal and collision handling
 
-The paste bar is shown only while clipboard content exists. Virtual/read-only destinations do not enable Paste.
+Tree preparation uses iterative `ArrayDeque` traversal rather than unbounded recursion. Empty directories are represented as operation items. Local symbolic links are not recursively followed, preventing loops and root escapes.
 
-## Background notification UX
+Copy/move rejects folder → self and folder → descendant targets before destructive execution.
 
-Android execution components in Step 2 are:
+Collision handling distinguishes file→file, directory→directory, file→directory, directory→file and same-resource cases. Supported choices are capability/kind dependent: Replace, Skip, Keep both, Merge directories and compatible Apply-to-all. Keep-both naming preserves extensions (`report.pdf` → `report (1).pdf`). A collision persists `WAITING_FOR_USER`; no worker thread blocks on a modal decision.
 
-- `AndroidOperationExecutionHost`
-- `OperationForegroundService`
-- `OperationActionReceiver`
-- `OperationNotificationFactory`
-- `OperationPresentation`
+## Selection, clipboard and UI
 
-The manifest declares the foreground-service and notification permissions required for the file-operation channel and `dataSync` service type. Notifications expose live operation type/current item/progress plus pause and cancel actions where meaningful.
+`BrowserOperationsViewModel` owns stable-ID selection and reconciles it after refresh. Long press enters selection mode, taps toggle while selected, Select-all targets displayed entries, and Back exits selection before navigation.
 
-If notification permission is denied, storage correctness does not depend on a notification callback. Device/OEM-specific notification-permission behavior remains part of Step 7 physical certification.
+`OperationClipboardRepository` persists COPY/CUT references, origin and timestamp. CUT items are visually dimmed; source deletion occurs only during successful move execution. Virtual/read-only destinations do not enable Paste/Create.
 
-## Progress throttling
+The browser exposes delete confirmation, rename, batch-rename preview, create file/folder, collision dialog, share/properties, and an operations sheet with state/progress/pause/resume/cancel/retry controls.
 
-The engine does not emit or persist every buffer chunk. Progress is periodically persisted/emitted (500 ms default) and on meaningful item/state boundaries. This keeps Compose recomposition and journal writes bounded during multi-gigabyte copies.
+## Progress, large files and recovery
 
-If total bytes are unknown, UI uses item progress/indeterminate progress and never fabricates a percentage.
+Progress persistence/events are throttled at a 500 ms default plus meaningful item/state boundaries. Unknown totals remain indeterminate rather than fabricating a percentage.
 
-## Low-space and provider-loss behavior
+There is no application-level 2 GB/4 GB/10 GB/30 GB ceiling. Size/progress fields are `Long`, streaming memory is bounded, Replace ledger fields retain large `Long` values, and tests model values above 30 GiB without allocating giant CI artifacts. A 30 GiB logical native-move regression confirms a same-provider native move is not incorrectly blocked by only 1 GiB free space.
 
-Before known-size copy/move, free space is checked when the destination provider exposes reliable capacity. Unknown SAF capacity does not block valid work. Mid-stream write/provider failures close resources, preserve source data, clean temporary outputs where possible, and result in typed operation failure/warning state. If a provider disappears before a tracked partial can be deleted, that partial reference remains in the journal for safe retry/reconciliation instead of being forgotten.
+Byte-level process-death resume is not universally claimed. Completed item/file boundaries survive interruption; an interrupted current file restarts after revalidation when safe random-access continuation cannot be proven.
 
 ## Security
 
@@ -208,20 +194,20 @@ Step 2 preserves and expands Step 1 storage safety:
 - no recursive symbolic-link following
 - self/descendant copy validation
 - provider-scoped references persisted instead of Android framework objects
-- release UI avoids raw encoded SAF URIs
-
-## Large-file design
-
-There is no application-level 2 GB/4 GB/10 GB/30 GB ceiling. Size/progress fields are `Long`, streaming memory is bounded, and tests model counters above 30 GiB without generating a 30 GiB CI artifact.
-
-Byte-level resume after process death is intentionally not claimed for non-seekable providers. Recovery is correct at file boundaries: completed items remain complete; an interrupted current file is restarted after source/destination revalidation.
-
-A controller scale test queues 10,000 source metadata records without allocating file payloads, and progress/state persistence remains item/interval bounded rather than source-size proportional.
+- no visible partial final filename on providers without safe finalization
+- durable safety backups are never treated as disposable `.zzpart-*` data
 
 ## Automated certification
 
-Implementation head `52fad0bd6be9043ff091c495426c853cbe2f27e5` passed GitHub Actions run `34324743879` (#105): clean debug build, JVM unit tests, lint, release assembly, instrumentation compilation, and API-35 `connectedDebugAndroidTest`. The emulator executed 9 tests with 0 skipped and 0 failed, including production local-provider operations, production SAF-provider CRUD/navigation/ancestry and engine copy/move, Step 2 browser UI coverage, and Step 1 persistence/smoke regressions.
+Functional implementation head `f21bd3705087cc65620e772e4a549c69baf4b443` passed GitHub Actions run `34336655608` (#139):
+
+```bash
+./gradlew clean assembleDebug testDebugUnitTest lintDebug assembleRelease assembleDebugAndroidTest
+./gradlew connectedDebugAndroidTest
+```
+
+Both Gradle phases reported `BUILD SUCCESSFUL`. API-35 executed **9 tests, 0 skipped, 0 failed**.
 
 ## Physical-device boundary
 
-Physical-device certification is intentionally deferred to Step 7. Step 2 certification uses JVM tests, fake providers, static/lint checks, release compilation, API-35 emulator instrumentation, real app-private Android filesystem I/O, and production SAF-provider integration against an instrumented DocumentsProvider.
+Physical phone certification intentionally deferred to Step 7 per project plan.
