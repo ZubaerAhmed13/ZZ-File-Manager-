@@ -1,0 +1,117 @@
+name: Step4 one-shot test gate fixes
+
+on:
+  push:
+    branches: [ 'step4/archive-media-text-apk-analyzer' ]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: "github.event.head_commit.message == 'step4: bootstrap test gate fixes'"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: step4/archive-media-text-apk-analyzer
+          fetch-depth: 0
+      - name: Apply exact Step 4 certification test fixes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_exact(path, old, new, count=1):
+              p = Path(path)
+              text = p.read_text()
+              actual = text.count(old)
+              if actual != count:
+                  raise SystemExit(f"{path}: expected {count} occurrence(s), found {actual}: {old!r}")
+              p.write_text(text.replace(old, new))
+
+          instrument = 'app/src/androidTest/java/com/zz/filemanager/Step4CertificationInstrumentationTest.kt'
+          for obsolete in [
+              'import androidx.compose.ui.test.assertExists\n',
+              'import androidx.compose.ui.test.onAllNodes\n',
+              'import androidx.compose.ui.test.onNode\n',
+          ]:
+              replace_exact(instrument, obsolete, '')
+
+          replace_exact(
+              instrument,
+              '''            composeRule.onNode(hasText("hello\\nworld") and hasSetTextAction())
+                  .performTextReplacement("changed\\ncontent")''',
+              '''            composeRule.onNodeWithText("hello\\nworld")
+                  .performTextReplacement("changed\\ncontent")''',
+          )
+          replace_exact(instrument, 'import androidx.compose.ui.test.hasSetTextAction\n', '')
+          replace_exact(instrument, 'import androidx.compose.ui.test.hasText\n', '')
+
+          replace_exact(
+              instrument,
+              '''            composeRule.waitUntil(10_000) {
+                  composeRule.onAllNodes(hasText("folder")).fetchSemanticsNodes().isNotEmpty()
+              }''',
+              '''            composeRule.waitUntil(10_000) {
+                  runCatching { composeRule.onNodeWithText("folder").fetchSemanticsNode() }.isSuccess
+              }''',
+          )
+          replace_exact(
+              instrument,
+              '''            composeRule.waitUntil(10_000) {
+                  composeRule.onAllNodes(hasText("16 × 12", substring = true)).fetchSemanticsNodes().isNotEmpty()
+              }''',
+              '''            composeRule.waitUntil(10_000) {
+                  runCatching { composeRule.onNodeWithText("16 × 12", substring = true).fetchSemanticsNode() }.isSuccess
+              }''',
+          )
+          replace_exact(
+              instrument,
+              '''            composeRule.waitUntil(15_000) {
+                  composeRule.onAllNodes(hasText(context.packageName)).fetchSemanticsNodes().isNotEmpty()
+              }''',
+              '''            composeRule.waitUntil(15_000) {
+                  runCatching { composeRule.onNodeWithText(context.packageName).fetchSemanticsNode() }.isSuccess
+              }''',
+          )
+          replace_exact(instrument, '.assertExists()', '.assertIsDisplayed()', count=15)
+
+          browser_test = 'app/src/test/java/com/zz/filemanager/feature/browser/BrowserViewModelTest.kt'
+          old = '''    fun openFile_emitsExternalOpenRequest() = runTest(mainDispatcherRule.dispatcher) {
+          val storage = FakeBrowserStorage()
+          val viewModel = BrowserViewModel(storage, FakeBrowserPreferences(), mainDispatcherRule.dispatcher)
+          val expected = OpenFileRequest("content://test/report.pdf", "application/pdf")
+          storage.openRequests["report.pdf"] = expected
+          val event = backgroundScope.async(UnconfinedTestDispatcher(testScheduler)) { viewModel.events.first() }
+
+          viewModel.openEntry(file("report.pdf", mime = "application/pdf", uri = expected.uri))
+
+          assertEquals(BrowserEvent.OpenFile(expected), event.await())
+      }'''
+          new = '''    fun openFile_emitsExternalOpenRequest() = runTest(mainDispatcherRule.dispatcher) {
+          val root = location("root")
+          val storage = FakeBrowserStorage().apply { children[root.identity] = emptyList() }
+          val viewModel = BrowserViewModel(storage, FakeBrowserPreferences(), mainDispatcherRule.dispatcher)
+          val expected = OpenFileRequest("content://test/report.pdf", "application/pdf")
+          storage.openRequests["report.pdf"] = expected
+
+          viewModel.start(root)
+          advanceUntilIdle()
+          val event = backgroundScope.async(UnconfinedTestDispatcher(testScheduler)) { viewModel.events.first() }
+          viewModel.openEntry(file("report.pdf", mime = "application/pdf", uri = expected.uri))
+
+          assertEquals(BrowserEvent.OpenFile(expected), event.await())
+      }'''
+          replace_exact(browser_test, old, new)
+          PY
+      - name: Commit certification test fixes
+        shell: bash
+        run: |
+          git config user.name 'Zubaer Ahmed'
+          git config user.email 'zubaerknight@gmail.com'
+          git add app/src/androidTest/java/com/zz/filemanager/Step4CertificationInstrumentationTest.kt \
+                  app/src/test/java/com/zz/filemanager/feature/browser/BrowserViewModelTest.kt
+          git diff --cached --check
+          git commit -m 'step4: fix certification test APIs and browser setup'
+          git push origin HEAD:step4/archive-media-text-apk-analyzer
