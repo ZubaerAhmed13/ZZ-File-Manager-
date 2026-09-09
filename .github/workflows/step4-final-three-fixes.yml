@@ -1,0 +1,68 @@
+name: Step4 Final Three Fixes
+
+on:
+  push:
+    branches:
+      - step4/archive-media-text-apk-analyzer
+    paths:
+      - .github/workflows/step4-final-three-fixes.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: step4/archive-media-text-apk-analyzer
+          fetch-depth: 0
+      - name: Apply exact Step 4 fixes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import base64
+          from pathlib import Path
+
+          def dec(value):
+              return base64.b64decode(value).decode()
+
+          activity = Path('app/src/main/java/com/zz/filemanager/Step4FileActivity.kt')
+          text = activity.read_text()
+          old_toolbar = dec('ICAgICAgICAgICAgaWYgKGRvYz8ubW9kZSA9PSBUZXh0T3Blbk1vZGUuRURJVEFCTEUpIEZpbGxlZFRvbmFsQnV0dG9uKG9uQ2xpY2sgPSB7IGVkaXQgPSAhZWRpdCB9KSB7IFRleHQoaWYgKGVkaXQpICJWaWV3IiBlbHNlICJFZGl0IikgfQogICAgICAgICAgICBpZiAoZWRpdCkgewogICAgICAgICAgICAgICAgSWNvbkJ1dHRvbihlbmFibGVkID0gYnVmZmVyPy5jYW5VbmRvID09IHRydWUsIG9uQ2xpY2sgPSB7IGVkaXRvclRleHQgPSBidWZmZXI/LnVuZG8oKSA/OiBlZGl0b3JUZXh0IH0pIHsgSWNvbihJY29ucy5EZWZhdWx0LlVuZG8sICJVbmRvIikgfQogICAgICAgICAgICAgICAgSWNvbkJ1dHRvbihlbmFibGVkID0gYnVmZmVyPy5jYW5SZWRvID09IHRydWUsIG9uQ2xpY2sgPSB7IGVkaXRvclRleHQgPSBidWZmZXI/LnJlZG8oKSA/OiBlZGl0b3JUZXh0IH0pIHsgSWNvbihJY29ucy5EZWZhdWx0LlJlZG8sICJSZWRvIikgfQogICAgICAgICAgICAgICAgSWNvbkJ1dHRvbihlbmFibGVkID0gZGlydHksIG9uQ2xpY2sgPSB7IHNjb3BlLmxhdW5jaCB7IHNhdmUoKSB9IH0pIHsgSWNvbihJY29ucy5EZWZhdWx0LlNhdmUsICJTYXZlIikgfQogICAgICAgICAgICAgICAgVGV4dEJ1dHRvbihvbkNsaWNrID0geyBzYXZlQXNEaWFsb2cgPSB0cnVlIH0pIHsgVGV4dCgiU2F2ZSBBcyIpIH0KICAgICAgICAgICAgfQo=')
+          new_toolbar = dec('ICAgICAgICAgICAgaWYgKGRvYz8ubW9kZSA9PSBUZXh0T3Blbk1vZGUuRURJVEFCTEUpIEZpbGxlZFRvbmFsQnV0dG9uKG9uQ2xpY2sgPSB7IGVkaXQgPSAhZWRpdCB9KSB7IFRleHQoaWYgKGVkaXQpICJWaWV3IiBlbHNlICJFZGl0IikgfQogICAgICAgICAgICBpZiAoZWRpdCkgewogICAgICAgICAgICAgICAgLy8gS2VlcCB0aGUgcHJpbWFyeSBzYXZlIGFjdGlvbiB2aXNpYmxlIG9uIGNvbXBhY3QgcGhvbmVzOyBzZWNvbmRhcnkgaGlzdG9yeSBhY3Rpb25zIG1heSBzY3JvbGwuCiAgICAgICAgICAgICAgICBJY29uQnV0dG9uKGVuYWJsZWQgPSBkaXJ0eSwgb25DbGljayA9IHsgc2NvcGUubGF1bmNoIHsgc2F2ZSgpIH0gfSkgeyBJY29uKEljb25zLkRlZmF1bHQuU2F2ZSwgIlNhdmUiKSB9CiAgICAgICAgICAgICAgICBJY29uQnV0dG9uKGVuYWJsZWQgPSBidWZmZXI/LmNhblVuZG8gPT0gdHJ1ZSwgb25DbGljayA9IHsgZWRpdG9yVGV4dCA9IGJ1ZmZlcj8udW5kbygpID86IGVkaXRvclRleHQgfSkgeyBJY29uKEljb25zLkRlZmF1bHQuVW5kbywgIlVuZG8iKSB9CiAgICAgICAgICAgICAgICBJY29uQnV0dG9uKGVuYWJsZWQgPSBidWZmZXI/LmNhblJlZG8gPT0gdHJ1ZSwgb25DbGljayA9IHsgZWRpdG9yVGV4dCA9IGJ1ZmZlcj8ucmVkbygpID86IGVkaXRvclRleHQgfSkgeyBJY29uKEljb25zLkRlZmF1bHQuUmVkbywgIlJlZG8iKSB9CiAgICAgICAgICAgICAgICBUZXh0QnV0dG9uKG9uQ2xpY2sgPSB7IHNhdmVBc0RpYWxvZyA9IHRydWUgfSkgeyBUZXh0KCJTYXZlIEFzIikgfQogICAgICAgICAgICB9Cg==')
+          install = dec('ICAgICAgICAgICAgICAgIEJ1dHRvbihvbkNsaWNrID0gewogICAgICAgICAgICAgICAgICAgIGlmIChCdWlsZC5WRVJTSU9OLlNES19JTlQgPj0gQnVpbGQuVkVSU0lPTl9DT0RFUy5PICYmICFjb250ZXh0LnBhY2thZ2VNYW5hZ2VyLmNhblJlcXVlc3RQYWNrYWdlSW5zdGFsbHMoKSkgewogICAgICAgICAgICAgICAgICAgICAgICBjb250ZXh0LnN0YXJ0QWN0aXZpdHkoSW50ZW50KFNldHRpbmdzLkFDVElPTl9NQU5BR0VfVU5LTk9XTl9BUFBfU09VUkNFUywgVXJpLnBhcnNlKCJwYWNrYWdlOiR7Y29udGV4dC5wYWNrYWdlTmFtZX0iKSkpCiAgICAgICAgICAgICAgICAgICAgICAgIHNjb3BlLmxhdW5jaCB7IHNuYWNrYmFyLnNob3dTbmFja2JhcigiQWxsb3cgaW5zdGFsbHMgZnJvbSB0aGlzIGFwcCBpbiBBbmRyb2lkIHNldHRpbmdzLCB0aGVuIGNob29zZSBJbnN0YWxsIGFnYWluIikgfQogICAgICAgICAgICAgICAgICAgICAgICByZXR1cm5AQnV0dG9uCiAgICAgICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgICAgIHZhbCByZXF1ZXN0ID0gY29udGFpbmVyLnN0b3JhZ2Uub3BlblJlcXVlc3QoZW50cnkpCiAgICAgICAgICAgICAgICAgICAgaWYgKHJlcXVlc3QgPT0gbnVsbCkgewogICAgICAgICAgICAgICAgICAgICAgICBzY29wZS5sYXVuY2ggeyBzbmFja2Jhci5zaG93U25hY2tiYXIoIkFQSyBjYW5ub3QgYmUgZXhwb3NlZCB0byBBbmRyb2lkIFBhY2thZ2UgSW5zdGFsbGVyIikgfQogICAgICAgICAgICAgICAgICAgICAgICByZXR1cm5AQnV0dG9uCiAgICAgICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgICAgIHZhbCB1cmkgPSBVcmkucGFyc2UocmVxdWVzdC51cmkpCiAgICAgICAgICAgICAgICAgICAgdHJ5IHsKICAgICAgICAgICAgICAgICAgICAgICAgY29udGV4dC5zdGFydEFjdGl2aXR5KEludGVudChJbnRlbnQuQUNUSU9OX1ZJRVcpLmFwcGx5IHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgIHNldERhdGFBbmRUeXBlKHVyaSwgImFwcGxpY2F0aW9uL3ZuZC5hbmRyb2lkLnBhY2thZ2UtYXJjaGl2ZSIpCiAgICAgICAgICAgICAgICAgICAgICAgICAgICBhZGRGbGFncyhJbnRlbnQuRkxBR19HUkFOVF9SRUFEX1VSSV9QRVJNSVNTSU9OKQogICAgICAgICAgICAgICAgICAgICAgICAgICAgY2xpcERhdGEgPSBhbmRyb2lkLmNvbnRlbnQuQ2xpcERhdGEubmV3VXJpKGNvbnRleHQuY29udGVudFJlc29sdmVyLCBlbnRyeS5uYW1lLCB1cmkpCiAgICAgICAgICAgICAgICAgICAgICAgIH0pCiAgICAgICAgICAgICAgICAgICAgfSBjYXRjaCAoXzogQWN0aXZpdHlOb3RGb3VuZEV4Y2VwdGlvbikgewogICAgICAgICAgICAgICAgICAgICAgICBzY29wZS5sYXVuY2ggeyBzbmFja2Jhci5zaG93U25hY2tiYXIoIkFuZHJvaWQgUGFja2FnZSBJbnN0YWxsZXIgaXMgdW5hdmFpbGFibGUiKSB9CiAgICAgICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgfSkgeyBUZXh0KCJJbnN0YWxsIHdpdGggQW5kcm9pZCBQYWNrYWdlIEluc3RhbGxlciIpIH0KICAgICAgICAgICAgICAgIFRleHQoIkluc3RhbGxhdGlvbiBpcyBhbHdheXMgZXhwbGljaXQgYW5kIGNvbmZpcm1lZCBieSBBbmRyb2lkLiBBUEsgaW5zcGVjdGlvbiBuZXZlciBleGVjdXRlcyBhcHBsaWNhdGlvbiBjb2RlLiIsIHN0eWxlID0gTWF0ZXJpYWxUaGVtZS50eXBvZ3JhcGh5LmJvZHlTbWFsbCkK')
+          anchor = dec('ICAgICAgICAgICAgICAgIFByb3BlcnR5KCJJbnN0YWxsZWQiLCBpZiAobWV0YS5pbnN0YWxsZWQpICJZZXMiIGVsc2UgIk5vIikKICAgICAgICAgICAgICAgIEhvcml6b250YWxEaXZpZGVyKCkK')
+          new_anchor = dec('ICAgICAgICAgICAgICAgIFByb3BlcnR5KCJJbnN0YWxsZWQiLCBpZiAobWV0YS5pbnN0YWxsZWQpICJZZXMiIGVsc2UgIk5vIikKICAgICAgICAgICAgICAgIC8vIEtlZXAgdGhlIGV4cGxpY2l0IGluc3RhbGwgYWN0aW9uIHdpdGggdGhlIHByaW1hcnkgQVBLIGZhY3RzIGluc3RlYWQgb2YgYmVsb3cgbG9uZyBwZXJtaXNzaW9uIGxpc3RzLgogICAgICAgICAgICAgICAgQnV0dG9uKG9uQ2xpY2sgPSB7CiAgICAgICAgICAgICAgICAgICAgaWYgKEJ1aWxkLlZFUlNJT04uU0RLX0lOVCA+PSBCdWlsZC5WRVJTSU9OX0NPREVTLk8gJiYgIWNvbnRleHQucGFja2FnZU1hbmFnZXIuY2FuUmVxdWVzdFBhY2thZ2VJbnN0YWxscygpKSB7CiAgICAgICAgICAgICAgICAgICAgICAgIGNvbnRleHQuc3RhcnRBY3Rpdml0eShJbnRlbnQoU2V0dGluZ3MuQUNUSU9OX01BTkFHRV9VTktOT1dOX0FQUF9TT1VSQ0VTLCBVcmkucGFyc2UoInBhY2thZ2U6JHtjb250ZXh0LnBhY2thZ2VOYW1lfSIpKSkKICAgICAgICAgICAgICAgICAgICAgICAgc2NvcGUubGF1bmNoIHsgc25hY2tiYXIuc2hvd1NuYWNrYmFyKCJBbGxvdyBpbnN0YWxscyBmcm9tIHRoaXMgYXBwIGluIEFuZHJvaWQgc2V0dGluZ3MsIHRoZW4gY2hvb3NlIEluc3RhbGwgYWdhaW4iKSB9CiAgICAgICAgICAgICAgICAgICAgICAgIHJldHVybkBCdXR0b24KICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgdmFsIHJlcXVlc3QgPSBjb250YWluZXIuc3RvcmFnZS5vcGVuUmVxdWVzdChlbnRyeSkKICAgICAgICAgICAgICAgICAgICBpZiAocmVxdWVzdCA9PSBudWxsKSB7CiAgICAgICAgICAgICAgICAgICAgICAgIHNjb3BlLmxhdW5jaCB7IHNuYWNrYmFyLnNob3dTbmFja2JhcigiQVBLIGNhbm5vdCBiZSBleHBvc2VkIHRvIEFuZHJvaWQgUGFja2FnZSBJbnN0YWxsZXIiKSB9CiAgICAgICAgICAgICAgICAgICAgICAgIHJldHVybkBCdXR0b24KICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgdmFsIHVyaSA9IFVyaS5wYXJzZShyZXF1ZXN0LnVyaSkKICAgICAgICAgICAgICAgICAgICB0cnkgewogICAgICAgICAgICAgICAgICAgICAgICBjb250ZXh0LnN0YXJ0QWN0aXZpdHkoSW50ZW50KEludGVudC5BQ1RJT05fVklRVykuYXBwbHkgewogICAgICAgICAgICAgICAgICAgICAgICAgICAgc2V0RGF0YUFuZFR5cGUodXJpLCAiYXBwbGljYXRpb24vdm5kLmFuZHJvaWQucGFja2FnZS1hcmNoaXZlIikKICAgICAgICAgICAgICAgICAgICAgICAgICAgIGFkZEZsYWdzKEludGVudC5GTEFHX0dSQU5UX1JFQURfVVJJX1BFUk1JU1NJT04pCiAgICAgICAgICAgICAgICAgICAgICAgICAgICBjbGlwRGF0YSA9IGFuZHJvaWQuY29udGVudC5DbGlwRGF0YS5uZXdVcmkoY29udGV4dC5jb250ZW50UmVzb2x2ZXIsIGVudHJ5Lm5hbWUsIHVyaSkKICAgICAgICAgICAgICAgICAgICAgICAgfSkKICAgICAgICAgICAgICAgICAgICB9IGNhdGNoIChfOiBBY3Rpdml0eU5vdEZvdW5kRXhjZXB0aW9uKSB7CiAgICAgICAgICAgICAgICAgICAgICAgIHNjb3BlLmxhdW5jaCB7IHNuYWNrYmFyLnNob3dTbmFja2JhcigiQW5kcm9pZCBQYWNrYWdlIEluc3RhbGxlciBpcyB1bmF2YWlsYWJsZSIpIH0KICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICB9KSB7IFRleHQoIkluc3RhbGwgd2l0aCBBbmRyb2lkIFBhY2thZ2UgSW5zdGFsbGVyIikgfQogICAgICAgICAgICAgICAgVGV4dCgiSW5zdGFsbGF0aW9uIGlzIGFsd2F5cyBleHBsaWNpdCBhbmQgY29uZmlybWVkIGJ5IEFuZHJvaWQuIEFQSyBpbnNwZWN0aW9uIG5ldmVyIGV4ZWN1dGVzIGFwcGxpY2F0aW9uIGNvZGUuIiwgc3R5bGUgPSBNYXRlcmlhbFRoZW1lLnR5cG9ncmFwaHkuYm9keVNtYWxsKQogICAgICAgICAgICAgICAgSG9yaXpvbnRhbERpdmlkZXIoKQo=')
+          for old, new, label in [(old_toolbar, new_toolbar, 'editor toolbar'), (anchor, new_anchor, 'APK action anchor')]:
+              if text.count(old) != 1:
+                  raise SystemExit(f'{label} exact match count was {text.count(old)}, expected 1')
+              text = text.replace(old, new, 1)
+          if text.count(install) != 2:
+              raise SystemExit(f'APK install block count after insertion was {text.count(install)}, expected 2')
+          # Remove the original lower copy, preserving the newly inserted upper copy.
+          first = text.find(install)
+          second = text.find(install, first + len(install))
+          text = text[:second] + text[second + len(install):]
+          activity.write_text(text)
+
+          apk = Path('app/src/main/java/com/zz/filemanager/core/apk/ApkManager.kt')
+          text = apk.read_text()
+          pairs = [
+              (dec('ICAgICAgICAgICAgc2hhMjU2ID0gTWVzc2FnZURpZ2VzdC5nZXRJbnN0YW5jZSgiU0hBLTI1NiIpLmRpZ2VzdChieXRlcykuam9pblRvU3RyaW5nKCI6IikgeyAiJTAyWCIuZm9ybWF0KGl0KSB9LA=='), dec('ICAgICAgICAgICAgc2hhMjU2ID0gTWVzc2FnZURpZ2VzdC5nZXRJbnN0YW5jZSgiU0hBLTI1NiIpLmRpZ2VzdChieXRlcykuam9pblRvU3RyaW5nKCIiKSB7ICIlMDJYIi5mb3JtYXQoaXQpIH0s')),
+              (dec('ICAgICAgICBydW5DYXRjaGluZyB7IEFwa0NlcnRpZmljYXRlKE1lc3NhZ2VEaWdlc3QuZ2V0SW5zdGFuY2UoIlNIQS0yNTYiKS5kaWdlc3QoYnl0ZXMpLmpvaW5Ub1N0cmluZygiOiIpIHsgYiAtPiAiJTAyWCIuZm9ybWF0KGIpIH0sIG51bGwsIG51bGwpIH0uZ2V0T3JOdWxsKCk='), dec('ICAgICAgICBydW5DYXRjaGluZyB7IEFwa0NlcnRpZmljYXRlKE1lc3NhZ2VEaWdlc3QuZ2V0SW5zdGFuY2UoIlNIQS0yNTYiKS5kaWdlc3QoYnl0ZXMpLmpvaW5Ub1N0cmluZygiIikgeyBiIC0+ICIlMDJYIi5mb3JtYXQoYikgfSwgbnVsbCwgbnVsbCkgfS5nZXRPck51bGwoKQ==')),
+          ]
+          for old, new in pairs:
+              if text.count(old) != 1:
+                  raise SystemExit(f'digest exact match count was {text.count(old)}, expected 1')
+              text = text.replace(old, new, 1)
+          apk.write_text(text)
+          PY
+          git diff --check
+          git diff -- app/src/main/java/com/zz/filemanager/Step4FileActivity.kt app/src/main/java/com/zz/filemanager/core/apk/ApkManager.kt
+          git config user.name "Zubaer Ahmed"
+          git config user.email "zubaerknight@gmail.com"
+          git add app/src/main/java/com/zz/filemanager/Step4FileActivity.kt app/src/main/java/com/zz/filemanager/core/apk/ApkManager.kt
+          git commit -m "step4: fix final API 35 UI and APK contracts"
+          git push origin HEAD:step4/archive-media-text-apk-analyzer
