@@ -55,10 +55,11 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
 
-    // Step 4: professional offline media and archive support. Media3 1.10.1 is the
-    // newest stable line compatible with this Step 4 compileSdk 35 / API 35 certification gate.
-    implementation("androidx.media3:media3-exoplayer:1.10.1")
-    implementation("androidx.media3:media3-ui:1.10.1")
+    // Step 4: professional offline media and archive support. Media3 1.9.4's
+    // official release tag sets compileSdkVersion=35 and publishes minCompileSdk from that value,
+    // matching this Step 4 API-35 certification boundary without reducing playback features.
+    implementation("androidx.media3:media3-exoplayer:1.9.4")
+    implementation("androidx.media3:media3-ui:1.9.4")
     implementation("net.lingala.zip4j:zip4j:2.11.5")
     implementation("org.apache.commons:commons-compress:1.28.0")
     implementation("org.tukaani:xz:1.10")

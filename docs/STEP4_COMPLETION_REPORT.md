@@ -80,7 +80,7 @@ See `STEP4_TEST_MATRIX.md` for the exact coverage contract.
 
 ## Dependency compatibility correction
 
-The initial Media3 1.11.0 dependency requires compileSdk 36. Because Step 4 is intentionally certified on API 35 / compileSdk 35, playback is pinned to the latest stable API-35-compatible Media3 line instead of silently upgrading the product’s compile SDK. This preserves ExoPlayer functionality while keeping the requested certification boundary intact.
+Media3 1.11.0 and 1.10.1 publish AAR metadata requiring compileSdk 36, so neither can be used by this Step 4 build while it is intentionally certified on API 35 / compileSdk 35 with Android Gradle Plugin 8.7.3. Playback is therefore pinned to **Media3 1.9.4**. Its official release tag sets `compileSdkVersion = 35`, and the same release's library configuration publishes `aarMetadata.minCompileSdk` from that compile-SDK value. This preserves ExoPlayer playback and UI functionality without silently moving the requested certification boundary to API 36.
 
 ## Non-goals / deferred verification
 
