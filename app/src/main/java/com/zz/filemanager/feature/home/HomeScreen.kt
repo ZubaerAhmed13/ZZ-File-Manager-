@@ -22,15 +22,16 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Android
+import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FolderOpen
-import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.VideoFile
@@ -62,6 +63,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.zz.filemanager.R
+import com.zz.filemanager.Step4ToolsActivity
 import com.zz.filemanager.core.model.BrowserLocation
 import com.zz.filemanager.core.model.MediaCategory
 import com.zz.filemanager.core.model.StorageLocation
@@ -180,6 +182,20 @@ fun HomeScreen(
                         TextButton(onClick = onOpenFavorites) { Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.Star, null); Text(stringResource(R.string.favorites)) } }
                         TextButton(onClick = onOpenRecent) { Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.History, null); Text(stringResource(R.string.recent)) } }
                         TextButton(onClick = onOpenTrash) { Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.DeleteOutline, null); Text(stringResource(R.string.recycle_bin)) } }
+                    }
+                }
+                item { SectionTitle("Tools") }
+                item {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                        TextButton(onClick = { context.startActivity(Step4ToolsActivity.intent(context, Step4ToolsActivity.MODE_APPS)) }) {
+                            Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.Android, contentDescription = "Apps"); Text("Apps") }
+                        }
+                        TextButton(onClick = { context.startActivity(Step4ToolsActivity.intent(context, Step4ToolsActivity.MODE_ANALYZER)) }) {
+                            Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.Storage, contentDescription = "Analyze Storage"); Text("Analyze") }
+                        }
+                        TextButton(onClick = { context.startActivity(Step4ToolsActivity.intent(context, Step4ToolsActivity.MODE_ARCHIVE_CREATE)) }) {
+                            Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.Archive, contentDescription = "Create Archive"); Text("Archive") }
+                        }
                     }
                 }
                 if (!state.broadStorageAccess) item { PermissionCard(::requestBroadAccess) }
