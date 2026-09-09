@@ -22,6 +22,7 @@ import java.io.OutputStream
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.nio.file.attribute.BasicFileAttributes
 import java.util.UUID
 import kotlin.coroutines.coroutineContext
 
@@ -45,6 +46,16 @@ class LocalStorageProvider(private val context: Context) : WritableStorageProvid
 
     override suspend fun openInputStream(item: FileReference): InputStream = withContext(Dispatchers.IO) { FileInputStream(item.path ?: throw StorageAccessException.Unavailable()) }
     override suspend fun exists(item: FileReference): Boolean = withContext(Dispatchers.IO) { item.path?.let(::File)?.exists() == true }
+
+    override suspend fun mutationIdentity(item: FileReference): String? = withContext(Dispatchers.IO) {
+        val path = item.path ?: return@withContext null
+        val file = File(path)
+        if (!file.exists()) return@withContext null
+        runCatching {
+            val attributes = Files.readAttributes(file.toPath(), BasicFileAttributes::class.java)
+            attributes.fileKey()?.toString()?.takeIf { it.isNotBlank() }
+        }.getOrNull()
+    }
 
     override suspend fun resolveParent(location: BrowserLocation): BrowserLocation? = withContext(Dispatchers.IO) {
         val current = validated(location.reference, location.rootReference)
