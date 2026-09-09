@@ -9,7 +9,6 @@ import com.zz.filemanager.core.model.FileEntry
 import com.zz.filemanager.core.model.ScopedFileReference
 import com.zz.filemanager.core.operation.CollisionPolicy
 import com.zz.filemanager.core.step4.SafeOutputWriter
-import com.zz.filemanager.core.storage.StorageProvider
 import com.zz.filemanager.core.storage.StorageProviderRegistry
 import com.zz.filemanager.core.storage.WritableStorageProvider
 import kotlinx.coroutines.CancellationException
@@ -164,6 +163,7 @@ class ArchiveManager(
                         val parentAndName = ensureParent(request.destination, path)
                         zip.getInputStream(header).use { input ->
                             val base = processedBytes
+                            var observedFileBytes = 0L
                             safeWriter.write(
                                 parent = parentAndName.first,
                                 requestedName = parentAndName.second,
@@ -172,7 +172,9 @@ class ArchiveManager(
                                 expectedBytes = header.uncompressedSize.takeIf { it >= 0L },
                                 collisionPolicy = request.collisionPolicy,
                             ) { fileBytes ->
-                                guard.observeActual((base + fileBytes - processedBytes).coerceAtLeast(0L))
+                                val delta = (fileBytes - observedFileBytes).coerceAtLeast(0L)
+                                guard.observeActual(delta)
+                                observedFileBytes = fileBytes
                                 onProgress(ArchiveProgress("extract", path, base + fileBytes, null, completed, selected.size.toLong()))
                             }
                             processedBytes = safeAdd(processedBytes, header.uncompressedSize.coerceAtLeast(0L))
@@ -216,10 +218,7 @@ class ArchiveManager(
                     val entry = tar.nextEntry ?: break
                     val path = ArchivePathValidator.normalize(entry.name)
                     if (!seen.add(path.lowercase())) throw ArchiveFailure.DuplicatePath(path)
-                    if (entry.isSymbolicLink || entry.isLink) {
-                        // Conservative policy: do not materialize archive links into user storage.
-                        continue
-                    }
+                    if (entry.isSymbolicLink || entry.isLink) continue
                     guard.observeHeader(null, entry.size.takeIf { it >= 0L })
                     if (!selected(path, request.selectedPaths)) continue
                     onProgress(ArchiveProgress("extract", path, processed, null, count, null))
@@ -262,8 +261,7 @@ class ArchiveManager(
         } catch (error: ArchiveFailure) {
             throw error
         } catch (error: Throwable) {
-            if (error.message?.contains("password", true) == true) throw ArchiveFailure.BadPassword(error)
-            throw ArchiveFailure.Corrupted(error)
+            throw mapReaderFailure("7z", error)
         }
     }
 
@@ -301,8 +299,7 @@ class ArchiveManager(
             } catch (error: ArchiveFailure) {
                 throw error
             } catch (error: Throwable) {
-                if (error.message?.contains("password", true) == true) throw ArchiveFailure.BadPassword(error)
-                throw ArchiveFailure.Corrupted(error)
+                throw mapReaderFailure("7z", error)
             }
         }
     }
@@ -324,7 +321,7 @@ class ArchiveManager(
         } catch (error: ArchiveFailure) {
             throw error
         } catch (error: Throwable) {
-            throw ArchiveFailure.Corrupted(error)
+            throw mapReaderFailure("RAR", error)
         }
     }
 
@@ -365,7 +362,7 @@ class ArchiveManager(
         } catch (error: ArchiveFailure) {
             throw error
         } catch (error: Throwable) {
-            throw ArchiveFailure.Corrupted(error)
+            throw mapReaderFailure("RAR", error)
         }
     }
 
@@ -594,6 +591,16 @@ class ArchiveManager(
     private fun mapZipError(error: ZipException): ArchiveFailure {
         val message = error.message.orEmpty()
         return if (message.contains("password", true)) ArchiveFailure.BadPassword(error) else ArchiveFailure.Corrupted(error)
+    }
+
+    private fun mapReaderFailure(label: String, error: Throwable): ArchiveFailure {
+        val message = error.message.orEmpty()
+        return when {
+            message.contains("password", true) -> ArchiveFailure.BadPassword(error)
+            message.contains("unsupported", true) || message.contains("not supported", true) || message.contains("RAR5", true) ->
+                ArchiveFailure.ProviderLimit("This $label variant or compression method is not supported by the packaged reader")
+            else -> ArchiveFailure.Corrupted(error)
+        }
     }
 
     private fun safeAdd(left: Long, right: Long): Long {
