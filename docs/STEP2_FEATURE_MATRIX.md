@@ -1,6 +1,6 @@
 # Step 2 Feature Matrix
 
-Functional certification was completed on implementation head `f21bd3705087cc65620e772e4a549c69baf4b443` by GitHub Actions run `34336655608` (#139). The clean debug build, JVM tests, lint, release build, instrumentation compile, and API-35 emulator instrumentation all passed. The API-35 suite executed **9 tests, 0 skipped, 0 failed**.
+Functional certification was completed on repaired implementation head `9f5fd474f64cbbd43308a147479bdaa3668a1170` by GitHub Actions run `34346037170` (#159). The clean debug build, JVM tests, lint, release build, instrumentation compile, and API-35 emulator instrumentation all passed. The API-35 suite executed **9 tests, 0 skipped, 0 failed**.
 
 Verified Step 1 baseline: `2be3a6933931a1f7aa9ae3857e7adf2f910bca9e`.
 
@@ -27,22 +27,25 @@ Verified Step 1 baseline: `2be3a6933931a1f7aa9ae3857e7adf2f910bca9e`.
 | Replace capability gating | PASS | Rename-only providers do not offer unsafe Replace; Keep-Both can remain available when rename finalization is safe. |
 | Atomic local Replace | PASS | Local provider attempts `ATOMIC_MOVE + REPLACE_EXISTING`; falls back only when atomic replacement is unavailable. |
 | Weak-provider Replace transaction | PASS | Durable backup/commit/verify/cleanup ledger preserves old destination across write/read/finalization/provider failures. |
-| Replace process-death recovery | PASS | Persisted phase/original snapshot/backup/staged/final references support deterministic restore or completion after restart. |
+| Replace final-reference journal boundary | PASS | After staged→final rename succeeds, the returned final reference is journaled immediately while phase remains `COMMITTING`, before post-commit verification. |
+| Replace post-commit verification failure | PASS | Verification failure after final-name mutation persists `INTERRUPTED`; backup/result ledger remains recoverable and success is never reported. |
+| Replace process-death recovery | PASS | Persisted phase/original snapshot/backup/staged/final references support deterministic restore or completion after restart, including staged→final mutation before `COMMITTED` save. |
 | Replace cancellation safety | PASS | Coroutine cancellation preserves transaction ledger instead of performing speculative rollback inside cancelled execution. |
 | Replace backup cleanup recovery | PASS | Failure to remove safety backup leaves operation recoverable/interrupted rather than silently orphaning backup state. |
+| Terminal completion invariant | PASS | Finalization refuses success with `QUEUED`/`RUNNING` items, unresolved Replace phase, required batch rollback, or unresolved batch phase; such work is persisted `INTERRUPTED`. |
 | Skip | PASS | Per-item/subtree skip. |
 | Keep both | PASS | Deterministic extension-preserving `(n)` naming. |
 | Directory merge | PASS | Intentional merge; destination directory is not destroyed. |
 | Apply to all | PASS | Scoped to active operation and compatible collision types. |
 | Persistent operation queue | PASS | FIFO `OperationRepository` plus durable journal. |
 | Persistent journal | PASS | SQLite + typed JSON snapshots + indexed state/timestamps. |
-| Replace ledger persistence | PASS | `ReplacePhase`, final name, original ref/size/mtime, backup name/ref and staged partial survive JSON round-trip. |
+| Replace ledger persistence | PASS | `ReplacePhase`, final name, original ref/size/mtime, backup name/ref, staged partial and result reference survive required transaction boundaries. |
 | Background execution | PASS | User-started `dataSync` foreground service for local/SAF work; Android 15 timeout reconciles to recoverable interruption. |
 | Android 14+ user-initiated JobScheduler | NOT USED BY DESIGN | User-initiated jobs target network transfers, not local/SAF file operations. |
 | Progress | PASS | `Long` byte/item counters, throttled persistence/events, indeterminate mode when total is unknown. |
 | Cancel | PASS | Cooperative cancellation, stream close, source preservation, partial cleanup, collision-race protection and transaction-ledger preservation. |
 | Pause/resume | PASS | Cooperative pause; safe current-file restart where byte-level continuation is not provable. |
-| Process recovery | PASS | Unsafe running states reconcile to `INTERRUPTED`; never auto-complete. |
+| Process recovery | PASS | Unsafe running or unresolved transactional states reconcile to `INTERRUPTED`; never auto-complete. |
 | File-boundary resume | PASS | Completed items stay complete; interrupted current item is re-queued. |
 | Byte-level process-death resume | NOT GENERALLY CLAIMED | Correctness-first restart unless provider-safe random-access continuation can be proven. |
 | Retry | PASS | New operation ID after terminal failure/warnings; tracked partial cleanup context carried forward. Unfinished Replace ledger is recovered in-place and is never cloned. |
@@ -62,17 +65,19 @@ Verified Step 1 baseline: `2be3a6933931a1f7aa9ae3857e7adf2f910bca9e`.
 | No visible partial final filename | PASS | Providers without safe rename finalization fail before exposing a partial final-name file. |
 | Operation details/progress surface | PASS | Browser operation sheet exposes state, current item, bytes/items, failures and actions. |
 | Notification controls | PASS | Dedicated channel with pause/cancel controls and timeout reconciliation. |
-| API-35 instrumentation | PASS | Run #139: 9/9 tests, 0 skipped, 0 failed. |
-| `assembleDebug` | PASS | Run #139. |
-| `testDebugUnitTest` | PASS | Run #139, including the new transaction regressions. |
-| `lintDebug` | PASS | Run #139. |
-| `assembleRelease` | PASS | Run #139. |
-| `assembleDebugAndroidTest` | PASS | Run #139. |
+| API-35 instrumentation | PASS | Run #159: 9/9 tests, 0 skipped, 0 failed. |
+| `assembleDebug` | PASS | Run #159. |
+| `testDebugUnitTest` | PASS | Run #159, including the final Replace post-commit/finalization-invariant regressions. |
+| `lintDebug` | PASS | Run #159. |
+| `assembleRelease` | PASS | Run #159. |
+| `assembleDebugAndroidTest` | PASS | Run #159. |
 | Step 1 regression coverage | PASS | Existing browse/navigation/persistence tests remain in the green suite. |
 | Physical phone testing | DEFERRED TO STEP 7 | Intentionally not required during Step 2. |
 
 ## Step 2 boundary
 
 No Step 3 functionality is claimed by this matrix. Step 2 closes the professional file-operation, selection, clipboard, background execution, recovery and provider work defined for this stage.
+
+The repaired implementation invariant is explicit: **never report success when transaction completion has not been proven**. Run #159 certifies that invariant together with the rest of the Step 2 automated gate.
 
 Physical phone certification intentionally deferred to Step 7 per project plan.
