@@ -2,6 +2,7 @@ package com.zz.filemanager.core.trash
 
 import com.zz.filemanager.core.library.ActivityKind
 import com.zz.filemanager.core.library.LibraryItemStatus
+import com.zz.filemanager.core.library.RestoreReplacePhase
 import com.zz.filemanager.core.library.TrashBackendType
 import com.zz.filemanager.core.library.TrashRecord
 import com.zz.filemanager.core.library.TrashState
@@ -37,6 +38,8 @@ sealed interface TrashResult {
 }
 
 data class EmptyTrashResult(val deleted: Int, val failed: Int)
+
+private data class RestoreReplaceCommit(val entry: FileEntry, val record: TrashRecord)
 
 /**
  * Transactional app-managed recycle backend. Same-storage native move gives large directories and
@@ -177,6 +180,9 @@ class TrashManager(
             ?: return TrashResult.Failed("Recycle item is unavailable.")
         if (original.state !in setOf(TrashState.TRASHED, TrashState.INTERRUPTED, TrashState.FAILED)) return TrashResult.Failed("Recycle item is busy.")
         if (hasActiveLinkedOperation(original)) return TrashResult.Failed("The linked file operation must finish or be cancelled first.")
+        if (original.restoreReplace && original.restoreReplacePhase != RestoreReplacePhase.NONE && policy != RestoreCollisionPolicy.REPLACE) {
+            return TrashResult.Failed("An interrupted Replace must be recovered or retried before choosing another restore policy.")
+        }
         val payload = original.trashReference ?: return TrashResult.Failed("Recycle payload is missing.")
         val provider = providers.writableProviderFor(payload.reference.providerId)
             ?: return TrashResult.Unsupported("Original storage is unavailable.")
@@ -193,19 +199,28 @@ class TrashManager(
             policy == RestoreCollisionPolicy.KEEP_BOTH -> keepBothName(provider, original.originalParent, original.originalName)
             else -> original.originalName
         }
+        val replacing = existing != null && policy == RestoreCollisionPolicy.REPLACE
         var record = original.copy(
             state = TrashState.RESTORING, updatedAtMillis = now(), failureReason = null, operationId = null,
             restoreDestination = original.originalParent, restoreName = plannedName,
-            restoreReplace = existing != null && policy == RestoreCollisionPolicy.REPLACE,
+            restoreReplace = replacing,
+            restoreReplacePhase = if (replacing) original.restoreReplacePhase else RestoreReplacePhase.NONE,
+            restoreStageName = if (replacing) original.restoreStageName else null,
+            restoreCommitIdentity = if (replacing) original.restoreCommitIdentity else null,
+            restoreCommittedReference = if (replacing) original.restoreCommittedReference else null,
         )
         store.upsertTrash(record)
         return try {
             val restored = when {
                 existing == null -> movePayload(provider, payload, original.originalParent, plannedName)
                 policy == RestoreCollisionPolicy.KEEP_BOTH -> movePayload(provider, payload, original.originalParent, plannedName)
-                policy == RestoreCollisionPolicy.REPLACE -> replaceFromTrash(provider, payload, existing, original) { staged ->
-                    record = record.copy(trashReference = staged, updatedAtMillis = now())
-                    store.upsertTrash(record)
+                policy == RestoreCollisionPolicy.REPLACE -> {
+                    val commit = replaceFromTrash(provider, payload, existing, record) { updated ->
+                        record = updated
+                        store.upsertTrash(updated)
+                    }
+                    record = commit.record
+                    commit.entry
                 }
                 else -> return TrashResult.Collision(existing, false)
             }
@@ -213,6 +228,7 @@ class TrashManager(
                 state = TrashState.DELETED,
                 updatedAtMillis = now(),
                 trashReference = ScopedFileReference(restored.reference, original.originalParent.rootReference, original.originalParent.storageId),
+                restoreCommittedReference = ScopedFileReference(restored.reference, original.originalParent.rootReference, original.originalParent.storageId),
             )
             store.removeTrash(record.id)
             restoreRelatedItems(original, restored, original.originalParent)
@@ -222,7 +238,7 @@ class TrashManager(
         } catch (error: Throwable) {
             record = record.copy(state = TrashState.INTERRUPTED, updatedAtMillis = now(), failureReason = error.message)
             store.upsertTrash(record)
-            TrashResult.Failed(error.message ?: "Restore was interrupted; the recycle payload was preserved.")
+            TrashResult.Failed(error.message ?: "Restore was interrupted; the recycle payload was preserved or its commit remains recoverable.")
         }
     }
 
@@ -251,6 +267,8 @@ class TrashManager(
                 val moving = original.copy(
                     state = TrashState.RESTORING, updatedAtMillis = now(), failureReason = null, operationId = null,
                     restoreDestination = destination, restoreName = original.originalName, restoreReplace = false,
+                    restoreReplacePhase = RestoreReplacePhase.NONE, restoreStageName = null,
+                    restoreCommitIdentity = null, restoreCommittedReference = null,
                 )
                 recoveryRecord = moving
                 store.upsertTrash(moving)
@@ -270,6 +288,8 @@ class TrashManager(
                 val queued = original.copy(
                     state = TrashState.RESTORING, operationId = operationId, updatedAtMillis = now(), failureReason = null,
                     restoreDestination = destination, restoreName = original.originalName, restoreReplace = false,
+                    restoreReplacePhase = RestoreReplacePhase.NONE, restoreStageName = null,
+                    restoreCommitIdentity = null, restoreCommittedReference = null,
                 )
                 recoveryRecord = queued
                 store.upsertTrash(queued)
@@ -324,6 +344,9 @@ class TrashManager(
         store.initialize()
         store.trashRecords.value.forEach { record ->
             if (record.backend != TrashBackendType.APP_MANAGED || record.state == TrashState.TRASHED) return@forEach
+            if (record.restoreReplace && record.state in setOf(TrashState.RESTORING, TrashState.INTERRUPTED, TrashState.FAILED)) {
+                if (reconcileRestoreReplace(record)) return@forEach
+            }
             val linkedOperation = record.operationId?.let { operationStore?.get(it) }
             if (linkedOperation != null && linkedOperation.state.isTerminal) {
                 finalizeFallbackRecord(record, linkedOperation)
@@ -333,12 +356,7 @@ class TrashManager(
             val sourceExists = runCatching { provider.exists(record.originalReference) }.getOrDefault(false)
             val container = record.containerReference
             val recordedPayload = record.trashReference?.takeUnless { candidate -> candidate.reference.opaqueId == container?.reference?.opaqueId }
-            val discoveredPayload = container?.let { containerRef ->
-                val raw = containerRef.reference.uri ?: containerRef.reference.path ?: containerRef.reference.opaqueId
-                val location = BrowserLocation(containerRef.reference.providerId, containerRef.reference.opaqueId, record.id, raw, containerRef.rootReference, containerRef.storageId, true, true)
-                runCatching { provider.listChildren(location).singleOrNull { it.name == record.originalName } }.getOrNull()
-                    ?.let { ScopedFileReference(it.reference, containerRef.rootReference, containerRef.storageId) }
-            }
+            val discoveredPayload = discoverContainerPayload(record, provider)
             val physicalPayload = discoveredPayload ?: recordedPayload
             val trashExists = physicalPayload?.let { runCatching { provider.exists(it.reference) }.getOrDefault(false) } == true
             if (record.state == TrashState.RESTORING && !trashExists) {
@@ -406,6 +424,139 @@ class TrashManager(
         }
     }
 
+    /**
+     * Reconciles only Restore + Replace. The normal source path cannot be used as evidence here,
+     * because a different same-named object legitimately existed before the user selected Replace.
+     * A terminal restore is accepted only when the final object's provider mutation identity equals
+     * the identity durably captured from the staged recycle payload before the atomic boundary.
+     */
+    private suspend fun reconcileRestoreReplace(record: TrashRecord): Boolean {
+        val destination = record.restoreDestination ?: record.originalParent
+        val provider = providers.writableProviderFor(destination.providerId)
+        if (provider == null) {
+            store.upsertTrash(record.copy(
+                state = TrashState.INTERRUPTED,
+                updatedAtMillis = now(),
+                failureReason = "Restore Replace storage is unavailable; recovery evidence was preserved.",
+            ))
+            return true
+        }
+        val stageName = record.restoreStageName ?: ".zzrestore-${record.id}"
+        val stage = runCatching { provider.findChild(destination, stageName) }.getOrNull()
+        val finalName = record.restoreName ?: record.originalName
+        val final = runCatching { provider.findChild(destination, finalName) }.getOrNull()
+        val containerPayload = discoverContainerPayload(record, provider)
+        val expectedIdentity = record.restoreCommitIdentity
+        val finalIdentity = final?.let { runCatching { provider.mutationIdentity(it.reference) }.getOrNull() }
+        val finalProven = expectedIdentity != null && finalIdentity != null && expectedIdentity == finalIdentity
+
+        if (finalProven && record.restoreReplacePhase in setOf(RestoreReplacePhase.COMMITTING, RestoreReplacePhase.COMMITTED)) {
+            finalizeRecoveredReplace(record, requireNotNull(final), destination, provider)
+            return true
+        }
+
+        when (record.restoreReplacePhase) {
+            RestoreReplacePhase.NONE -> {
+                // Backward-compatible handling for a transaction created by the old implementation.
+                // It had no pre-commit proof, so a missing stage can never be guessed as success.
+                if (stage != null) {
+                    val identity = runCatching { provider.mutationIdentity(stage.reference) }.getOrNull()
+                    store.upsertTrash(record.copy(
+                        trashReference = scoped(stage, destination),
+                        restoreReplacePhase = RestoreReplacePhase.STAGED,
+                        restoreStageName = stageName,
+                        restoreCommitIdentity = identity,
+                        state = TrashState.INTERRUPTED,
+                        updatedAtMillis = now(),
+                        failureReason = if (identity == null) "Interrupted legacy Replace staging cannot obtain durable commit identity." else "Interrupted legacy Replace staging was recovered; retry Replace to continue.",
+                    ))
+                } else if (containerPayload != null) {
+                    store.upsertTrash(resetRestoreReplace(record, containerPayload))
+                } else {
+                    store.upsertTrash(record.copy(
+                        state = TrashState.INTERRUPTED,
+                        updatedAtMillis = now(),
+                        failureReason = "Legacy Restore Replace has no durable commit proof. The final item was not guessed as restored.",
+                    ))
+                }
+            }
+
+            RestoreReplacePhase.STAGING -> when {
+                stage != null && containerPayload == null -> {
+                    val identity = runCatching { provider.mutationIdentity(stage.reference) }.getOrNull()
+                    store.upsertTrash(record.copy(
+                        trashReference = scoped(stage, destination),
+                        restoreReplacePhase = RestoreReplacePhase.STAGED,
+                        restoreCommitIdentity = identity,
+                        state = TrashState.INTERRUPTED,
+                        updatedAtMillis = now(),
+                        failureReason = if (identity == null) "Restore staging completed, but durable mutation identity is unavailable." else "Restore staging completed before interruption; retry Replace to continue.",
+                    ))
+                }
+                stage == null && containerPayload != null -> store.upsertTrash(resetRestoreReplace(record, containerPayload))
+                stage != null && containerPayload != null -> store.upsertTrash(record.copy(
+                    state = TrashState.INTERRUPTED,
+                    updatedAtMillis = now(),
+                    failureReason = "Both the recycle payload and Restore stage exist; no copy was deleted automatically.",
+                ))
+                else -> store.upsertTrash(record.copy(
+                    state = TrashState.CORRUPTED,
+                    updatedAtMillis = now(),
+                    failureReason = "Neither the recycle payload nor its planned Restore stage can be located.",
+                ))
+            }
+
+            RestoreReplacePhase.STAGED -> when {
+                stage != null -> store.upsertTrash(record.copy(
+                    trashReference = scoped(stage, destination),
+                    state = TrashState.INTERRUPTED,
+                    updatedAtMillis = now(),
+                    failureReason = "Restore Replace was interrupted before its atomic commit; the staged payload remains recoverable.",
+                ))
+                containerPayload != null -> store.upsertTrash(resetRestoreReplace(record, containerPayload))
+                else -> store.upsertTrash(record.copy(
+                    state = TrashState.INTERRUPTED,
+                    updatedAtMillis = now(),
+                    failureReason = "Restore stage is missing and no committed identity was proven; the transaction remains unresolved.",
+                ))
+            }
+
+            RestoreReplacePhase.COMMITTING -> when {
+                stage != null -> store.upsertTrash(record.copy(
+                    trashReference = scoped(stage, destination),
+                    state = TrashState.INTERRUPTED,
+                    updatedAtMillis = now(),
+                    failureReason = "Atomic Replace did not consume the staged payload; retry Replace to continue safely.",
+                ))
+                containerPayload != null -> store.upsertTrash(resetRestoreReplace(record, containerPayload))
+                else -> store.upsertTrash(record.copy(
+                    state = TrashState.INTERRUPTED,
+                    updatedAtMillis = now(),
+                    failureReason = "Atomic Replace outcome cannot be proven from durable identity; no terminal state was claimed.",
+                ))
+            }
+
+            RestoreReplacePhase.COMMITTED -> store.upsertTrash(record.copy(
+                state = TrashState.INTERRUPTED,
+                updatedAtMillis = now(),
+                failureReason = "Committed Restore destination no longer matches its durable mutation identity; manual recovery is required.",
+            ))
+        }
+        return true
+    }
+
+    private suspend fun finalizeRecoveredReplace(
+        record: TrashRecord,
+        restored: FileEntry,
+        destination: BrowserLocation,
+        provider: WritableStorageProvider,
+    ) {
+        store.removeTrash(record.id)
+        restoreRelatedItems(record, restored, destination)
+        record.trashReference?.let { cleanupContainer(provider, it, record) }
+        libraryManager.recordActivity(ActivityKind.RESTORED, "Recovered restored ${record.originalName}", 1L, record.operationId)
+    }
+
     private suspend fun reconcileOrphanPayloads() {
         val roots = rootSource?.accessibleRoots().orEmpty().filter { it.writable && it.providerId != "media" }
         val knownContainers = store.trashRecords.value.mapNotNull { it.containerReference?.reference?.opaqueId }.toHashSet()
@@ -468,35 +619,195 @@ class TrashManager(
         parent.rootReference, parent.storageId, isReadable, isWritable,
     )
 
+    private fun scoped(entry: FileEntry, parent: BrowserLocation) = ScopedFileReference(
+        entry.reference,
+        parent.rootReference,
+        parent.storageId,
+    )
+
     private suspend fun movePayload(provider: WritableStorageProvider, payload: ScopedFileReference, destination: BrowserLocation, name: String): FileEntry {
         if (!provider.canMoveNative(payload, destination, name)) throw IllegalStateException("Safe native restore is unavailable")
         return provider.moveNative(payload, destination, name) ?: throw IllegalStateException("Native restore did not complete")
     }
 
+    /**
+     * Crash-safe atomic Restore + Replace.
+     *
+     * The stage name is journaled before the payload moves. The staged object's provider mutation
+     * identity is then journaled before replaceAtomically(). If Android dies after the filesystem
+     * commit but before the next catalog write, startup can prove the final object is exactly the
+     * staged payload. The final filename alone is never accepted as proof.
+     */
     private suspend fun replaceFromTrash(
         provider: WritableStorageProvider,
         payload: ScopedFileReference,
         existing: FileEntry,
-        record: TrashRecord,
-        persistStaged: suspend (ScopedFileReference) -> Unit,
-    ): FileEntry {
-        val capabilities = provider.capabilities(record.originalParent)
+        initialRecord: TrashRecord,
+        persist: suspend (TrashRecord) -> Unit,
+    ): RestoreReplaceCommit {
+        val capabilities = provider.capabilities(initialRecord.originalParent)
         if (StorageCapability.ATOMIC_RENAME !in capabilities) throw IllegalStateException("Safe Replace is unavailable for this provider")
-        val stageName = ".zzrestore-${record.id}"
-        val existingStage = provider.findChild(record.originalParent, stageName)
-        val stagedEntry = if (existingStage?.reference?.opaqueId == payload.reference.opaqueId) existingStage
-            else movePayload(provider, payload, record.originalParent, stageName)
-        val staged = ScopedFileReference(stagedEntry.reference, record.originalParent.rootReference, record.originalParent.storageId)
-        persistStaged(staged)
-        val existingScoped = ScopedFileReference(existing.reference, record.originalParent.rootReference, record.originalParent.storageId)
-        return provider.replaceAtomically(staged, existingScoped, record.originalName)
+
+        var record = initialRecord
+        val stageName = record.restoreStageName ?: ".zzrestore-${record.id}"
+        if (record.restoreReplacePhase == RestoreReplacePhase.NONE) {
+            record = record.copy(
+                restoreReplace = true,
+                restoreReplacePhase = RestoreReplacePhase.STAGING,
+                restoreStageName = stageName,
+                restoreCommitIdentity = null,
+                restoreCommittedReference = null,
+                updatedAtMillis = now(),
+            )
+            persist(record)
+        }
+
+        val currentStage = provider.findChild(record.originalParent, stageName)
+        val currentFinal = provider.findChild(record.originalParent, record.restoreName ?: record.originalName)
+        val expectedIdentity = record.restoreCommitIdentity
+        if (record.restoreReplacePhase in setOf(RestoreReplacePhase.COMMITTING, RestoreReplacePhase.COMMITTED) && currentStage == null && currentFinal != null && expectedIdentity != null) {
+            val finalIdentity = provider.mutationIdentity(currentFinal.reference)
+            if (finalIdentity == expectedIdentity) {
+                val committedReference = scoped(currentFinal, record.originalParent)
+                record = record.copy(
+                    restoreReplacePhase = RestoreReplacePhase.COMMITTED,
+                    restoreCommittedReference = committedReference,
+                    updatedAtMillis = now(),
+                )
+                persist(record)
+                return RestoreReplaceCommit(currentFinal, record)
+            }
+        }
+
+        val payloadExists = runCatching { providers.providerFor(payload.reference.providerId).exists(payload.reference) }.getOrDefault(false)
+        val stagedEntry = when {
+            currentStage != null && sameReference(currentStage, payload) -> currentStage
+            currentStage != null && !payloadExists -> currentStage
+            currentStage != null && payloadExists -> throw IllegalStateException("Restore stage already exists while the recycle payload is still present; no data was changed.")
+            payloadExists -> movePayload(provider, payload, record.originalParent, stageName)
+            else -> throw IllegalStateException("Recycle payload and Restore stage are both unavailable.")
+        }
+        val staged = scoped(stagedEntry, record.originalParent)
+        val mutationIdentity = provider.mutationIdentity(stagedEntry.reference)
+        if (mutationIdentity == null) {
+            val rolledBack = rollbackStage(provider, staged, initialRecord)
+            if (rolledBack != null) {
+                record = resetRestoreReplace(record, rolledBack).copy(state = TrashState.RESTORING, updatedAtMillis = now())
+                persist(record)
+            } else {
+                record = record.copy(
+                    trashReference = staged,
+                    restoreReplacePhase = RestoreReplacePhase.STAGED,
+                    updatedAtMillis = now(),
+                )
+                persist(record)
+            }
+            throw IllegalStateException("Safe Replace recovery proof is unavailable for this storage provider.")
+        }
+
+        record = record.copy(
+            trashReference = staged,
+            restoreReplacePhase = RestoreReplacePhase.STAGED,
+            restoreStageName = stageName,
+            restoreCommitIdentity = mutationIdentity,
+            restoreCommittedReference = null,
+            updatedAtMillis = now(),
+        )
+        persist(record)
+
+        record = record.copy(restoreReplacePhase = RestoreReplacePhase.COMMITTING, updatedAtMillis = now())
+        persist(record)
+
+        val destinationNow = provider.findChild(record.originalParent, record.originalName)
+            ?: throw IllegalStateException("Replace destination disappeared before atomic commit; staged recycle payload was preserved.")
+        if (!sameReference(destinationNow, ScopedFileReference(existing.reference, record.originalParent.rootReference, record.originalParent.storageId))) {
+            throw IllegalStateException("Replace destination changed before atomic commit; staged recycle payload was preserved.")
+        }
+        val existingScoped = scoped(destinationNow, record.originalParent)
+        val restored = provider.replaceAtomically(staged, existingScoped, record.originalName)
             ?: run {
-                runCatching { provider.moveNative(staged, payloadParent(record), record.originalName) }.getOrNull()?.let { rolledBack ->
-                    persistStaged(ScopedFileReference(rolledBack.reference, payload.rootReference, payload.storageId))
+                val rolledBack = rollbackStage(provider, staged, initialRecord)
+                if (rolledBack != null) {
+                    record = resetRestoreReplace(record, rolledBack).copy(state = TrashState.RESTORING, updatedAtMillis = now())
+                    persist(record)
                 }
                 throw IllegalStateException("Atomic Replace was not available; existing destination was preserved")
             }
+
+        val committedReference = scoped(restored, record.originalParent)
+        val committedIdentity = provider.mutationIdentity(restored.reference)
+        record = record.copy(
+            restoreCommittedReference = committedReference,
+            updatedAtMillis = now(),
+        )
+        persist(record)
+        if (committedIdentity == null || committedIdentity != mutationIdentity) {
+            throw IllegalStateException("Atomic Replace reached the final filename, but its durable identity could not be verified. Recovery evidence was preserved.")
+        }
+
+        record = record.copy(
+            restoreReplacePhase = RestoreReplacePhase.COMMITTED,
+            restoreCommittedReference = committedReference,
+            updatedAtMillis = now(),
+        )
+        persist(record)
+        return RestoreReplaceCommit(restored, record)
     }
+
+    private suspend fun rollbackStage(
+        provider: WritableStorageProvider,
+        staged: ScopedFileReference,
+        record: TrashRecord,
+    ): ScopedFileReference? = runCatching {
+        val parent = payloadParent(record)
+        if (!provider.canMoveNative(staged, parent, record.originalName)) return@runCatching null
+        provider.moveNative(staged, parent, record.originalName)?.let {
+            ScopedFileReference(it.reference, staged.rootReference, staged.storageId)
+        }
+    }.getOrNull()
+
+    private fun resetRestoreReplace(record: TrashRecord, payload: ScopedFileReference): TrashRecord = record.copy(
+        trashReference = payload,
+        state = TrashState.TRASHED,
+        operationId = null,
+        failureReason = null,
+        restoreDestination = null,
+        restoreName = null,
+        restoreReplace = false,
+        restoreReplacePhase = RestoreReplacePhase.NONE,
+        restoreStageName = null,
+        restoreCommitIdentity = null,
+        restoreCommittedReference = null,
+        updatedAtMillis = now(),
+    )
+
+    private suspend fun discoverContainerPayload(
+        record: TrashRecord,
+        provider: com.zz.filemanager.core.storage.StorageProvider,
+    ): ScopedFileReference? {
+        val container = record.containerReference ?: return null
+        val raw = container.reference.uri ?: container.reference.path ?: container.reference.opaqueId
+        val location = BrowserLocation(
+            container.reference.providerId,
+            container.reference.opaqueId,
+            record.id,
+            raw,
+            container.rootReference,
+            container.storageId,
+            true,
+            true,
+        )
+        return runCatching { provider.listChildren(location).singleOrNull { it.name == record.originalName } }.getOrNull()
+            ?.let { ScopedFileReference(it.reference, container.rootReference, container.storageId) }
+    }
+
+    private fun sameReference(entry: FileEntry, reference: ScopedFileReference): Boolean =
+        entry.reference.providerId == reference.reference.providerId &&
+            (
+                entry.reference.opaqueId == reference.reference.opaqueId ||
+                    (entry.reference.uri != null && entry.reference.uri == reference.reference.uri) ||
+                    (entry.reference.path != null && entry.reference.path == reference.reference.path)
+                )
 
     private fun payloadParent(record: TrashRecord): BrowserLocation {
         val container = requireNotNull(record.containerReference)
