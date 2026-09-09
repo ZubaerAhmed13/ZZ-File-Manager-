@@ -43,7 +43,7 @@ class FileOperationEngine(
             state = FileOperationState.PREPARING,
             startedAtMillis = initial.startedAtMillis ?: now(),
             updatedAtMillis = now(),
-            failure = null,
+            failure = if (initial.batchRenameRollbackRequired) initial.failure else null,
         )
         save(operation)
         _events.tryEmit(OperationEvent.Started(operation.id))
@@ -69,8 +69,13 @@ class FileOperationEngine(
                 FileOperationType.CREATE_FILE -> executeCreate(operation, directory = false)
             }
 
-            if (operation.state == FileOperationState.WAITING_FOR_USER || operation.state == FileOperationState.PAUSED || operation.state == FileOperationState.CANCELLED) return
-            if (operation.state == FileOperationState.FAILED) return
+            if (
+                operation.state == FileOperationState.WAITING_FOR_USER ||
+                operation.state == FileOperationState.PAUSED ||
+                operation.state == FileOperationState.CANCELLED ||
+                operation.state == FileOperationState.INTERRUPTED ||
+                operation.state == FileOperationState.FAILED
+            ) return
             finishFromItems(operation)
         } catch (_: PauseSignal) {
             var current = store.get(operation.id) ?: operation
@@ -102,6 +107,8 @@ class FileOperationEngine(
             ))
             save(cancelled)
         } catch (cancelled: CancellationException) {
+            // Genuine coroutine/process interruption is intentionally not converted into a
+            // terminal state here. The durable journal is reconciled to INTERRUPTED on restart.
             throw cancelled
         } catch (error: Throwable) {
             val failure = mapFailure(error, operation.currentItemName)
@@ -123,8 +130,19 @@ class FileOperationEngine(
                 return failOperation(input, OperationFailure(OperationFailureCode.DESTINATION_READ_ONLY, "This location is read-only."))
             }
             for (root in input.items) {
-                if (root.source.isDirectory && root.source.reference.providerId == destination.providerId && writable.isSameOrDescendant(root.source.scoped, destination)) {
-                    return failOperation(input, OperationFailure(OperationFailureCode.DESCENDANT_TARGET, "A folder cannot be copied or moved into itself or one of its descendants.", root.source.name))
+                if (
+                    root.source.isDirectory &&
+                    root.source.reference.providerId == destination.providerId &&
+                    writable.isSameOrDescendant(root.source.scoped, destination)
+                ) {
+                    return failOperation(
+                        input,
+                        OperationFailure(
+                            OperationFailureCode.DESCENDANT_TARGET,
+                            "A folder cannot be copied or moved into itself or one of its descendants.",
+                            root.source.name,
+                        ),
+                    )
                 }
             }
         }
@@ -139,7 +157,8 @@ class FileOperationEngine(
             val normalizedRoot = root.copy(rootItemId = rootId, destinationRelativePath = rootName)
             expanded += normalizedRoot
             if (!root.source.isDirectory || root.source.isSymbolicLink) {
-                if (root.source.sizeBytes == null) unknownFileSize = true else knownBytes = safeAdd(knownBytes, root.source.sizeBytes)
+                if (root.source.sizeBytes == null) unknownFileSize = true
+                else knownBytes = safeAdd(knownBytes, root.source.sizeBytes)
                 continue
             }
 
@@ -169,17 +188,32 @@ class FileOperationEngine(
             }
         }
 
-        var prepared = recalculate(input.copy(
-            items = expanded,
-            prepared = true,
-            totalBytes = if (unknownFileSize) null else knownBytes,
-            totalItems = expanded.size.toLong(),
-            updatedAtMillis = now(),
-        ))
-        if (destination != null && prepared.totalBytes != null && (prepared.type == FileOperationType.COPY || prepared.type == FileOperationType.MOVE)) {
-            val free = providers.writableProviderFor(destination.providerId)?.freeBytes(destination)
-            if (free != null && prepared.totalBytes > free) {
-                prepared = failOperation(prepared, OperationFailure(OperationFailureCode.INSUFFICIENT_SPACE, "Destination storage does not have enough free space."))
+        var prepared = recalculate(
+            input.copy(
+                items = expanded,
+                prepared = true,
+                totalBytes = if (unknownFileSize) null else knownBytes,
+                totalItems = expanded.size.toLong(),
+                updatedAtMillis = now(),
+            ),
+        )
+
+        if (destination != null && (prepared.type == FileOperationType.COPY || prepared.type == FileOperationType.MOVE)) {
+            val writable = providers.writableProviderFor(destination.providerId)
+            val requiredBytes = when (prepared.type) {
+                FileOperationType.COPY -> prepared.totalBytes
+                FileOperationType.MOVE -> requiredCopyBytesForMove(prepared, destination)
+                else -> null
+            }
+            val free = writable?.freeBytes(destination)
+            if (requiredBytes != null && free != null && requiredBytes > free) {
+                prepared = failOperation(
+                    prepared,
+                    OperationFailure(
+                        OperationFailureCode.INSUFFICIENT_SPACE,
+                        "Destination storage does not have enough free space for the data that must actually be copied.",
+                    ),
+                )
                 return prepared
             }
         }
@@ -187,13 +221,40 @@ class FileOperationEngine(
         return prepared
     }
 
+    private suspend fun requiredCopyBytesForMove(operation: FileOperation, destination: BrowserLocation): Long? {
+        var required = 0L
+        for (item in operation.items) {
+            if (item.source.isDirectory && !item.source.isSymbolicLink) continue
+            val canNativeMove = if (
+                item.source.reference.providerId == destination.providerId &&
+                depth(item.destinationRelativePath) == 1
+            ) {
+                providers.writableProviderFor(item.source.reference.providerId)?.canMoveNative(
+                    item.source.scoped,
+                    destination,
+                    leafName(item.destinationRelativePath),
+                ) == true
+            } else {
+                false
+            }
+            if (!canNativeMove) {
+                val size = item.source.sizeBytes ?: return null
+                required = safeAdd(required, size)
+            }
+        }
+        return required
+    }
+
     private suspend fun executeCopyOrMove(input: FileOperation, move: Boolean): FileOperation {
         var operation = input
-        val destination = operation.destination ?: return failOperation(operation, OperationFailure(OperationFailureCode.DESTINATION_MISSING, "Destination is missing."))
+        val destination = operation.destination
+            ?: return failOperation(operation, OperationFailure(OperationFailureCode.DESTINATION_MISSING, "Destination is missing."))
         val destinationProvider = providers.writableProviderFor(destination.providerId)
-            ?: return failOperation(operation, OperationFailure(OperationFailureCode.DESTINATION_READ_ONLY, "This location is read-only."))
+            ?: return failOperation(operation, OperationFailure(OperationFailureCode.DESTINATION_READ_ONLY, "Destination is read-only."))
 
-        val directories = operation.items.filter { it.source.isDirectory && !it.source.isSymbolicLink }.sortedBy { depth(it.destinationRelativePath) }
+        val directories = operation.items
+            .filter { it.source.isDirectory && !it.source.isSymbolicLink }
+            .sortedBy { depth(it.destinationRelativePath) }
         for (snapshot in directories) {
             operation = store.get(operation.id) ?: operation
             val item = operation.items.firstOrNull { it.id == snapshot.id } ?: continue
@@ -203,7 +264,9 @@ class FileOperationEngine(
             if (operation.state == FileOperationState.WAITING_FOR_USER) return operation
         }
 
-        val files = operation.items.filter { !it.source.isDirectory || it.source.isSymbolicLink }.sortedBy { depth(it.destinationRelativePath) }
+        val files = operation.items
+            .filter { !it.source.isDirectory || it.source.isSymbolicLink }
+            .sortedBy { depth(it.destinationRelativePath) }
         for (snapshot in files) {
             operation = store.get(operation.id) ?: operation
             val item = operation.items.firstOrNull { it.id == snapshot.id } ?: continue
@@ -214,7 +277,9 @@ class FileOperationEngine(
         }
 
         if (move) {
-            val moveDirectories = operation.items.filter { it.source.isDirectory && !it.source.isSymbolicLink }.sortedByDescending { depth(it.destinationRelativePath) }
+            val moveDirectories = operation.items
+                .filter { it.source.isDirectory && !it.source.isSymbolicLink }
+                .sortedByDescending { depth(it.destinationRelativePath) }
             for (snapshot in moveDirectories) {
                 operation = store.get(operation.id) ?: operation
                 val item = operation.items.firstOrNull { it.id == snapshot.id } ?: continue
@@ -222,7 +287,11 @@ class FileOperationEngine(
                 checkControl(operation.id)
                 val sourceProvider = providers.writableProviderFor(item.source.reference.providerId)
                 if (sourceProvider == null) {
-                    operation = markItemFailed(operation, item, OperationFailure(OperationFailureCode.PERMISSION_DENIED, "Source location cannot be modified.", item.source.name))
+                    operation = markItemFailed(
+                        operation,
+                        item,
+                        OperationFailure(OperationFailureCode.PERMISSION_DENIED, "Source location cannot be modified.", item.source.name),
+                    )
                     continue
                 }
                 try {
@@ -268,17 +337,31 @@ class FileOperationEngine(
                     return ensureDestinationDirectory(operation, item, destinationProvider, markComplete)
                 }
                 CollisionPolicy.MERGE -> {
-                    if (!existing.isDirectory) return waitForCollision(operation, collision.copy(allowedPolicies = setOf(CollisionPolicy.SKIP, CollisionPolicy.KEEP_BOTH)))
-                    val updated = item.copy(resultReference = ScopedFileReference(existing.reference, destination.rootReference, destination.storageId))
+                    if (!existing.isDirectory) {
+                        return waitForCollision(
+                            operation,
+                            collision.copy(allowedPolicies = setOf(CollisionPolicy.SKIP, CollisionPolicy.KEEP_BOTH)),
+                        )
+                    }
+                    val updated = item.copy(
+                        resultReference = ScopedFileReference(existing.reference, destination.rootReference, destination.storageId),
+                    )
                     operation = replaceItem(operation, updated)
                     return if (markComplete) markItemCompleted(operation, updated) else saveAndReturn(operation)
                 }
-                CollisionPolicy.REPLACE -> return waitForCollision(operation, collision.copy(allowedPolicies = setOf(CollisionPolicy.SKIP, CollisionPolicy.KEEP_BOTH, CollisionPolicy.MERGE)))
+                CollisionPolicy.REPLACE -> {
+                    return waitForCollision(
+                        operation,
+                        collision.copy(allowedPolicies = setOf(CollisionPolicy.SKIP, CollisionPolicy.KEEP_BOTH, CollisionPolicy.MERGE)),
+                    )
+                }
             }
         }
         return try {
             val created = destinationProvider.createDirectory(parent, leafName(item.destinationRelativePath))
-            val updated = item.copy(resultReference = ScopedFileReference(created.reference, destination.rootReference, destination.storageId))
+            val updated = item.copy(
+                resultReference = ScopedFileReference(created.reference, destination.rootReference, destination.storageId),
+            )
             operation = replaceItem(operation, updated)
             if (markComplete) markItemCompleted(operation, updated) else saveAndReturn(operation)
         } catch (error: Throwable) {
@@ -297,16 +380,40 @@ class FileOperationEngine(
         val destination = operation.destination
             ?: return markItemFailed(operation, item, OperationFailure(OperationFailureCode.DESTINATION_MISSING, "Destination folder is missing.", item.source.name))
         if (item.source.isSymbolicLink) {
-            return markItemFailed(operation, item, OperationFailure(OperationFailureCode.SYMBOLIC_LINK_UNSUPPORTED, "Symbolic links are not followed during file operations.", item.source.name))
+            return markItemFailed(
+                operation,
+                item,
+                OperationFailure(
+                    OperationFailureCode.SYMBOLIC_LINK_UNSUPPORTED,
+                    "Symbolic links are not followed during file operations.",
+                    item.source.name,
+                ),
+            )
         }
 
-        // A process/service interruption can leave a recorded temporary output. Never
-        // overwrite that reference with a new temp file until the old one is proven gone.
+        // A process/service interruption can leave a recorded staged output. It is never the
+        // final visible filename. Clean it before starting this item again.
         item.partialOutput?.let { stalePartial ->
             val staleProvider = providers.writableProviderFor(stalePartial.reference.providerId)
-                ?: return markItemFailed(operation, item, OperationFailure(OperationFailureCode.PROVIDER_UNAVAILABLE, "A previous partial output could not be cleaned because its storage provider is unavailable.", item.source.name))
+                ?: return markItemFailed(
+                    operation,
+                    item,
+                    OperationFailure(
+                        OperationFailureCode.PROVIDER_UNAVAILABLE,
+                        "A previous staged output could not be cleaned because its storage provider is unavailable.",
+                        item.source.name,
+                    ),
+                )
             if (!cleanupPartial(staleProvider, stalePartial)) {
-                return markItemFailed(operation, item, OperationFailure(OperationFailureCode.PROVIDER_UNAVAILABLE, "A previous partial output could not be cleaned. Reconnect the destination and retry.", item.source.name))
+                return markItemFailed(
+                    operation,
+                    item,
+                    OperationFailure(
+                        OperationFailureCode.PROVIDER_UNAVAILABLE,
+                        "A previous staged output could not be cleaned. Reconnect the destination and retry.",
+                        item.source.name,
+                    ),
+                )
             }
             item = item.copy(partialOutput = null, processedBytes = 0L)
             operation = recalculate(replaceItem(operation, item))
@@ -325,10 +432,19 @@ class FileOperationEngine(
 
         val parent = destinationParentLocation(operation, item)
             ?: return markItemFailed(operation, item, OperationFailure(OperationFailureCode.DESTINATION_MISSING, "Destination folder is missing.", item.source.name))
+        val capabilities = destinationProvider.capabilities(parent)
+        val safeFinalizationAvailable = StorageCapability.RENAME in capabilities
         var finalName = leafName(item.destinationRelativePath)
         var existing = destinationProvider.findChild(parent, finalName)
+        var replaceExisting: FileEntry? = null
+
         if (existing != null) {
-            val collision = collisionFor(operation, item, existing, finalName)
+            var collision = collisionFor(operation, item, existing, finalName)
+            if (!safeFinalizationAvailable) {
+                collision = collision.copy(
+                    allowedPolicies = collision.allowedPolicies - setOf(CollisionPolicy.REPLACE, CollisionPolicy.KEEP_BOTH),
+                )
+            }
             val policy = collisionDecision(operation, collision)
             if (policy == null) return waitForCollision(operation, collision)
             when (policy) {
@@ -340,30 +456,79 @@ class FileOperationEngine(
                     existing = null
                 }
                 CollisionPolicy.REPLACE -> {
-                    if (existing.isDirectory) return waitForCollision(operation, collision.copy(allowedPolicies = setOf(CollisionPolicy.SKIP, CollisionPolicy.KEEP_BOTH)))
-                    try { destinationProvider.delete(ScopedFileReference(existing.reference, destination.rootReference, destination.storageId)) }
-                    catch (error: Throwable) { return markItemFailed(operation, item, mapFailure(error, item.source.name)) }
-                    existing = null
+                    if (existing.isDirectory) {
+                        return waitForCollision(
+                            operation,
+                            collision.copy(allowedPolicies = setOf(CollisionPolicy.SKIP, CollisionPolicy.KEEP_BOTH)),
+                        )
+                    }
+                    // Crucially, do not touch the old destination yet. It remains intact while the
+                    // replacement is streamed and validated into a hidden staged file.
+                    replaceExisting = existing
                 }
-                CollisionPolicy.MERGE -> return waitForCollision(operation, collision.copy(allowedPolicies = setOf(CollisionPolicy.SKIP, CollisionPolicy.KEEP_BOTH, CollisionPolicy.REPLACE)))
+                CollisionPolicy.MERGE -> {
+                    return waitForCollision(
+                        operation,
+                        collision.copy(allowedPolicies = setOf(CollisionPolicy.SKIP, CollisionPolicy.KEEP_BOTH, CollisionPolicy.REPLACE)),
+                    )
+                }
             }
         }
 
-        if (move && item.source.reference.providerId == destination.providerId && parent.identity == destination.identity && depth(item.destinationRelativePath) == 1) {
+        if (move && replaceExisting == null && item.source.reference.providerId == destination.providerId && depth(item.destinationRelativePath) == 1) {
             val writableSource = providers.writableProviderFor(item.source.reference.providerId)
-            if (writableSource != null && existing == null) {
+            if (
+                writableSource != null &&
+                writableSource.canMoveNative(item.source.scoped, parent, finalName)
+            ) {
                 val native = runCatching { writableSource.moveNative(item.source.scoped, parent, finalName) }.getOrNull()
                 if (native != null) {
-                    return markItemCompleted(operation, item.copy(resultReference = ScopedFileReference(native.reference, destination.rootReference, destination.storageId), processedBytes = item.source.sizeBytes ?: 0L))
+                    return markItemCompleted(
+                        operation,
+                        item.copy(
+                            resultReference = ScopedFileReference(native.reference, destination.rootReference, destination.storageId),
+                            processedBytes = item.source.sizeBytes ?: 0L,
+                        ),
+                    )
                 }
             }
         }
 
-        val capabilities = destinationProvider.capabilities(parent)
-        val canFinalizeByRename = StorageCapability.RENAME in capabilities
-        val outputName = if (canFinalizeByRename) uniqueTemporaryName(destinationProvider, parent, operation.id, item.id) else finalName
-        val outputEntry = try { destinationProvider.createFile(parent, outputName, item.source.mimeType) }
-        catch (error: Throwable) { return markItemFailed(operation, item, mapFailure(error, item.source.name)) }
+        if (!safeFinalizationAvailable) {
+            return markItemFailed(
+                operation,
+                item,
+                OperationFailure(
+                    OperationFailureCode.SAFE_FINALIZATION_UNSUPPORTED,
+                    "This storage provider cannot safely finalize streamed files without exposing an incomplete final filename.",
+                    item.source.name,
+                ),
+            )
+        }
+
+        // A native move may have been planned during preparation but become unavailable because
+        // of a race/collision. Re-check actual copy space before allocating a staged output.
+        item.source.sizeBytes?.let { required ->
+            val free = destinationProvider.freeBytes(parent)
+            if (free != null && required > free) {
+                return markItemFailed(
+                    operation,
+                    item,
+                    OperationFailure(
+                        OperationFailureCode.INSUFFICIENT_SPACE,
+                        "Destination storage does not have enough free space for the copy fallback.",
+                        item.source.name,
+                    ),
+                )
+            }
+        }
+
+        val outputName = uniqueTemporaryName(destinationProvider, parent, operation.id, item.id)
+        val outputEntry = try {
+            destinationProvider.createFile(parent, outputName, item.source.mimeType)
+        } catch (error: Throwable) {
+            return markItemFailed(operation, item, mapFailure(error, item.source.name))
+        }
         val outputRef = ScopedFileReference(outputEntry.reference, destination.rootReference, destination.storageId)
         item = item.copy(state = OperationItemState.RUNNING, partialOutput = outputRef, processedBytes = 0L)
         operation = replaceItem(operation.copy(currentItemName = item.source.name), item)
@@ -385,7 +550,12 @@ class FileOperationEngine(
                         if (tick - lastPersistAt >= progressIntervalMillis) {
                             checkControl(operation.id)
                             item = item.copy(processedBytes = written)
-                            operation = recalculate(replaceItem(operation, item).copy(currentItemName = item.source.name, updatedAtMillis = tick))
+                            operation = recalculate(
+                                replaceItem(operation, item).copy(
+                                    currentItemName = item.source.name,
+                                    updatedAtMillis = tick,
+                                ),
+                            )
                             save(operation)
                             _events.tryEmit(OperationEvent.ProgressUpdated(operation.id, operation.processedBytes, operation.totalBytes))
                             lastPersistAt = tick
@@ -395,35 +565,87 @@ class FileOperationEngine(
                 }
             }
             checkControl(operation.id)
-            if (item.source.sizeBytes != null && written != item.source.sizeBytes) throw IOException("Copied byte count does not match source size")
+            if (item.source.sizeBytes != null && written != item.source.sizeBytes) {
+                throw IOException("Copied byte count does not match source size")
+            }
 
-            val finalEntry = if (canFinalizeByRename) {
+            val commitResult = if (replaceExisting != null) {
+                val currentDestination = destinationProvider.findChild(parent, finalName)
+                when {
+                    currentDestination == null -> {
+                        ReplaceCommitResult(destinationProvider.rename(outputRef, finalName), false)
+                    }
+                    !sameDestinationSnapshot(replaceExisting, currentDestination) -> {
+                        val cleaned = cleanupPartial(destinationProvider, outputRef)
+                        item = item.copy(
+                            state = OperationItemState.QUEUED,
+                            partialOutput = if (cleaned) null else outputRef,
+                            processedBytes = 0L,
+                        )
+                        operation = replaceItem(operation, item)
+                        return waitForCollision(
+                            operation,
+                            collisionFor(operation, item, currentDestination, finalName),
+                        )
+                    }
+                    else -> commitReplacement(
+                        operation = operation,
+                        item = item,
+                        provider = destinationProvider,
+                        parent = parent,
+                        staged = outputRef,
+                        existing = currentDestination,
+                        finalName = finalName,
+                        expectedBytes = item.source.sizeBytes,
+                    )
+                }
+            } else {
                 val raced = destinationProvider.findChild(parent, finalName)
                 if (raced != null) {
                     val cleaned = cleanupPartial(destinationProvider, outputRef)
-                    item = item.copy(state = OperationItemState.QUEUED, partialOutput = if (cleaned) null else outputRef, processedBytes = 0L)
+                    item = item.copy(
+                        state = OperationItemState.QUEUED,
+                        partialOutput = if (cleaned) null else outputRef,
+                        processedBytes = 0L,
+                    )
                     operation = replaceItem(operation, item)
-                    return waitForCollision(operation, collisionFor(operation, item, raced, finalName))
+                    var collision = collisionFor(operation, item, raced, finalName)
+                    if (!safeFinalizationAvailable) {
+                        collision = collision.copy(
+                            allowedPolicies = collision.allowedPolicies - setOf(CollisionPolicy.REPLACE, CollisionPolicy.KEEP_BOTH),
+                        )
+                    }
+                    return waitForCollision(operation, collision)
                 }
-                destinationProvider.rename(outputRef, finalName)
-            } else {
-                outputEntry
+                ReplaceCommitResult(destinationProvider.rename(outputRef, finalName), false)
             }
+
             item = item.copy(
                 processedBytes = written,
                 state = OperationItemState.COMPLETED,
-                resultReference = ScopedFileReference(finalEntry.reference, destination.rootReference, destination.storageId),
+                resultReference = ScopedFileReference(commitResult.entry.reference, destination.rootReference, destination.storageId),
                 partialOutput = null,
             )
             operation = replaceItem(operation, item)
+            save(recalculate(operation.copy(updatedAtMillis = now())))
 
             if (move) {
+                checkControl(operation.id)
                 val sourceWritable = providers.writableProviderFor(item.source.reference.providerId)
-                if (sourceWritable == null) return markItemWarning(operation, item, "Item was copied, but the original could not be removed.")
-                try { sourceWritable.delete(item.source.scoped) }
-                catch (_: Throwable) { return markItemWarning(operation, item, "Item was copied, but the original could not be removed.") }
+                if (sourceWritable == null) {
+                    return markItemWarning(operation, item, "Item was copied, but the original could not be removed.")
+                }
+                try {
+                    sourceWritable.delete(item.source.scoped)
+                } catch (_: Throwable) {
+                    return markItemWarning(operation, item, "Item was copied, but the original could not be removed.")
+                }
             }
-            return markItemCompleted(operation, item)
+            return if (commitResult.backupCleanupWarning) {
+                markItemWarning(operation, item, "Replacement completed, but a hidden safety backup could not be removed.")
+            } else {
+                markItemCompleted(operation, item)
+            }
         } catch (pause: PauseSignal) {
             val cleaned = cleanupPartial(destinationProvider, outputRef)
             item = item.copy(state = OperationItemState.QUEUED, partialOutput = if (cleaned) null else outputRef, processedBytes = 0L)
@@ -434,124 +656,638 @@ class FileOperationEngine(
             item = item.copy(state = OperationItemState.CANCELLED, partialOutput = if (cleaned) null else outputRef)
             save(recalculate(replaceItem(operation, item)))
             throw cancel
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (error: Throwable) {
             val cleaned = cleanupPartial(destinationProvider, outputRef)
-            return markItemFailed(operation, item.copy(partialOutput = if (cleaned) null else outputRef), mapFailure(error, item.source.name))
+            return markItemFailed(
+                operation,
+                item.copy(partialOutput = if (cleaned) null else outputRef),
+                mapFailure(error, item.source.name),
+            )
+        }
+    }
+
+    private data class ReplaceCommitResult(
+        val entry: FileEntry,
+        val backupCleanupWarning: Boolean,
+    )
+
+    private suspend fun commitReplacement(
+        operation: FileOperation,
+        item: OperationItem,
+        provider: WritableStorageProvider,
+        parent: BrowserLocation,
+        staged: ScopedFileReference,
+        existing: FileEntry,
+        finalName: String,
+        expectedBytes: Long?,
+    ): ReplaceCommitResult {
+        val destination = operation.destination ?: throw StorageAccessException.Unavailable()
+        val existingRef = ScopedFileReference(existing.reference, destination.rootReference, destination.storageId)
+        val capabilities = provider.capabilities(parent)
+
+        if (StorageCapability.ATOMIC_RENAME in capabilities) {
+            val atomic = provider.replaceAtomically(staged, existingRef, finalName)
+            if (atomic != null) {
+                verifyCommittedSize(atomic, expectedBytes)
+                return ReplaceCommitResult(atomic, false)
+            }
+        }
+
+        if (StorageCapability.RENAME !in capabilities || StorageCapability.DELETE !in capabilities) {
+            throw SafeFinalizationException("Provider cannot safely replace an existing destination.")
+        }
+
+        val backupName = uniqueReplaceBackupName(provider, parent, operation.id, item.id)
+        var backupRef: ScopedFileReference? = null
+        try {
+            val backup = try {
+                provider.rename(existingRef, backupName)
+            } catch (renameError: Throwable) {
+                // Some providers can report an error after performing a rename. Detect that
+                // narrow case and restore the old name before propagating the failure.
+                val backupAfterError = provider.findChild(parent, backupName)
+                val finalAfterError = provider.findChild(parent, finalName)
+                if (backupAfterError != null && finalAfterError == null) {
+                    val recoveredBackup = ScopedFileReference(
+                        backupAfterError.reference,
+                        destination.rootReference,
+                        destination.storageId,
+                    )
+                    try {
+                        provider.rename(recoveredBackup, finalName)
+                    } catch (rollbackError: Throwable) {
+                        throw TransactionRollbackException("Existing destination was preserved as $backupName but could not be restored to its original name.", rollbackError)
+                    }
+                }
+                throw renameError
+            }
+            backupRef = ScopedFileReference(backup.reference, destination.rootReference, destination.storageId)
+
+            val committed = try {
+                provider.rename(staged, finalName)
+            } catch (commitError: Throwable) {
+                val stagedStillExists = providers.providerFor(staged.reference.providerId).exists(staged.reference)
+                val finalAfterError = provider.findChild(parent, finalName)
+                if (!stagedStillExists && finalAfterError != null && committedSizeMatches(finalAfterError, expectedBytes)) {
+                    finalAfterError
+                } else {
+                    if (finalAfterError != null) {
+                        throw TransactionRollbackException(
+                            "Replacement commit failed and an unexpected final-name entry prevents safe automatic rollback. The original remains in safety backup $backupName.",
+                            commitError,
+                        )
+                    }
+                    try {
+                        provider.rename(backupRef, finalName)
+                        backupRef = null
+                    } catch (rollbackError: Throwable) {
+                        throw TransactionRollbackException(
+                            "Replacement commit failed. The original destination remains in safety backup $backupName but could not be restored automatically.",
+                            rollbackError,
+                        )
+                    }
+                    throw commitError
+                }
+            }
+
+            verifyCommittedSize(committed, expectedBytes)
+            val backupToDelete = backupRef
+            val cleanupWarning = if (backupToDelete != null) {
+                runCatching { provider.delete(backupToDelete) }.getOrDefault(false).not()
+            } else {
+                false
+            }
+            return ReplaceCommitResult(committed, cleanupWarning)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: TransactionRollbackException) {
+            throw error
+        } catch (error: Throwable) {
+            // If the old file has already been moved to backup and no new final exists, always
+            // restore the original name before leaving this method.
+            val backup = backupRef
+            if (backup != null) {
+                val finalNow = runCatching { provider.findChild(parent, finalName) }.getOrNull()
+                if (finalNow == null) {
+                    try {
+                        provider.rename(backup, finalName)
+                        backupRef = null
+                    } catch (rollbackError: Throwable) {
+                        throw TransactionRollbackException(
+                            "Replacement failed. The original destination remains in safety backup $backupName but could not be restored automatically.",
+                            rollbackError,
+                        )
+                    }
+                }
+            }
+            throw error
+        }
+    }
+
+    private fun committedSizeMatches(entry: FileEntry, expectedBytes: Long?): Boolean =
+        expectedBytes == null || entry.sizeBytes == null || entry.sizeBytes == expectedBytes
+
+    private fun verifyCommittedSize(entry: FileEntry, expectedBytes: Long?) {
+        if (!committedSizeMatches(entry, expectedBytes)) {
+            throw IOException("Committed replacement byte count does not match source size")
         }
     }
 
     private suspend fun executeDelete(input: FileOperation): FileOperation {
         var operation = input
         val files = operation.items.filter { !it.source.isDirectory || it.source.isSymbolicLink }
-        val directories = operation.items.filter { it.source.isDirectory && !it.source.isSymbolicLink }.sortedByDescending { depth(it.destinationRelativePath) }
+        val directories = operation.items
+            .filter { it.source.isDirectory && !it.source.isSymbolicLink }
+            .sortedByDescending { depth(it.destinationRelativePath) }
         for (snapshot in files + directories) {
             operation = store.get(operation.id) ?: operation
             val item = operation.items.firstOrNull { it.id == snapshot.id } ?: continue
             if (item.state == OperationItemState.COMPLETED || item.state == OperationItemState.FAILED || item.state == OperationItemState.SKIPPED) continue
             checkControl(operation.id)
             val writable = providers.writableProviderFor(item.source.reference.providerId)
-            if (writable == null) { operation = markItemFailed(operation, item, OperationFailure(OperationFailureCode.PERMISSION_DENIED, "This item cannot be deleted.", item.source.name)); continue }
-            operation = try { writable.delete(item.source.scoped); markItemCompleted(operation, item) }
-            catch (error: Throwable) { markItemFailed(operation, item, mapFailure(error, item.source.name)) }
+            if (writable == null) {
+                operation = markItemFailed(
+                    operation,
+                    item,
+                    OperationFailure(OperationFailureCode.PERMISSION_DENIED, "This item cannot be deleted.", item.source.name),
+                )
+                continue
+            }
+            operation = try {
+                writable.delete(item.source.scoped)
+                markItemCompleted(operation, item)
+            } catch (error: Throwable) {
+                markItemFailed(operation, item, mapFailure(error, item.source.name))
+            }
         }
         return operation
     }
 
     private suspend fun executeRename(input: FileOperation): FileOperation {
         var operation = input
-        val item = operation.items.firstOrNull() ?: return failOperation(operation, OperationFailure(OperationFailureCode.SOURCE_MISSING, "No item was selected."))
-        val newName = operation.targetName ?: item.requestedName ?: return failOperation(operation, OperationFailure(OperationFailureCode.INVALID_NAME, "A new name is required."))
+        val item = operation.items.firstOrNull()
+            ?: return failOperation(operation, OperationFailure(OperationFailureCode.SOURCE_MISSING, "No item was selected."))
+        val newName = operation.targetName ?: item.requestedName
+            ?: return failOperation(operation, OperationFailure(OperationFailureCode.INVALID_NAME, "A new name is required."))
         FileNameRules.validateLeafName(newName)?.let { return failOperation(operation, it.copy(itemName = item.source.name)) }
-        val parent = operation.destination ?: return failOperation(operation, OperationFailure(OperationFailureCode.DESTINATION_MISSING, "Parent folder is missing."))
-        val writable = providers.writableProviderFor(item.source.reference.providerId) ?: return failOperation(operation, OperationFailure(OperationFailureCode.PERMISSION_DENIED, "This item cannot be renamed."))
+        val parent = operation.destination
+            ?: return failOperation(operation, OperationFailure(OperationFailureCode.DESTINATION_MISSING, "Parent folder is missing."))
+        val writable = providers.writableProviderFor(item.source.reference.providerId)
+            ?: return failOperation(operation, OperationFailure(OperationFailureCode.PERMISSION_DENIED, "This item cannot be renamed."))
         val existing = writable.findChild(parent, newName)
         if (existing != null && !sameReference(existing, item.source)) {
             val collision = collisionFor(operation, item, existing, newName)
             val policy = collisionDecision(operation, collision)
-            if (policy == null) return waitForCollision(operation, collision.copy(allowedPolicies = setOf(CollisionPolicy.SKIP, CollisionPolicy.KEEP_BOTH)))
+            if (policy == null) {
+                return waitForCollision(
+                    operation,
+                    collision.copy(allowedPolicies = setOf(CollisionPolicy.SKIP, CollisionPolicy.KEEP_BOTH)),
+                )
+            }
             if (policy == CollisionPolicy.SKIP) return markItemSkipped(operation, item)
-            if (policy == CollisionPolicy.KEEP_BOTH) return executeRename(operation.copy(targetName = findKeepBothName(writable, parent, newName, item.source.isDirectory)))
+            if (policy == CollisionPolicy.KEEP_BOTH) {
+                return executeRename(
+                    operation.copy(targetName = findKeepBothName(writable, parent, newName, item.source.isDirectory)),
+                )
+            }
         }
-        return try { val renamed = writable.rename(item.source.scoped, newName); markItemCompleted(operation, item.copy(resultReference = ScopedFileReference(renamed.reference, item.source.rootReference, item.source.storageId))) }
-        catch (error: Throwable) { markItemFailed(operation, item, mapFailure(error, item.source.name)) }
+        return try {
+            val renamed = writable.rename(item.source.scoped, newName)
+            markItemCompleted(
+                operation,
+                item.copy(resultReference = ScopedFileReference(renamed.reference, item.source.rootReference, item.source.storageId)),
+            )
+        } catch (error: Throwable) {
+            markItemFailed(operation, item, mapFailure(error, item.source.name))
+        }
     }
 
     private suspend fun executeBatchRename(input: FileOperation): FileOperation {
         var operation = input
-        val parent = operation.destination ?: return failOperation(operation, OperationFailure(OperationFailureCode.DESTINATION_MISSING, "Parent folder is missing."))
-        val selectedIds = operation.items.map { it.source.reference.opaqueId }.toSet()
-        val proposedKeys = mutableSetOf<String>()
-        for (item in operation.items) {
-            val target = item.requestedName ?: return failOperation(operation, OperationFailure(OperationFailureCode.INVALID_NAME, "Every item needs a target name.", item.source.name))
-            FileNameRules.validateLeafName(target)?.let { return failOperation(operation, it.copy(itemName = item.source.name)) }
-            if (!proposedKeys.add(FileNameRules.normalizedCollisionKey(target))) return failOperation(operation, OperationFailure(OperationFailureCode.NAME_CONFLICT, "Batch rename produces duplicate names."))
-            val writable = providers.writableProviderFor(item.source.reference.providerId) ?: return failOperation(operation, OperationFailure(OperationFailureCode.PERMISSION_DENIED, "An item cannot be renamed.", item.source.name))
-            val existing = writable.findChild(parent, target)
-            if (existing != null && existing.reference.opaqueId !in selectedIds) return failOperation(operation, OperationFailure(OperationFailureCode.NAME_CONFLICT, "A target name already exists.", target))
+        val parent = operation.destination
+            ?: return failOperation(operation, OperationFailure(OperationFailureCode.DESTINATION_MISSING, "Parent folder is missing."))
+
+        if (operation.batchRenameRollbackRequired) {
+            val originalFailure = operation.failure ?: OperationFailure(
+                OperationFailureCode.IO_ERROR,
+                "Batch rename was interrupted while rollback was required.",
+            )
+            val rollback = rollbackBatchRename(operation, parent)
+            if (!rollback.success) return rollback.operation
+            return failOperation(rollback.operation, originalFailure)
         }
 
-        val tempRenamed = mutableListOf<Pair<OperationItem, String>>()
         try {
+            operation = initializeOrReconcileBatchRename(operation, parent)
+            validateBatchRenameTargets(operation, parent)
+
+            // Phase 1: every selected item leaves its original name and enters its unique temp
+            // name. The temp name is journaled before the external rename, so a process death
+            // after provider mutation but before save can be reconciled by name.
             for (snapshot in operation.items) {
                 checkControl(operation.id)
-                var item = (store.get(operation.id) ?: operation).items.first { it.id == snapshot.id }
-                if (item.state == OperationItemState.COMPLETED) continue
-                val writable = providers.writableProviderFor(item.source.reference.providerId) ?: throw StorageAccessException.ReadOnly()
-                if (item.resultReference == null || !providers.providerFor(item.resultReference.reference.providerId).exists(item.resultReference.reference)) {
-                    val tempName = uniqueRenameTemp(writable, parent, operation.id, item.id)
-                    val temp = writable.rename(item.source.scoped, tempName)
-                    item = item.copy(resultReference = ScopedFileReference(temp.reference, item.source.rootReference, item.source.storageId))
+                operation = store.get(operation.id) ?: operation
+                var item = operation.items.first { it.id == snapshot.id }
+                item = reconcileBatchRenameItem(item, parent, operation.batchRenameRollbackRequired)
+                operation = replaceItem(operation, item)
+                save(operation)
+
+                if (item.batchRenamePhase == BatchRenamePhase.FINAL) continue
+                if (item.batchRenamePhase == BatchRenamePhase.ORIGINAL) {
+                    val writable = providers.writableProviderFor(item.source.reference.providerId)
+                        ?: throw StorageAccessException.ReadOnly()
+                    val tempName = item.batchRenameTemporaryName
+                        ?: uniqueRenameTemp(writable, parent, operation.id, item.id)
+                    item = item.copy(
+                        batchRenameTemporaryName = tempName,
+                        batchRenamePhase = BatchRenamePhase.TEMPORARY_PLANNED,
+                    )
                     operation = replaceItem(operation, item)
                     save(operation)
-                    tempRenamed += item to item.source.name
+                }
+
+                if (item.batchRenamePhase == BatchRenamePhase.TEMPORARY_PLANNED) {
+                    val writable = providers.writableProviderFor(item.source.reference.providerId)
+                        ?: throw StorageAccessException.ReadOnly()
+                    val current = item.resultReference ?: item.source.scoped
+                    val tempName = item.batchRenameTemporaryName ?: throw IOException("Missing batch rename temporary name")
+                    val renamed = writable.rename(current, tempName)
+                    item = item.copy(
+                        resultReference = ScopedFileReference(renamed.reference, item.source.rootReference, item.source.storageId),
+                        batchRenamePhase = BatchRenamePhase.TEMPORARY,
+                    )
+                    operation = replaceItem(operation, item)
+                    save(operation)
                 }
             }
+
+            // Phase 2: temp -> final. Current reference is persisted after every successful
+            // rename; no stale temp reference is used for either forward progress or rollback.
             for (snapshot in operation.items) {
                 checkControl(operation.id)
-                var item = (store.get(operation.id) ?: operation).items.first { it.id == snapshot.id }
-                if (item.state == OperationItemState.COMPLETED) continue
-                val writable = providers.writableProviderFor(item.source.reference.providerId) ?: throw StorageAccessException.ReadOnly()
-                val tempRef = item.resultReference ?: throw IOException("Missing batch rename temporary reference")
+                operation = store.get(operation.id) ?: operation
+                var item = operation.items.first { it.id == snapshot.id }
+                item = reconcileBatchRenameItem(item, parent, operation.batchRenameRollbackRequired)
+                operation = replaceItem(operation, item)
+                save(operation)
+                if (item.batchRenamePhase == BatchRenamePhase.FINAL) continue
+                if (item.batchRenamePhase != BatchRenamePhase.TEMPORARY) {
+                    throw IOException("Batch rename item is not safely staged before finalization")
+                }
+
+                val writable = providers.writableProviderFor(item.source.reference.providerId)
+                    ?: throw StorageAccessException.ReadOnly()
+                val current = item.resultReference ?: throw IOException("Missing batch rename current reference")
                 val finalName = item.requestedName ?: throw IOException("Missing batch rename target")
-                val finalEntry = writable.rename(tempRef, finalName)
-                item = item.copy(resultReference = ScopedFileReference(finalEntry.reference, item.source.rootReference, item.source.storageId))
-                operation = markItemCompleted(operation, item)
+                item = item.copy(batchRenamePhase = BatchRenamePhase.FINALIZING)
+                operation = replaceItem(operation, item)
+                save(operation)
+
+                val finalEntry = writable.rename(current, finalName)
+                item = item.copy(
+                    resultReference = ScopedFileReference(finalEntry.reference, item.source.rootReference, item.source.storageId),
+                    batchRenamePhase = BatchRenamePhase.FINAL,
+                )
+                operation = replaceItem(operation, item)
+                save(operation)
             }
-            return operation
+
+            val completed = recalculate(
+                operation.copy(
+                    items = operation.items.map { item ->
+                        item.copy(state = OperationItemState.COMPLETED, failure = null)
+                    },
+                    batchRenameRollbackRequired = false,
+                    failure = null,
+                    updatedAtMillis = now(),
+                ),
+            )
+            save(completed)
+            return completed
+        } catch (pause: PauseSignal) {
+            val rollback = beginAndRunBatchRollback(operation, parent, null)
+            if (!rollback.success) return rollback.operation
+            throw pause
+        } catch (cancel: CancelSignal) {
+            val rollback = beginAndRunBatchRollback(operation, parent, null)
+            if (!rollback.success) return rollback.operation
+            throw cancel
+        } catch (cancelled: CancellationException) {
+            // Represents abrupt coroutine/process interruption. Leave the live transaction ledger
+            // exactly where it is; process-death reconciliation will mark the operation interrupted
+            // and a later resume will reconcile original/temp/final names before continuing.
+            throw cancelled
         } catch (error: Throwable) {
-            for ((item, originalName) in tempRenamed.asReversed()) {
-                val writable = providers.writableProviderFor(item.source.reference.providerId) ?: continue
-                item.resultReference?.let { runCatching { writable.rename(it, originalName) } }
+            val failure = mapFailure(error, operation.currentItemName)
+            val rollback = beginAndRunBatchRollback(operation, parent, failure)
+            if (!rollback.success) return rollback.operation
+            return failOperation(rollback.operation, failure)
+        }
+    }
+
+    private suspend fun initializeOrReconcileBatchRename(
+        input: FileOperation,
+        parent: BrowserLocation,
+    ): FileOperation {
+        var operation = input
+        val alreadyInitialized = operation.items.any {
+            it.batchRenameTemporaryName != null || it.batchRenamePhase != BatchRenamePhase.ORIGINAL
+        }
+        if (alreadyInitialized) {
+            operation = reconcileBatchRenameTransaction(operation, parent)
+            save(operation)
+            return operation
+        }
+
+        validateBatchRenameTargets(operation, parent)
+        val planned = operation.items.map { item ->
+            val writable = providers.writableProviderFor(item.source.reference.providerId)
+                ?: throw StorageAccessException.ReadOnly()
+            item.copy(
+                batchRenameTemporaryName = uniqueRenameTemp(writable, parent, operation.id, item.id),
+                batchRenamePhase = BatchRenamePhase.TEMPORARY_PLANNED,
+            )
+        }
+        operation = operation.copy(items = planned, updatedAtMillis = now())
+        save(operation)
+        return operation
+    }
+
+    private suspend fun validateBatchRenameTargets(operation: FileOperation, parent: BrowserLocation) {
+        val proposedKeys = mutableSetOf<String>()
+        val selectedReferences = buildSet {
+            operation.items.forEach { item ->
+                add(referenceIdentity(item.source.scoped))
+                item.resultReference?.let { add(referenceIdentity(it)) }
             }
-            return failOperation(operation, mapFailure(error, operation.currentItemName))
+        }
+        for (item in operation.items) {
+            val target = item.requestedName
+                ?: throw InvalidBatchRenameException("Every item needs a target name.", item.source.name)
+            FileNameRules.validateLeafName(target)?.let {
+                throw InvalidBatchRenameException(it.message, item.source.name)
+            }
+            if (!proposedKeys.add(FileNameRules.normalizedCollisionKey(target))) {
+                throw InvalidBatchRenameException("Batch rename produces duplicate names.", target)
+            }
+            val writable = providers.writableProviderFor(item.source.reference.providerId)
+                ?: throw StorageAccessException.ReadOnly()
+            val existing = writable.findChild(parent, target)
+            if (existing != null) {
+                val existingScoped = ScopedFileReference(existing.reference, item.source.rootReference, item.source.storageId)
+                if (referenceIdentity(existingScoped) !in selectedReferences) {
+                    throw BatchTargetConflictException(target)
+                }
+            }
+        }
+    }
+
+    private suspend fun reconcileBatchRenameTransaction(
+        input: FileOperation,
+        parent: BrowserLocation,
+    ): FileOperation {
+        var operation = input
+        for (snapshot in input.items) {
+            val current = operation.items.first { it.id == snapshot.id }
+            val reconciled = reconcileBatchRenameItem(current, parent, operation.batchRenameRollbackRequired)
+            operation = replaceItem(operation, reconciled)
+        }
+        return operation
+    }
+
+    private suspend fun reconcileBatchRenameItem(
+        item: OperationItem,
+        parent: BrowserLocation,
+        rollbackRequired: Boolean,
+    ): OperationItem {
+        val writable = providers.writableProviderFor(item.source.reference.providerId)
+            ?: throw StorageAccessException.ReadOnly()
+        val liveReference = item.resultReference ?: item.source.scoped
+        val liveMetadata = providers.providerFor(liveReference.reference.providerId).getMetadata(liveReference.reference)
+        if (liveMetadata != null) {
+            return item.withBatchPhaseForCurrentName(liveReference, liveMetadata.name, rollbackRequired)
+        }
+
+        val tempName = item.batchRenameTemporaryName
+        val targetName = item.requestedName
+        val candidateNames = when (item.batchRenamePhase) {
+            BatchRenamePhase.ORIGINAL -> listOfNotNull(item.source.name, tempName, targetName)
+            BatchRenamePhase.TEMPORARY_PLANNED -> listOfNotNull(tempName, item.source.name, targetName)
+            BatchRenamePhase.TEMPORARY -> listOfNotNull(tempName, targetName, item.source.name)
+            BatchRenamePhase.FINALIZING, BatchRenamePhase.FINAL -> listOfNotNull(targetName, tempName, item.source.name)
+            BatchRenamePhase.ROLLBACK_TO_TEMP -> listOfNotNull(tempName, targetName, item.source.name)
+            BatchRenamePhase.ROLLBACK_TO_ORIGINAL, BatchRenamePhase.ROLLED_BACK -> listOfNotNull(item.source.name, tempName, targetName)
+        }.distinct()
+
+        for (name in candidateNames) {
+            val found = writable.findChild(parent, name) ?: continue
+            val scoped = ScopedFileReference(found.reference, item.source.rootReference, item.source.storageId)
+            return item.withBatchPhaseForCurrentName(scoped, found.name, rollbackRequired)
+        }
+        throw IOException("Could not reconcile batch rename item ${item.source.name}")
+    }
+
+    private fun OperationItem.withBatchPhaseForCurrentName(
+        current: ScopedFileReference,
+        currentName: String,
+        rollbackRequired: Boolean,
+    ): OperationItem {
+        val phase = when {
+            currentName == source.name && (rollbackRequired || batchRenamePhase == BatchRenamePhase.ROLLBACK_TO_ORIGINAL || batchRenamePhase == BatchRenamePhase.ROLLED_BACK) -> BatchRenamePhase.ROLLED_BACK
+            currentName == source.name -> BatchRenamePhase.ORIGINAL
+            batchRenameTemporaryName != null && currentName == batchRenameTemporaryName -> BatchRenamePhase.TEMPORARY
+            requestedName != null && currentName == requestedName -> BatchRenamePhase.FINAL
+            else -> batchRenamePhase
+        }
+        return copy(resultReference = current, batchRenamePhase = phase)
+    }
+
+    private data class RollbackResult(val success: Boolean, val operation: FileOperation)
+
+    private suspend fun beginAndRunBatchRollback(
+        input: FileOperation,
+        parent: BrowserLocation,
+        failure: OperationFailure?,
+    ): RollbackResult {
+        var operation = input.copy(
+            batchRenameRollbackRequired = true,
+            failure = failure ?: input.failure,
+            updatedAtMillis = now(),
+        )
+        save(operation)
+        return rollbackBatchRename(operation, parent)
+    }
+
+    private suspend fun rollbackBatchRename(
+        input: FileOperation,
+        parent: BrowserLocation,
+    ): RollbackResult {
+        var operation = input.copy(batchRenameRollbackRequired = true, updatedAtMillis = now())
+        save(operation)
+        try {
+            operation = reconcileBatchRenameTransaction(operation, parent)
+            save(operation)
+
+            // Rollback phase A: any item already at its final target goes back to its own unique
+            // temp name first. This prevents cycles such as A->B, B->C from colliding while the
+            // original namespace is restored.
+            for (snapshot in operation.items.asReversed()) {
+                operation = store.get(operation.id) ?: operation
+                var item = operation.items.first { it.id == snapshot.id }
+                item = reconcileBatchRenameItem(item, parent, rollbackRequired = true)
+                operation = replaceItem(operation, item)
+                save(operation)
+
+                if (item.batchRenamePhase == BatchRenamePhase.FINAL) {
+                    val writable = providers.writableProviderFor(item.source.reference.providerId)
+                        ?: throw StorageAccessException.ReadOnly()
+                    val tempName = item.batchRenameTemporaryName
+                        ?: uniqueRenameTemp(writable, parent, operation.id, item.id)
+                    item = item.copy(
+                        batchRenameTemporaryName = tempName,
+                        batchRenamePhase = BatchRenamePhase.ROLLBACK_TO_TEMP,
+                    )
+                    operation = replaceItem(operation, item)
+                    save(operation)
+                    val current = item.resultReference ?: throw IOException("Missing final reference during batch rollback")
+                    val temp = writable.rename(current, tempName)
+                    item = item.copy(
+                        resultReference = ScopedFileReference(temp.reference, item.source.rootReference, item.source.storageId),
+                        batchRenamePhase = BatchRenamePhase.TEMPORARY,
+                    )
+                    operation = replaceItem(operation, item)
+                    save(operation)
+                }
+            }
+
+            // Rollback phase B: temp -> original. Items that never left original are simply
+            // normalized as rolled back.
+            for (snapshot in operation.items.asReversed()) {
+                operation = store.get(operation.id) ?: operation
+                var item = operation.items.first { it.id == snapshot.id }
+                item = reconcileBatchRenameItem(item, parent, rollbackRequired = true)
+                operation = replaceItem(operation, item)
+                save(operation)
+
+                if (item.batchRenamePhase == BatchRenamePhase.ROLLED_BACK || item.batchRenamePhase == BatchRenamePhase.ORIGINAL) {
+                    item = item.copy(batchRenamePhase = BatchRenamePhase.ROLLED_BACK)
+                    operation = replaceItem(operation, item)
+                    save(operation)
+                    continue
+                }
+                if (item.batchRenamePhase != BatchRenamePhase.TEMPORARY) {
+                    throw IOException("Batch rollback item is neither original nor safely staged")
+                }
+                val writable = providers.writableProviderFor(item.source.reference.providerId)
+                    ?: throw StorageAccessException.ReadOnly()
+                val current = item.resultReference ?: throw IOException("Missing temporary reference during batch rollback")
+                item = item.copy(batchRenamePhase = BatchRenamePhase.ROLLBACK_TO_ORIGINAL)
+                operation = replaceItem(operation, item)
+                save(operation)
+                val restored = writable.rename(current, item.source.name)
+                val restoredScoped = ScopedFileReference(restored.reference, item.source.rootReference, item.source.storageId)
+                item = item.copy(
+                    resultReference = restoredScoped,
+                    batchRenamePhase = BatchRenamePhase.ROLLED_BACK,
+                )
+                operation = replaceItem(operation, item)
+                save(operation)
+            }
+
+            val normalized = recalculate(
+                operation.copy(
+                    items = operation.items.map { item ->
+                        val restoredRef = item.resultReference
+                        item.copy(
+                            source = if (restoredRef != null) item.source.copy(reference = restoredRef.reference) else item.source,
+                            state = OperationItemState.QUEUED,
+                            failure = null,
+                            resultReference = null,
+                            processedBytes = 0L,
+                            batchRenameTemporaryName = null,
+                            batchRenamePhase = BatchRenamePhase.ORIGINAL,
+                        )
+                    },
+                    batchRenameRollbackRequired = false,
+                    updatedAtMillis = now(),
+                ),
+            )
+            save(normalized)
+            return RollbackResult(true, normalized)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (rollbackError: Throwable) {
+            val current = store.get(operation.id) ?: operation
+            val interrupted = current.copy(
+                state = FileOperationState.INTERRUPTED,
+                batchRenameRollbackRequired = true,
+                failure = OperationFailure(
+                    OperationFailureCode.TRANSACTION_ROLLBACK_FAILED,
+                    "Batch rename rollback could not finish. Current references and phases are preserved so rollback can resume safely.",
+                    current.currentItemName,
+                ),
+                updatedAtMillis = now(),
+            )
+            save(interrupted)
+            return RollbackResult(false, interrupted)
         }
     }
 
     private suspend fun executeCreate(input: FileOperation, directory: Boolean): FileOperation {
-        val destination = input.destination ?: return failOperation(input, OperationFailure(OperationFailureCode.DESTINATION_MISSING, "Destination is missing."))
-        val name = input.targetName ?: return failOperation(input, OperationFailure(OperationFailureCode.INVALID_NAME, "A name is required."))
+        val destination = input.destination
+            ?: return failOperation(input, OperationFailure(OperationFailureCode.DESTINATION_MISSING, "Destination is missing."))
+        val name = input.targetName
+            ?: return failOperation(input, OperationFailure(OperationFailureCode.INVALID_NAME, "A name is required."))
         FileNameRules.validateLeafName(name)?.let { return failOperation(input, it) }
-        val writable = providers.writableProviderFor(destination.providerId) ?: return failOperation(input, OperationFailure(OperationFailureCode.DESTINATION_READ_ONLY, "This location is read-only."))
+        val writable = providers.writableProviderFor(destination.providerId)
+            ?: return failOperation(input, OperationFailure(OperationFailureCode.DESTINATION_READ_ONLY, "This location is read-only."))
         val existing = writable.findChild(destination, name)
-        if (existing != null) return failOperation(input, OperationFailure(OperationFailureCode.NAME_CONFLICT, "An item with this name already exists.", name))
+        if (existing != null) {
+            return failOperation(input, OperationFailure(OperationFailureCode.NAME_CONFLICT, "An item with this name already exists.", name))
+        }
         return try {
-            val created = if (directory) writable.createDirectory(destination, name) else writable.createFile(destination, name, input.targetMimeType)
-            val synthetic = input.items.firstOrNull() ?: OperationItem("create:${input.id}", created.toOperationSource(destination.rootReference, destination.storageId))
-            markItemCompleted(input.copy(items = listOf(synthetic), totalItems = 1L), synthetic.copy(resultReference = ScopedFileReference(created.reference, destination.rootReference, destination.storageId)))
-        } catch (error: Throwable) { failOperation(input, mapFailure(error, name)) }
+            val created = if (directory) writable.createDirectory(destination, name)
+            else writable.createFile(destination, name, input.targetMimeType)
+            val synthetic = input.items.firstOrNull()
+                ?: OperationItem("create:${input.id}", created.toOperationSource(destination.rootReference, destination.storageId))
+            markItemCompleted(
+                input.copy(items = listOf(synthetic), totalItems = 1L),
+                synthetic.copy(resultReference = ScopedFileReference(created.reference, destination.rootReference, destination.storageId)),
+            )
+        } catch (error: Throwable) {
+            failOperation(input, mapFailure(error, name))
+        }
     }
 
     private suspend fun destinationParentLocation(operation: FileOperation, item: OperationItem): BrowserLocation? {
         val root = operation.destination ?: return null
         val parentPath = parentPath(item.destinationRelativePath)
         if (parentPath.isEmpty()) return root
-        val parentItem = operation.items.firstOrNull { it.source.isDirectory && it.destinationRelativePath == parentPath } ?: return null
+        val parentItem = operation.items.firstOrNull {
+            it.source.isDirectory && it.destinationRelativePath == parentPath
+        } ?: return null
         val ref = parentItem.resultReference ?: return null
         if (!providers.providerFor(ref.reference.providerId).exists(ref.reference)) return null
-        return BrowserLocation(providerId = ref.reference.providerId, id = ref.reference.opaqueId, displayName = leafName(parentPath), reference = ref.reference.uri ?: ref.reference.path ?: ref.reference.opaqueId, rootReference = root.rootReference, storageId = root.storageId, readable = true, writable = true)
+        return BrowserLocation(
+            providerId = ref.reference.providerId,
+            id = ref.reference.opaqueId,
+            displayName = leafName(parentPath),
+            reference = ref.reference.uri ?: ref.reference.path ?: ref.reference.opaqueId,
+            rootReference = root.rootReference,
+            storageId = root.storageId,
+            readable = true,
+            writable = true,
+        )
     }
 
-    private fun collisionFor(operation: FileOperation, item: OperationItem, existing: FileEntry, targetName: String): PendingCollision {
+    private fun collisionFor(
+        operation: FileOperation,
+        item: OperationItem,
+        existing: FileEntry,
+        targetName: String,
+    ): PendingCollision {
         val same = sameReference(existing, item.source)
         val kind = when {
             same -> CollisionKind.SAME_RESOURCE
@@ -584,13 +1320,23 @@ class FileOperationEngine(
     }
 
     private suspend fun waitForCollision(input: FileOperation, collision: PendingCollision): FileOperation {
-        val operation = input.copy(state = FileOperationState.WAITING_FOR_USER, pendingCollision = collision, currentItemName = collision.sourceName, updatedAtMillis = now())
+        val operation = input.copy(
+            state = FileOperationState.WAITING_FOR_USER,
+            pendingCollision = collision,
+            currentItemName = collision.sourceName,
+            updatedAtMillis = now(),
+        )
         save(operation)
         _events.tryEmit(OperationEvent.CollisionRequired(operation.id, collision))
         return operation
     }
 
-    private suspend fun findKeepBothName(provider: WritableStorageProvider, parent: BrowserLocation, original: String, directory: Boolean): String {
+    private suspend fun findKeepBothName(
+        provider: WritableStorageProvider,
+        parent: BrowserLocation,
+        original: String,
+        directory: Boolean,
+    ): String {
         var index = 1
         while (true) {
             val candidate = FileNameRules.keepBothCandidate(original, index, directory)
@@ -599,7 +1345,12 @@ class FileOperationEngine(
         }
     }
 
-    private suspend fun uniqueTemporaryName(provider: WritableStorageProvider, parent: BrowserLocation, operationId: String, itemId: String): String {
+    private suspend fun uniqueTemporaryName(
+        provider: WritableStorageProvider,
+        parent: BrowserLocation,
+        operationId: String,
+        itemId: String,
+    ): String {
         val token = abs(itemId.hashCode().toLong()).toString()
         var index = 0
         while (true) {
@@ -609,7 +1360,12 @@ class FileOperationEngine(
         }
     }
 
-    private suspend fun uniqueRenameTemp(provider: WritableStorageProvider, parent: BrowserLocation, operationId: String, itemId: String): String {
+    private suspend fun uniqueRenameTemp(
+        provider: WritableStorageProvider,
+        parent: BrowserLocation,
+        operationId: String,
+        itemId: String,
+    ): String {
         val token = abs(itemId.hashCode().toLong()).toString()
         var index = 0
         while (true) {
@@ -619,27 +1375,59 @@ class FileOperationEngine(
         }
     }
 
+    private suspend fun uniqueReplaceBackupName(
+        provider: WritableStorageProvider,
+        parent: BrowserLocation,
+        operationId: String,
+        itemId: String,
+    ): String {
+        val token = abs(itemId.hashCode().toLong()).toString()
+        var index = 0
+        while (true) {
+            val name = ".zzreplace-backup-${operationId.take(8)}-$token" + if (index == 0) "" else "-$index"
+            if (provider.findChild(parent, name) == null) return name
+            index++
+        }
+    }
+
     private suspend fun skipSubtree(input: FileOperation, directoryItem: OperationItem): FileOperation {
         val prefix = directoryItem.destinationRelativePath
         val root = directoryItem.rootItemId
-        val operation = recalculate(input.copy(items = input.items.map { item ->
-            if (item.rootItemId == root && (item.destinationRelativePath == prefix || item.destinationRelativePath.startsWith("$prefix/"))) item.copy(state = OperationItemState.SKIPPED)
-            else item
-        }, updatedAtMillis = now()))
+        val operation = recalculate(
+            input.copy(
+                items = input.items.map { item ->
+                    if (
+                        item.rootItemId == root &&
+                        (item.destinationRelativePath == prefix || item.destinationRelativePath.startsWith("$prefix/"))
+                    ) item.copy(state = OperationItemState.SKIPPED)
+                    else item
+                },
+                updatedAtMillis = now(),
+            ),
+        )
         save(operation)
         return operation
     }
 
-    private fun rewriteSubtreeDestination(input: FileOperation, directoryItem: OperationItem, newLeaf: String): FileOperation {
+    private fun rewriteSubtreeDestination(
+        input: FileOperation,
+        directoryItem: OperationItem,
+        newLeaf: String,
+    ): FileOperation {
         val oldPrefix = directoryItem.destinationRelativePath
         val parent = parentPath(oldPrefix)
         val newPrefix = if (parent.isEmpty()) newLeaf else "$parent/$newLeaf"
         val root = directoryItem.rootItemId
-        return input.copy(items = input.items.map { item ->
-            if (item.rootItemId == root && (item.destinationRelativePath == oldPrefix || item.destinationRelativePath.startsWith("$oldPrefix/"))) {
-                item.copy(destinationRelativePath = newPrefix + item.destinationRelativePath.removePrefix(oldPrefix))
-            } else item
-        })
+        return input.copy(
+            items = input.items.map { item ->
+                if (
+                    item.rootItemId == root &&
+                    (item.destinationRelativePath == oldPrefix || item.destinationRelativePath.startsWith("$oldPrefix/"))
+                ) {
+                    item.copy(destinationRelativePath = newPrefix + item.destinationRelativePath.removePrefix(oldPrefix))
+                } else item
+            },
+        )
     }
 
     private suspend fun cleanupPartial(provider: WritableStorageProvider, partial: ScopedFileReference): Boolean = runCatching {
@@ -670,25 +1458,43 @@ class FileOperationEngine(
 
     private suspend fun markItemCompleted(input: FileOperation, item: OperationItem): FileOperation {
         val completed = item.copy(state = OperationItemState.COMPLETED, failure = null, partialOutput = null)
-        val operation = recalculate(replaceItem(input, completed).copy(currentItemName = item.source.name, updatedAtMillis = now()))
+        val operation = recalculate(
+            replaceItem(input, completed).copy(currentItemName = item.source.name, updatedAtMillis = now()),
+        )
         save(operation)
         return operation
     }
 
     private suspend fun markItemSkipped(input: FileOperation, item: OperationItem): FileOperation {
-        val operation = recalculate(replaceItem(input, item.copy(state = OperationItemState.SKIPPED, partialOutput = null)).copy(updatedAtMillis = now()))
-        save(operation); return operation
+        val operation = recalculate(
+            replaceItem(input, item.copy(state = OperationItemState.SKIPPED, partialOutput = null)).copy(updatedAtMillis = now()),
+        )
+        save(operation)
+        return operation
     }
 
-    private suspend fun markItemFailed(input: FileOperation, item: OperationItem, failure: OperationFailure): FileOperation {
-        val operation = recalculate(replaceItem(input, item.copy(state = OperationItemState.FAILED, failure = failure)).copy(updatedAtMillis = now()))
-        save(operation); return operation
+    private suspend fun markItemFailed(
+        input: FileOperation,
+        item: OperationItem,
+        failure: OperationFailure,
+    ): FileOperation {
+        val operation = recalculate(
+            replaceItem(input, item.copy(state = OperationItemState.FAILED, failure = failure)).copy(updatedAtMillis = now()),
+        )
+        save(operation)
+        return operation
     }
 
     private suspend fun markItemWarning(input: FileOperation, item: OperationItem, message: String): FileOperation {
         val warning = OperationFailure(OperationFailureCode.IO_ERROR, message, item.source.name)
-        val operation = recalculate(replaceItem(input, item.copy(state = OperationItemState.COMPLETED, failure = warning, partialOutput = null)).copy(warningCount = input.warningCount + 1L, updatedAtMillis = now()))
-        save(operation); return operation
+        val operation = recalculate(
+            replaceItem(input, item.copy(state = OperationItemState.COMPLETED, failure = warning, partialOutput = null)).copy(
+                warningCount = input.warningCount + 1L,
+                updatedAtMillis = now(),
+            ),
+        )
+        save(operation)
+        return operation
     }
 
     private suspend fun finishFromItems(input: FileOperation) {
@@ -699,37 +1505,140 @@ class FileOperationEngine(
             failed > 0 || warnings > 0L -> FileOperationState.COMPLETED_WITH_WARNINGS
             else -> FileOperationState.COMPLETED
         }
-        val final = recalculate(input.copy(state = state, completedAtMillis = now(), updatedAtMillis = now(), currentItemName = null, pendingCollision = null))
+        val final = recalculate(
+            input.copy(
+                state = state,
+                completedAtMillis = now(),
+                updatedAtMillis = now(),
+                currentItemName = null,
+                pendingCollision = null,
+            ),
+        )
         save(final)
-        if (state == FileOperationState.FAILED) _events.tryEmit(OperationEvent.Failed(final.id, final.items.firstNotNullOfOrNull { it.failure } ?: OperationFailure(OperationFailureCode.UNKNOWN, "Operation failed.")))
-        else _events.tryEmit(OperationEvent.Completed(final.id, state == FileOperationState.COMPLETED_WITH_WARNINGS))
+        if (state == FileOperationState.FAILED) {
+            _events.tryEmit(
+                OperationEvent.Failed(
+                    final.id,
+                    final.items.firstNotNullOfOrNull { it.failure }
+                        ?: final.failure
+                        ?: OperationFailure(OperationFailureCode.UNKNOWN, "Operation failed."),
+                ),
+            )
+        } else {
+            _events.tryEmit(OperationEvent.Completed(final.id, state == FileOperationState.COMPLETED_WITH_WARNINGS))
+        }
     }
 
     private suspend fun failOperation(input: FileOperation, failure: OperationFailure): FileOperation {
-        val failed = input.copy(state = FileOperationState.FAILED, failure = failure, completedAtMillis = now(), updatedAtMillis = now(), currentItemName = null)
-        save(failed); _events.tryEmit(OperationEvent.Failed(failed.id, failure)); return failed
+        val failed = input.copy(
+            state = FileOperationState.FAILED,
+            failure = failure,
+            completedAtMillis = now(),
+            updatedAtMillis = now(),
+            currentItemName = null,
+        )
+        save(failed)
+        _events.tryEmit(OperationEvent.Failed(failed.id, failure))
+        return failed
     }
 
-    private suspend fun saveAndReturn(operation: FileOperation): FileOperation { val updated = recalculate(operation.copy(updatedAtMillis = now())); save(updated); return updated }
-    private suspend fun save(operation: FileOperation) { store.save(operation) }
-    private fun replaceItem(operation: FileOperation, updated: OperationItem): FileOperation = operation.copy(items = operation.items.map { if (it.id == updated.id) updated else it })
+    private suspend fun saveAndReturn(operation: FileOperation): FileOperation {
+        val updated = recalculate(operation.copy(updatedAtMillis = now()))
+        save(updated)
+        return updated
+    }
+
+    private suspend fun save(operation: FileOperation) {
+        store.save(operation)
+    }
+
+    private fun replaceItem(operation: FileOperation, updated: OperationItem): FileOperation =
+        operation.copy(items = operation.items.map { if (it.id == updated.id) updated else it })
 
     private fun recalculate(operation: FileOperation): FileOperation {
         val processedBytes = operation.items.fold(0L) { total, item -> safeAdd(total, item.processedBytes) }
-        val processedItems = operation.items.count { it.state == OperationItemState.COMPLETED || it.state == OperationItemState.SKIPPED || it.state == OperationItemState.FAILED || it.state == OperationItemState.CANCELLED }.toLong()
+        val processedItems = operation.items.count {
+            it.state == OperationItemState.COMPLETED ||
+                it.state == OperationItemState.SKIPPED ||
+                it.state == OperationItemState.FAILED ||
+                it.state == OperationItemState.CANCELLED
+        }.toLong()
         return operation.copy(processedBytes = processedBytes, processedItems = processedItems)
     }
 
-    private fun sourceLocation(source: OperationSource) = BrowserLocation(providerId = source.reference.providerId, id = source.reference.opaqueId, displayName = source.name, reference = source.reference.uri ?: source.reference.path ?: source.reference.opaqueId, rootReference = source.rootReference, storageId = source.storageId, readable = true, writable = true)
-    private fun FileEntry.toOperationSource(rootReference: String, storageId: String) = OperationSource(reference, rootReference, storageId, name, isDirectory, sizeBytes, modifiedAtMillis, mimeType, isSymbolicLink)
-    private fun sameReference(entry: FileEntry, source: OperationSource): Boolean = entry.reference.providerId == source.reference.providerId && (entry.reference.opaqueId == source.reference.opaqueId || (entry.reference.uri != null && entry.reference.uri == source.reference.uri) || (entry.reference.path != null && entry.reference.path == source.reference.path))
+    private fun sourceLocation(source: OperationSource) = BrowserLocation(
+        providerId = source.reference.providerId,
+        id = source.reference.opaqueId,
+        displayName = source.name,
+        reference = source.reference.uri ?: source.reference.path ?: source.reference.opaqueId,
+        rootReference = source.rootReference,
+        storageId = source.storageId,
+        readable = true,
+        writable = true,
+    )
+
+    private fun FileEntry.toOperationSource(rootReference: String, storageId: String) = OperationSource(
+        reference,
+        rootReference,
+        storageId,
+        name,
+        isDirectory,
+        sizeBytes,
+        modifiedAtMillis,
+        mimeType,
+        isSymbolicLink,
+    )
+
+    private fun sameReference(entry: FileEntry, source: OperationSource): Boolean =
+        entry.reference.providerId == source.reference.providerId &&
+            (
+                entry.reference.opaqueId == source.reference.opaqueId ||
+                    (entry.reference.uri != null && entry.reference.uri == source.reference.uri) ||
+                    (entry.reference.path != null && entry.reference.path == source.reference.path)
+                )
+
+    private fun sameDestinationSnapshot(expected: FileEntry, current: FileEntry): Boolean {
+        val sameIdentity = expected.reference.providerId == current.reference.providerId &&
+            (
+                expected.reference.opaqueId == current.reference.opaqueId ||
+                    (expected.reference.uri != null && expected.reference.uri == current.reference.uri) ||
+                    (expected.reference.path != null && expected.reference.path == current.reference.path)
+                )
+        if (!sameIdentity) return false
+        if (expected.sizeBytes != null && current.sizeBytes != null && expected.sizeBytes != current.sizeBytes) return false
+        if (
+            expected.modifiedAtMillis != null &&
+            current.modifiedAtMillis != null &&
+            expected.modifiedAtMillis != current.modifiedAtMillis
+        ) return false
+        return true
+    }
+
+    private fun referenceIdentity(reference: ScopedFileReference): String = buildString {
+        append(reference.reference.providerId)
+        append('|')
+        append(reference.reference.opaqueId)
+        append('|')
+        append(reference.reference.uri ?: "")
+        append('|')
+        append(reference.reference.path ?: "")
+    }
+
     private fun depth(path: String): Int = path.count { it == '/' } + if (path.isBlank()) 0 else 1
     private fun leafName(path: String): String = path.substringAfterLast('/')
     private fun parentPath(path: String): String = path.substringBeforeLast('/', "")
-    private fun replaceLeaf(path: String, newLeaf: String): String = parentPath(path).let { if (it.isEmpty()) newLeaf else "$it/$newLeaf" }
-    private fun safeAdd(left: Long, right: Long): Long = if (right > 0L && left > Long.MAX_VALUE - right) Long.MAX_VALUE else left + right
+    private fun replaceLeaf(path: String, newLeaf: String): String = parentPath(path).let {
+        if (it.isEmpty()) newLeaf else "$it/$newLeaf"
+    }
+
+    private fun safeAdd(left: Long, right: Long): Long =
+        if (right > 0L && left > Long.MAX_VALUE - right) Long.MAX_VALUE else left + right
 
     private fun mapFailure(error: Throwable, itemName: String?): OperationFailure = when (error) {
+        is InvalidBatchRenameException -> OperationFailure(OperationFailureCode.INVALID_NAME, error.message ?: "Invalid batch rename.", error.itemName ?: itemName)
+        is BatchTargetConflictException -> OperationFailure(OperationFailureCode.NAME_CONFLICT, "A target name already exists.", error.targetName)
+        is SafeFinalizationException -> OperationFailure(OperationFailureCode.SAFE_FINALIZATION_UNSUPPORTED, error.message ?: "Safe finalization is unavailable.", itemName)
+        is TransactionRollbackException -> OperationFailure(OperationFailureCode.TRANSACTION_ROLLBACK_FAILED, error.message ?: "Rollback failed.", itemName)
         is StorageAccessException.PermissionRequired -> OperationFailure(OperationFailureCode.PERMISSION_DENIED, "Permission was denied.", itemName)
         is StorageAccessException.ReadOnly -> OperationFailure(OperationFailureCode.DESTINATION_READ_ONLY, "This location is read-only.", itemName)
         is StorageAccessException.Unavailable -> OperationFailure(OperationFailureCode.PROVIDER_UNAVAILABLE, "Storage or provider is unavailable.", itemName)
@@ -739,6 +1648,10 @@ class FileOperationEngine(
 
     private class PauseSignal : Exception()
     private class CancelSignal : Exception()
+    private class SafeFinalizationException(message: String) : IOException(message)
+    private class TransactionRollbackException(message: String, cause: Throwable? = null) : IOException(message, cause)
+    private class InvalidBatchRenameException(message: String, val itemName: String? = null) : IOException(message)
+    private class BatchTargetConflictException(val targetName: String) : IOException(targetName)
 
     companion object {
         const val DEFAULT_BUFFER_SIZE = 256 * 1024
