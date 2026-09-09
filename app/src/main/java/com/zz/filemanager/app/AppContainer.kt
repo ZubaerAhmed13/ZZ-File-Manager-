@@ -32,7 +32,12 @@ class AppContainer(context: Context) {
     val userLibrary = UserLibraryRepository(appContext)
     val userLibraryManager = UserLibraryManager(userLibrary, storage)
     val searchRepository = SearchRepository(SearchCoordinator(storage, storage), userLibrary)
-    val trashManager = TrashManager(storage, userLibrary, userLibraryManager, rootSource = storage)
+    val trashManager = TrashManager(
+        storage, userLibrary, userLibraryManager,
+        rootSource = storage,
+        operationController = operationController,
+        operationStore = operationStore,
+    )
     val mediaStoreTrash = MediaStoreTrashGateway(appContext.contentResolver)
-    val operationLibrarySynchronizer = OperationLibrarySynchronizer(operationEngine, operationStore, userLibrary, userLibraryManager)
+    val operationLibrarySynchronizer = OperationLibrarySynchronizer(operationEngine, operationStore, userLibrary, userLibraryManager, trashManager)
 }

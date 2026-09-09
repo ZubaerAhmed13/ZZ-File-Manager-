@@ -10,6 +10,7 @@ import com.zz.filemanager.core.search.SearchRepository
 import com.zz.filemanager.core.search.SearchResult
 import com.zz.filemanager.core.search.SearchResultSorter
 import com.zz.filemanager.core.search.SearchScope
+import com.zz.filemanager.core.search.SearchMatchMode
 import com.zz.filemanager.core.search.SearchSort
 import com.zz.filemanager.core.search.SearchTypeFilter
 import com.zz.filemanager.core.search.SearchUiState
@@ -45,6 +46,7 @@ class SearchViewModel(
     fun setSize(min: Long?, max: Long?) { update(_query.value.copy(minSizeBytes = min, maxSizeBytes = max)) }
     fun setDates(after: Long?, before: Long?) { update(_query.value.copy(modifiedAfter = after, modifiedBefore = before)) }
     fun setHidden(value: Boolean) { update(_query.value.copy(includeHidden = value)) }
+    fun setMatchMode(value: SearchMatchMode) { update(_query.value.copy(matchMode = value)) }
     fun setKinds(files: Boolean, directories: Boolean) { update(_query.value.copy(includeFiles = files, includeDirectories = directories)) }
     fun submit() { update(_query.value, debounce = false) }
     fun cancel() { generation++; searchJob?.cancel(); _state.value = SearchUiState.Cancelled }

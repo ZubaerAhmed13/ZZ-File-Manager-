@@ -15,12 +15,18 @@ import com.zz.filemanager.core.search.SearchRootSource
 import com.zz.filemanager.core.storage.StorageCapability
 import com.zz.filemanager.core.storage.StorageProviderRegistry
 import com.zz.filemanager.core.storage.WritableStorageProvider
+import com.zz.filemanager.core.operation.FileOperation
+import com.zz.filemanager.core.operation.FileOperationController
+import com.zz.filemanager.core.operation.FileOperationState
+import com.zz.filemanager.core.operation.OperationSource
+import com.zz.filemanager.core.operation.OperationStore
 import java.util.UUID
 
 enum class RestoreCollisionPolicy { KEEP_BOTH, REPLACE, CANCEL }
 
 sealed interface TrashResult {
     data class Success(val record: TrashRecord) : TrashResult
+    data class Queued(val record: TrashRecord, val operationId: String) : TrashResult
     data class Collision(val existing: FileEntry) : TrashResult
     data class Unsupported(val reason: String) : TrashResult
     data class Failed(val reason: String) : TrashResult
@@ -39,6 +45,8 @@ class TrashManager(
     private val store: UserLibraryStore,
     private val libraryManager: UserLibraryManager,
     private val rootSource: SearchRootSource? = null,
+    private val operationController: FileOperationController? = null,
+    private val operationStore: OperationStore? = null,
     private val now: () -> Long = { System.currentTimeMillis() },
 ) {
     suspend fun recordPlatformTrash(entries: List<FileEntry>, parent: BrowserLocation) {
@@ -96,10 +104,21 @@ class TrashManager(
             store.upsertTrash(record)
             val source = ScopedFileReference(entry.reference, parent.rootReference, parent.storageId)
             if (!provider.canMoveNative(source, containerLocation, entry.name)) {
-                record = record.copy(state = TrashState.FAILED, updatedAtMillis = now(), failureReason = "Safe same-storage native move is unavailable.")
-                store.upsertTrash(record)
-                runCatching { provider.delete(containerScoped) }
-                TrashResult.Unsupported("Recycle Bin is not supported safely for this provider.")
+                val controller = operationController
+                if (controller == null) {
+                    record = record.copy(state = TrashState.FAILED, updatedAtMillis = now(), failureReason = "Safe same-storage native move is unavailable.")
+                    store.upsertTrash(record)
+                    runCatching { provider.delete(containerScoped) }
+                    TrashResult.Unsupported("Recycle Bin is not supported safely for this provider.")
+                } else {
+                    val queuedId = controller.enqueueMove(
+                        listOf(OperationSource(entry.reference, parent.rootReference, parent.storageId, entry.name, entry.isDirectory, entry.sizeBytes, entry.modifiedAtMillis, entry.mimeType, entry.isSymbolicLink)),
+                        containerLocation,
+                    )
+                    record = record.copy(state = TrashState.COPYING, operationId = queuedId, updatedAtMillis = now(), failureReason = null)
+                    store.upsertTrash(record)
+                    TrashResult.Queued(record, queuedId)
+                }
             } else {
                 val payload = provider.moveNative(source, containerLocation, entry.name)
                     ?: throw IllegalStateException("Provider declined a previously confirmed native move")
@@ -199,6 +218,11 @@ class TrashManager(
         store.initialize()
         store.trashRecords.value.forEach { record ->
             if (record.backend != TrashBackendType.APP_MANAGED || record.state == TrashState.TRASHED) return@forEach
+            val linkedOperation = record.operationId?.let { operationStore?.get(it) }
+            if (linkedOperation != null && (linkedOperation.state.isTerminal || linkedOperation.state == FileOperationState.INTERRUPTED)) {
+                finalizeFallbackRecord(record, linkedOperation)
+                return@forEach
+            }
             val ref = record.trashReference
             val provider = runCatching { providers.providerFor(record.originalReference.providerId) }.getOrNull() ?: return@forEach
             val sourceExists = runCatching { provider.exists(record.originalReference) }.getOrDefault(false)
@@ -212,6 +236,29 @@ class TrashManager(
             store.upsertTrash(reconciled)
         }
         reconcileOrphanPayloads()
+    }
+
+    suspend fun onOperationTerminal(operation: FileOperation): Boolean {
+        val records = store.trashRecords.value.filter { it.operationId == operation.id && it.state in setOf(TrashState.COPYING, TrashState.INTERRUPTED, TrashState.FAILED) }
+        records.forEach { finalizeFallbackRecord(it, operation) }
+        return records.isNotEmpty()
+    }
+
+    private suspend fun finalizeFallbackRecord(record: TrashRecord, operation: FileOperation) {
+        val rootItem = operation.items.firstOrNull { it.rootItemId == it.id } ?: operation.items.firstOrNull()
+        if (operation.state == FileOperationState.COMPLETED && rootItem?.resultReference != null) {
+            val completed = record.copy(trashReference = rootItem.resultReference, state = TrashState.TRASHED, updatedAtMillis = now(), failureReason = null)
+            store.upsertTrash(completed)
+            markRelatedItemsTrashed(completed)
+            libraryManager.recordActivity(ActivityKind.TRASHED, "Moved ${record.originalName} to Recycle Bin", 1L, operation.id)
+        } else {
+            val interrupted = operation.state == FileOperationState.INTERRUPTED || operation.state == FileOperationState.COMPLETED_WITH_WARNINGS
+            store.upsertTrash(record.copy(
+                state = if (interrupted) TrashState.INTERRUPTED else TrashState.FAILED,
+                updatedAtMillis = now(),
+                failureReason = operation.failure?.message ?: rootItem?.failure?.message ?: "Recycle transfer did not reach a proven terminal state.",
+            ))
+        }
     }
 
     private suspend fun reconcileOrphanPayloads() {
@@ -349,7 +396,13 @@ class TrashManager(
     }
 
     private suspend fun com.zz.filemanager.core.storage.StorageProvider.existsLocation(location: BrowserLocation): Boolean {
-        val reference = com.zz.filemanager.core.model.FileReference(location.providerId, location.id, uri = location.reference.takeIf { location.providerId == "saf" }, path = location.reference.takeIf { location.providerId == "local" })
+        val isContentUri = location.reference.startsWith("content://")
+        val reference = com.zz.filemanager.core.model.FileReference(
+            providerId = location.providerId,
+            opaqueId = location.id,
+            uri = location.reference.takeIf { isContentUri },
+            path = location.reference.takeUnless { isContentUri },
+        )
         return exists(reference)
     }
 }

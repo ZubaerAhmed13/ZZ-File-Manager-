@@ -139,6 +139,7 @@ class BrowserOperationsViewModel(
             chosen.filterNot { it.reference.providerId == "media" }.forEach { entry ->
                 when (manager.trash(entry, location)) {
                     is TrashResult.Success -> Unit
+                    is TrashResult.Queued -> Unit
                     is TrashResult.Unsupported -> _messages.emit(R.string.recycle_not_supported)
                     is TrashResult.Failed -> _messages.emit(R.string.generic_operation_error)
                     is TrashResult.Collision -> _messages.emit(R.string.name_conflict_operation)

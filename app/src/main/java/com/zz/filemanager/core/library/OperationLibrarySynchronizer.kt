@@ -6,18 +6,25 @@ import com.zz.filemanager.core.operation.FileOperationType
 import com.zz.filemanager.core.operation.OperationEvent
 import com.zz.filemanager.core.operation.OperationItemState
 import com.zz.filemanager.core.operation.OperationStore
+import com.zz.filemanager.core.trash.TrashManager
 
 class OperationLibrarySynchronizer(
     private val engine: FileOperationEngine,
     private val operations: OperationStore,
     private val library: UserLibraryStore,
     private val manager: UserLibraryManager,
+    private val trashManager: TrashManager? = null,
     private val now: () -> Long = { System.currentTimeMillis() },
 ) {
     suspend fun run() {
         engine.events.collect { event ->
-            if (event !is OperationEvent.Completed) return@collect
-            val operation = operations.get(event.operationId) ?: return@collect
+            val operationId = when (event) {
+                is OperationEvent.Completed -> event.operationId
+                is OperationEvent.Failed -> event.operationId
+                else -> return@collect
+            }
+            val operation = operations.get(operationId) ?: return@collect
+            if (trashManager?.onOperationTerminal(operation) == true) return@collect
             recordActivity(operation)
             applyReferenceChanges(operation)
         }

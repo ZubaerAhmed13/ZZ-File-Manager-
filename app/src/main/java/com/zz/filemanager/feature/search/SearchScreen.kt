@@ -20,6 +20,9 @@ import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -33,19 +36,25 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.zz.filemanager.R
+import com.zz.filemanager.core.search.SearchMatchMode
 import com.zz.filemanager.core.search.SearchResult
 import com.zz.filemanager.core.search.SearchScope
 import com.zz.filemanager.core.search.SearchSort
 import com.zz.filemanager.core.search.SearchTypeFilter
 import com.zz.filemanager.core.search.SearchUiState
 import com.zz.filemanager.core.util.Formatters
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
 
 @Composable
 fun SearchScreen(
@@ -60,6 +69,7 @@ fun SearchScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val history by viewModel.history.collectAsStateWithLifecycle()
     val nowMillis = remember { System.currentTimeMillis() }
+    var advanced by remember { mutableStateOf(false) }
     val sevenDaysAgo = nowMillis - 7L * 24L * 60L * 60L * 1000L
     val thirtyDaysAgo = nowMillis - 30L * 24L * 60L * 60L * 1000L
     val results = when (state) {
@@ -118,6 +128,7 @@ fun SearchScreen(
                 item { FilterChip(selected = query.modifiedAfter == null && query.modifiedBefore == null, onClick = { viewModel.setDates(null, null) }, label = { Text(stringResource(R.string.date_any)) }) }
                 item { FilterChip(selected = query.modifiedAfter == sevenDaysAgo, onClick = { viewModel.setDates(sevenDaysAgo, nowMillis) }, label = { Text(stringResource(R.string.date_last_7_days)) }) }
                 item { FilterChip(selected = query.modifiedAfter == thirtyDaysAgo, onClick = { viewModel.setDates(thirtyDaysAgo, nowMillis) }, label = { Text(stringResource(R.string.date_last_30_days)) }) }
+                item { AssistChip(onClick = { advanced = true }, label = { Text(stringResource(R.string.advanced_filters)) }) }
             }
             LazyRow(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
@@ -159,7 +170,75 @@ fun SearchScreen(
             }
         }
     }
+    if (advanced) AdvancedFiltersDialog(
+        query = query,
+        onDismiss = { advanced = false },
+        onApply = { extensions, min, max, after, before, files, folders, hidden, match ->
+            viewModel.setExtensions(extensions)
+            viewModel.setSize(min, max)
+            viewModel.setDates(after, before)
+            viewModel.setKinds(files, folders)
+            viewModel.setHidden(hidden)
+            viewModel.setMatchMode(match)
+            advanced = false
+        },
+    )
 }
+
+@Composable
+private fun AdvancedFiltersDialog(
+    query: com.zz.filemanager.core.search.FileSearchQuery,
+    onDismiss: () -> Unit,
+    onApply: (Set<String>, Long?, Long?, Long?, Long?, Boolean, Boolean, Boolean, SearchMatchMode) -> Unit,
+) {
+    var extensions by remember(query) { mutableStateOf(query.extensions.joinToString(", ")) }
+    var minMb by remember(query) { mutableStateOf(query.minSizeBytes?.div(1_000_000L)?.toString().orEmpty()) }
+    var maxMb by remember(query) { mutableStateOf(query.maxSizeBytes?.div(1_000_000L)?.toString().orEmpty()) }
+    var after by remember(query) { mutableStateOf(query.modifiedAfter?.let(::formatDate).orEmpty()) }
+    var before by remember(query) { mutableStateOf(query.modifiedBefore?.let(::formatDate).orEmpty()) }
+    var files by remember(query) { mutableStateOf(query.includeFiles) }
+    var folders by remember(query) { mutableStateOf(query.includeDirectories) }
+    var hidden by remember(query) { mutableStateOf(query.includeHidden) }
+    var match by remember(query) { mutableStateOf(query.matchMode) }
+    val parsedAfter = parseDate(after)
+    val parsedBefore = parseDate(before)
+    val valid = (files || folders) && parsedAfter !== InvalidDate && parsedBefore !== InvalidDate
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.advanced_filters)) },
+        text = {
+            LazyColumn {
+                item { OutlinedTextField(extensions, { extensions = it }, label = { Text(stringResource(R.string.extensions_hint)) }) }
+                item { OutlinedTextField(minMb, { minMb = it.filter(Char::isDigit) }, label = { Text(stringResource(R.string.minimum_size_mb)) }) }
+                item { OutlinedTextField(maxMb, { maxMb = it.filter(Char::isDigit) }, label = { Text(stringResource(R.string.maximum_size_mb)) }) }
+                item { OutlinedTextField(after, { after = it }, label = { Text(stringResource(R.string.modified_after_date)) }) }
+                item { OutlinedTextField(before, { before = it }, label = { Text(stringResource(R.string.modified_before_date)) }) }
+                item { Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(files, { files = it }); Text(stringResource(R.string.include_files)) } }
+                item { Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(folders, { folders = it }); Text(stringResource(R.string.include_folders)) } }
+                item { Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(hidden, { hidden = it }); Text(stringResource(R.string.include_hidden)) } }
+                item { LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { items(SearchMatchMode.entries) { mode -> FilterChip(selected = match == mode, onClick = { match = mode }, label = { Text(matchLabel(mode)) }) } } }
+            }
+        },
+        confirmButton = { Button(onClick = {
+            val extensionSet = extensions.split(',', ' ', ';').map { it.trim().removePrefix(".") }.filter { it.isNotEmpty() }.toSet()
+            onApply(
+                extensionSet,
+                minMb.toLongOrNull()?.times(1_000_000L),
+                maxMb.toLongOrNull()?.times(1_000_000L),
+                parsedAfter as? Long,
+                parsedBefore as? Long,
+                files, folders, hidden, match,
+            )
+        }, enabled = valid) { Text(stringResource(R.string.apply)) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) } },
+    )
+}
+
+private object InvalidDate
+private fun parseDate(value: String): Any? = if (value.isBlank()) null else runCatching {
+    LocalDate.parse(value).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+}.getOrElse { InvalidDate }
+private fun formatDate(value: Long): String = Instant.ofEpochMilli(value).atZone(ZoneId.systemDefault()).toLocalDate().toString()
 
 @Composable
 private fun SearchStatus(total: Long, scanned: Long, active: Boolean, failures: Int) {
@@ -206,3 +285,4 @@ private fun ResultList(results: List<SearchResult>, onOpen: (SearchResult) -> Un
 @Composable private fun scopeLabel(value: SearchScope) = stringResource(when (value) { SearchScope.CURRENT_FOLDER -> R.string.search_this_folder; SearchScope.CURRENT_FOLDER_RECURSIVE -> R.string.search_subfolders; SearchScope.CURRENT_STORAGE -> R.string.search_this_storage; SearchScope.ALL_ACCESSIBLE_LOCATIONS -> R.string.search_all_locations })
 @Composable private fun typeLabel(value: SearchTypeFilter) = stringResource(when (value) { SearchTypeFilter.ALL -> R.string.search_type_all; SearchTypeFilter.FOLDERS -> R.string.search_type_folders; SearchTypeFilter.IMAGES -> R.string.search_type_images; SearchTypeFilter.VIDEOS -> R.string.search_type_videos; SearchTypeFilter.AUDIO -> R.string.search_type_audio; SearchTypeFilter.DOCUMENTS -> R.string.search_type_documents; SearchTypeFilter.ARCHIVES -> R.string.search_type_archives; SearchTypeFilter.APKS -> R.string.search_type_apks; SearchTypeFilter.OTHER -> R.string.search_type_other })
 @Composable private fun searchSortLabel(value: SearchSort) = stringResource(when (value) { SearchSort.RELEVANCE -> R.string.sort_relevance; SearchSort.NAME -> R.string.sort_name; SearchSort.DATE -> R.string.sort_date; SearchSort.SIZE -> R.string.sort_size; SearchSort.TYPE -> R.string.sort_type; SearchSort.LOCATION -> R.string.sort_location })
+@Composable private fun matchLabel(value: SearchMatchMode) = stringResource(when (value) { SearchMatchMode.CONTAINS -> R.string.match_contains; SearchMatchMode.STARTS_WITH -> R.string.match_starts_with; SearchMatchMode.EXACT -> R.string.match_exact })

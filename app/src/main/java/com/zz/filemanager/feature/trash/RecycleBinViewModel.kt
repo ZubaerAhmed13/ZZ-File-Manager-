@@ -54,6 +54,7 @@ class RecycleBinViewModel(
                 is TrashResult.Failed -> _events.emit(RecycleEvent.Message(result.reason))
                 is TrashResult.Unsupported -> _events.emit(RecycleEvent.Message(result.reason))
                 is TrashResult.Success -> Unit
+                is TrashResult.Queued -> Unit
             }
         }
         val media = chosen.filter { it.backend == TrashBackendType.MEDIA_STORE && it.originalReference.uri != null }

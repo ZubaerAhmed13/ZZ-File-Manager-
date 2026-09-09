@@ -36,11 +36,12 @@ class UserLibraryManager(
 
     suspend fun favoriteCurrentFolder(location: BrowserLocation): Boolean {
         store.initialize()
+        val isContentUri = location.reference.startsWith("content://")
         val reference = com.zz.filemanager.core.model.FileReference(
             location.providerId,
             location.id,
-            uri = location.reference.takeIf { location.providerId == "saf" },
-            path = location.reference.takeIf { location.providerId == "local" },
+            uri = location.reference.takeIf { isContentUri },
+            path = location.reference.takeUnless { isContentUri },
         )
         val id = reference.stableIdentity(location.rootReference, location.storageId)
         val existing = store.favorites.value.firstOrNull { it.id == id }
