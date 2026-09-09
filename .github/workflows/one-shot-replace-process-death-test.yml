@@ -1,0 +1,33 @@
+name: One-shot Replace process-death test patch
+
+on:
+  push:
+    branches:
+      - step2/file-operations-engine
+    paths:
+      - .github/workflows/one-shot-replace-process-death-test.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-test-patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: step2/file-operations-engine
+          fetch-depth: 0
+      - name: Apply exact-match test patch
+        run: python3 tools/patch_replace_process_death_test.py
+      - name: Verify patch
+        run: |
+          git diff --check
+          test -n "$(git status --short app/src/test/java/com/zz/filemanager/core/operation/FileOperationSafetyRegressionTest.kt)"
+      - name: Commit regression
+        run: |
+          git config user.name "Zubaer Ahmed"
+          git config user.email "zubaerknight@gmail.com"
+          git add app/src/test/java/com/zz/filemanager/core/operation/FileOperationSafetyRegressionTest.kt
+          git commit -m "test: recover replace after process death during backup"
+          git push origin HEAD:step2/file-operations-engine
