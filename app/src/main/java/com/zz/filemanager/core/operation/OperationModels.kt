@@ -84,9 +84,16 @@ enum class OperationFailureCode {
     CANCELLED,
     SOURCE_CHANGED,
     SYMBOLIC_LINK_UNSUPPORTED,
-    SAFE_FINALIZATION_UNSUPPORTED,
-    TRANSACTION_ROLLBACK_FAILED,
     UNKNOWN,
+    ;
+
+    companion object {
+        // Safety-specific call-site aliases intentionally map to the existing persisted/UI-safe
+        // IO_ERROR enum value. This avoids breaking the exhaustive release UI and old journals
+        // while retaining precise safety messages at the failure object level.
+        val SAFE_FINALIZATION_UNSUPPORTED: OperationFailureCode = IO_ERROR
+        val TRANSACTION_ROLLBACK_FAILED: OperationFailureCode = IO_ERROR
+    }
 }
 
 data class OperationFailure(
