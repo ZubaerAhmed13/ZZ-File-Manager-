@@ -5,21 +5,21 @@
 - **Repository:** `ZubaerAhmed13/ZZ-File-Manager-`
 - **Step 2 branch:** `step2/file-operations-engine`
 - **Verified Step 1 baseline:** `2be3a6933931a1f7aa9ae3857e7adf2f910bca9e`
-- **Certified Step 2 functional implementation head:** `f21bd3705087cc65620e772e4a549c69baf4b443`
-- **Functional certification workflow:** GitHub Actions run `34336655608` (#139), job `certify-step2-api35`
-- **Documentation descendant:** this report and the final Step 2 evidence documents modify documentation only after the certified functional head. The final branch head is run through the same exact CI workflow before independent-review handoff.
+- **Certified Step 2 functional implementation head:** `9f5fd474f64cbbd43308a147479bdaa3668a1170`
+- **Functional certification workflow:** GitHub Actions run `34346037170` (#159), job `certify-step2-api35`
+- **Evidence-only descendant:** the final documentation commits modify evidence/documentation only. The final branch head is accepted for independent-review handoff only after it passes the same full `android.yml` workflow.
 
 No Step 3 functionality is included in this completion report.
 
 ## B. Build status
 
-Functional implementation head `f21bd3705087cc65620e772e4a549c69baf4b443` passed the complete Step 2 automated gate in GitHub Actions run `34336655608` (#139):
+Functional implementation head `9f5fd474f64cbbd43308a147479bdaa3668a1170` passed the complete Step 2 automated gate in GitHub Actions run `34346037170` (#159):
 
 | Gate | Status | Evidence |
 |---|---|---|
 | `clean` | PASS | Included in the successful combined Gradle invocation. |
 | `assembleDebug` | PASS | Debug APK assembled successfully. |
-| `testDebugUnitTest` | PASS | JVM suite, including the final Replace/batch-rename safety regressions, completed successfully. |
+| `testDebugUnitTest` | PASS | JVM suite completed successfully, including the final Replace post-commit/finalization-invariant regressions. |
 | `lintDebug` | PASS | Android lint completed successfully and its report artifact was uploaded. |
 | `assembleRelease` | PASS | Release APK assembled successfully. |
 | `assembleDebugAndroidTest` | PASS | Instrumentation APK compiled successfully. |
@@ -27,13 +27,13 @@ Functional implementation head `f21bd3705087cc65620e772e4a549c69baf4b443` passed
 
 The combined build/JVM/lint/release/instrumentation-compile phase reported `BUILD SUCCESSFUL`. The API-35 emulator phase separately reported `BUILD SUCCESSFUL` after **9/9 passing tests**.
 
-Failures and safety gaps discovered on earlier Step 2 heads were fixed rather than suppressed, ignored, or reclassified as passing.
+Failures and safety gaps discovered on earlier Step 2 heads were fixed rather than suppressed, ignored, weakened, or reclassified as passing.
 
 ## C. Architecture
 
 ### Operation engine
 
-`FileOperationEngine` is provider-neutral and independently JVM-testable. It owns preparation, iterative tree traversal, collision handling, streamed copy/move execution, per-item transitions, progress, pause/cancel checks, safe finalization, delete sequencing, transactional batch rename, safe replacement coordination, and typed failure mapping.
+`FileOperationEngine` is provider-neutral and independently JVM-testable. It owns preparation, iterative tree traversal, collision handling, streamed copy/move execution, per-item transitions, progress, pause/cancel checks, safe finalization, delete sequencing, transactional batch rename, safe replacement coordination, typed failure mapping, and the terminal-completion invariant.
 
 ### Queue and controller
 
@@ -45,7 +45,7 @@ Failures and safety gaps discovered on earlier Step 2 heads were fixed rather th
 
 `OperationJournal` is SQLite-backed and stores complete typed operation snapshots through `OperationJsonCodec`. Persisted state includes operation/item status, `Long` progress values, collision wait state, failures, retry ancestry, tracked partial outputs, batch-rename transaction phases/references, and the complete Replace safety ledger.
 
-The Replace ledger persists the current `ReplacePhase`, final filename, original destination reference/size/modified timestamp, safety-backup filename/reference, and staged output reference. Destructive provider mutations therefore do not rely on transient in-memory state.
+The Replace ledger persists the current `ReplacePhase`, final filename, original destination reference/size/modified timestamp, safety-backup filename/reference, staged output reference, and the mutated final result reference when that boundary has been reached. Destructive provider mutations therefore do not rely on transient in-memory state.
 
 ### Providers
 
@@ -65,6 +65,12 @@ On Android 15 foreground-service timeout, `OperationForegroundService.onTimeout(
 ### Notification
 
 A dedicated operation notification channel shows the active operation/progress and exposes pause/cancel controls when applicable. Notification UX is separate from storage correctness; the persistent operation journal remains the source of truth.
+
+### Terminal-completion guard
+
+`finishFromItems()` cannot report terminal success while any item is `QUEUED` or `RUNNING`, any Replace ledger is unresolved, `batchRenameRollbackRequired` is true, or a batch-rename transaction still has an unresolved phase. Such a snapshot becomes `INTERRUPTED` with no completion timestamp so recovery must establish a safe terminal state first.
+
+This enforces the Step 2 invariant: **never report success when transaction completion has not been proven.**
 
 ## D. Implemented file operations
 
@@ -147,6 +153,7 @@ Recovery is journal-based and never infers success from process/service disappea
 - Tracked partial-output references remain persisted when cleanup cannot complete because storage disappears.
 - Retry creates a new operation identity only for terminal retryable work and carries ordinary tracked-partial cleanup context forward.
 - Android 15 foreground-service timeout uses the same recoverable interruption model.
+- Operation-level finalization refuses success while active or transactional state remains unresolved.
 
 ### Durable Replace recovery
 
@@ -162,15 +169,18 @@ rename old destination → hidden safety backup
 persist BACKED_UP
 persist COMMITTING
 rename staged output → final name
+persist returned final result reference while phase remains COMMITTING
 verify committed result
 persist COMMITTED
 remove safety backup
 clear Replace ledger
 ```
 
-The safety ledger is serialized to the persistent JSON journal. If process/service cancellation occurs at a destructive boundary, cancellation propagates without speculative rollback in the cancelled coroutine, preserving the journaled phase for the next execution.
+The new journal boundary immediately after staged→final mutation is critical. Once the provider returns the renamed final entry, its final reference is saved while the transaction remains `COMMITTING` **before** post-commit size verification. A process death or verification error in this window therefore leaves durable proof of the final candidate as well as the original safety backup.
 
-Resume reconciles final/backup/staged presence plus the recorded original destination snapshot. It restores the original before retrying when that state can be proven, finishes a committed replacement when that can be proven, and otherwise keeps the operation `INTERRUPTED` with all safety references intact. Ambiguous recovery does not guess or delete data.
+If post-commit verification throws, the transaction is explicitly persisted as `INTERRUPTED`; the backup/result ledger is retained and the coordinator raises recovery-required control flow. It does not return a still-running transaction that a higher-level finalizer could mistake for success.
+
+Resume reconciles final/backup/staged presence, the journaled final-result reference, and the recorded original destination snapshot. It restores the original before retrying when that state can be proven, verifies and finishes a committed candidate when that can be proven, rolls an unverified candidate back to the original backup when safe, and otherwise keeps the operation `INTERRUPTED` with all safety references intact. Ambiguous recovery does not guess or delete data.
 
 If committed replacement succeeds but backup cleanup cannot be confirmed, the operation remains recoverable rather than silently forgetting an orphan safety backup. An unfinished Replace transaction is recovered in place and is never cloned through normal retry.
 
@@ -196,6 +206,10 @@ Final safety-hardening regressions additionally verify:
 - Replace cancellation preserves existing destination
 - Replace staged→final rename failure restores original destination
 - process death immediately after old destination → safety-backup mutation recovers and later completes correctly
+- `replacePostCommitVerificationFailureNeverReportsCompleted`: post-final-name verification failure becomes `INTERRUPTED`, not `COMPLETED`, with backup/result ledger retained and safe resume verified
+- `finishFromItemsCannotCompleteWithRunningItem`: a `RUNNING` item cannot be terminally completed
+- `finishFromItemsCannotCompleteWithUnresolvedReplaceLedger`: an unresolved Replace ledger cannot be terminally completed even when the item otherwise looks complete
+- `replaceProcessDeathAfterStagedToFinalMutationBeforeCommittedJournalSave`: the mutation-before-`COMMITTED` process-death window is reconciled and safely completed on resume
 - Replace ledger JSON round-trip preserves transaction phase/references and 20–30+ GiB `Long` values
 - providers without safe rename never expose a visible partial final-name file
 - rename-without-delete providers do not offer unsafe Replace
@@ -206,7 +220,7 @@ Final safety-hardening regressions additionally verify:
 
 ### API-35 instrumentation
 
-Run #139 executed **9 tests, 0 skipped, 0 failed**. Coverage includes:
+Run #159 executed **9 tests, 0 skipped, 0 failed**. Coverage includes:
 
 - real app-private local provider create/copy/move/rename/delete behavior
 - production SAF provider tree CRUD, navigation, ancestry, parent/breadcrumb resolution and rename
@@ -222,7 +236,7 @@ The SAF instrumentation uses a debug-only deterministic `DocumentsProvider` tree
 
 ### BLOCKER
 
-**None identified for Step 2 automated completion.**
+**None identified for Step 2 automated completion.** The final false-success Replace edge case was repaired and certified in run #159 rather than deferred.
 
 ### NON-BLOCKING
 
@@ -253,4 +267,4 @@ Physical phone certification intentionally deferred to Step 7 per project plan.
 
 # STEP 2 READY FOR INDEPENDENT REVIEW
 
-This verdict is based on certified functional implementation head `f21bd3705087cc65620e772e4a549c69baf4b443` and GitHub Actions run `34336655608` (#139), which passed the required build, JVM, lint, release, instrumentation-compilation and API-35 emulator gates after the final transaction-safety hardening. The documentation-only descendant containing this report is also subjected to the same exact-head CI workflow before final handoff. No Step 3 work is included.
+The functional verdict is based on repaired implementation head `9f5fd474f64cbbd43308a147479bdaa3668a1170` and GitHub Actions run `34346037170` (#159), which passed the required build, JVM, lint, release, instrumentation-compilation and API-35 emulator gates after the final completion-invariant repair. The evidence-only descendant containing this report is accepted for handoff only after the same full workflow passes on the final branch head. No Step 3 work is included.
