@@ -100,6 +100,40 @@ class FileOperationSafetyRegressionTest {
     }
 
     @Test
+    fun replaceProcessDeathAfterBackupMutationRestoresOldThenCompletesReplacement() = runBlocking {
+        val fixture = replaceFixture()
+        fixture.provider.renameFaults += RenameFault(
+            predicate = { from, to -> from == "holiday.mp4" && to.startsWith(".zzreplace-backup-") },
+            afterMutation = true,
+            throwable = CancellationException("simulated process death after destination-to-backup rename"),
+        )
+
+        fixture.controller.resolveCollision(fixture.id, CollisionPolicy.REPLACE, applyToAll = false)
+        var interrupted = false
+        try {
+            fixture.engine.runAvailable()
+        } catch (_: CancellationException) {
+            interrupted = true
+        }
+
+        assertTrue("Failure injection must hit the Replace transaction window", interrupted)
+        val journaled = fixture.store.get(fixture.id)
+        assertEquals(ReplacePhase.BACKUP_PLANNED, journaled?.items?.single()?.replacePhase)
+        assertFalse(fixture.provider.rawHas("/dest/holiday.mp4"))
+        assertTrue(fixture.provider.rawHasHiddenTransferArtifacts())
+
+        fixture.provider.renameFaults.clear()
+        fixture.store.forceState(fixture.id, FileOperationState.INTERRUPTED)
+        fixture.controller.resume(fixture.id)
+        fixture.engine.runAvailable()
+
+        assertEquals(FileOperationState.COMPLETED, fixture.store.get(fixture.id)?.state)
+        assertArrayEquals(newHoliday, fixture.provider.rawBytes("/dest/holiday.mp4"))
+        assertFalse(fixture.provider.rawHasHiddenTransferArtifacts())
+        assertEquals(ReplacePhase.NONE, fixture.store.get(fixture.id)?.items?.single()?.replacePhase)
+    }
+
+    @Test
     fun providerWithoutRenameNeverCreatesVisiblePartialFinal() = runBlocking {
         val provider = SafetyProvider().apply {
             directory("/src")
