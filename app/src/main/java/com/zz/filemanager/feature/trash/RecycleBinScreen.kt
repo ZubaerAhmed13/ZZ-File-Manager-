@@ -66,7 +66,7 @@ fun RecycleBinScreen(viewModel: RecycleBinViewModel, onBack: () -> Unit) {
     val snackbar = remember { SnackbarHostState() }
     var deleteConfirm by remember { mutableStateOf(false) }
     var emptyConfirm by remember { mutableStateOf(false) }
-    var collisionId by remember { mutableStateOf<String?>(null) }
+    var collision by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
     var chooseDestinationId by remember { mutableStateOf<String?>(null) }
     val platformLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result -> viewModel.onPlatformResult(result.resultCode == Activity.RESULT_OK) }
     val destinationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
@@ -74,7 +74,7 @@ fun RecycleBinScreen(viewModel: RecycleBinViewModel, onBack: () -> Unit) {
         chooseDestinationId = null
         if (uri != null && id != null) viewModel.restoreToTree(id, uri)
     }
-    LaunchedEffect(viewModel) { viewModel.events.collect { event -> when (event) { is RecycleEvent.Message -> snackbar.showSnackbar(event.text); is RecycleEvent.Collision -> collisionId = event.recordId; is RecycleEvent.PlatformRequest -> platformLauncher.launch(IntentSenderRequest.Builder(event.pendingIntent.intentSender).build()); is RecycleEvent.ChooseDestination -> { chooseDestinationId = event.recordId; destinationLauncher.launch(null) } } } }
+    LaunchedEffect(viewModel) { viewModel.events.collect { event -> when (event) { is RecycleEvent.Message -> snackbar.showSnackbar(event.text); is RecycleEvent.Collision -> collision = event.recordId to event.canReplace; is RecycleEvent.PlatformRequest -> platformLauncher.launch(IntentSenderRequest.Builder(event.pendingIntent.intentSender).build()); is RecycleEvent.ChooseDestination -> { chooseDestinationId = event.recordId; destinationLauncher.launch(null) } } } }
     Scaffold(
         snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
@@ -115,12 +115,12 @@ fun RecycleBinScreen(viewModel: RecycleBinViewModel, onBack: () -> Unit) {
         confirmButton = { Button(onClick = { emptyConfirm = false; viewModel.empty() }) { Text(stringResource(R.string.empty_recycle_bin)) } },
         dismissButton = { TextButton(onClick = { emptyConfirm = false }) { Text(stringResource(R.string.cancel)) } },
     )
-    collisionId?.let { id -> AlertDialog(
-        onDismissRequest = { collisionId = null },
+    collision?.let { (id, canReplace) -> AlertDialog(
+        onDismissRequest = { collision = null },
         title = { Text(stringResource(R.string.restore_collision)) },
         text = { Text(stringResource(R.string.file_conflict)) },
-        confirmButton = { TextButton(onClick = { collisionId = null; viewModel.restore(RestoreCollisionPolicy.KEEP_BOTH, id) }) { Text(stringResource(R.string.keep_both)) } },
-        dismissButton = { Column { Row { TextButton(onClick = { collisionId = null; viewModel.restore(RestoreCollisionPolicy.REPLACE, id) }) { Text(stringResource(R.string.replace)) }; TextButton(onClick = { collisionId = null; viewModel.chooseDestination(id) }) { Text(stringResource(R.string.choose_destination)) } }; TextButton(onClick = { collisionId = null }) { Text(stringResource(R.string.cancel)) } } },
+        confirmButton = { TextButton(onClick = { collision = null; viewModel.restore(RestoreCollisionPolicy.KEEP_BOTH, id) }) { Text(stringResource(R.string.keep_both)) } },
+        dismissButton = { Column { Row { if (canReplace) TextButton(onClick = { collision = null; viewModel.restore(RestoreCollisionPolicy.REPLACE, id) }) { Text(stringResource(R.string.replace)) }; TextButton(onClick = { collision = null; viewModel.chooseDestination(id) }) { Text(stringResource(R.string.choose_destination)) } }; TextButton(onClick = { collision = null }) { Text(stringResource(R.string.cancel)) } } },
     ) }
 }
 

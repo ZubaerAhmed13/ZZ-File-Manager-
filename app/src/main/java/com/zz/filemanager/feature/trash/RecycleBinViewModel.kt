@@ -27,7 +27,7 @@ import kotlinx.coroutines.launch
 
 sealed interface RecycleEvent {
     data class Message(val text: String) : RecycleEvent
-    data class Collision(val recordId: String) : RecycleEvent
+    data class Collision(val recordId: String, val canReplace: Boolean) : RecycleEvent
     data class PlatformRequest(val pendingIntent: PendingIntent) : RecycleEvent
     data class ChooseDestination(val recordId: String) : RecycleEvent
 }
@@ -75,7 +75,7 @@ class RecycleBinViewModel(
         chosen.filter { it.backend != TrashBackendType.MEDIA_STORE }.forEach { record ->
             val id = record.id
             when (val result = manager.restore(id, policy)) {
-                is TrashResult.Collision -> _events.emit(RecycleEvent.Collision(id))
+                is TrashResult.Collision -> _events.emit(RecycleEvent.Collision(id, result.canReplace))
                 is TrashResult.Failed -> _events.emit(RecycleEvent.Message(result.reason))
                 is TrashResult.Unsupported -> _events.emit(RecycleEvent.Message(result.reason))
                 is TrashResult.MissingOriginal -> _events.emit(RecycleEvent.ChooseDestination(id))

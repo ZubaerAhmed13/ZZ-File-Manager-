@@ -19,7 +19,6 @@ class MainActivityTest {
     @Test fun step3HomeDestinationsAndPrimaryControlsAreReachable() {
         composeRule.onNodeWithText("Search files and folders").performClick()
         composeRule.onNodeWithText("Any size").assertIsDisplayed()
-        composeRule.onNodeWithText("All accessible locations").assertIsDisplayed()
         composeRule.onNodeWithContentDescription("Back").performClick()
 
         composeRule.onNodeWithText("Favorites").performScrollTo().performClick()

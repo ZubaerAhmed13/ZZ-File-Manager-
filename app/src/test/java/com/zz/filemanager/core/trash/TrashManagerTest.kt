@@ -63,6 +63,7 @@ class TrashManagerTest {
         val manager = manager(provider, store)
         val first = provider.addFile("/root/report.pdf", 10)
         assertTrue(manager.trash(first, provider.root) is TrashResult.Success)
+        assertTrue(manager.trash(first, provider.root) is TrashResult.Failed)
         val second = provider.addFile("/root/report.pdf", 20)
         assertTrue(manager.trash(second, provider.root) is TrashResult.Success)
         assertEquals(2, store.trashRecords.value.map { it.id }.distinct().size)
@@ -105,11 +106,13 @@ class TrashManagerTest {
         val source = provider.addFile("/root/recover.txt", 10)
         manager.trash(source, provider.root)
         val record = store.trashRecords.value.single()
-        store.upsertTrash(record.copy(state = com.zz.filemanager.core.library.TrashState.MOVING))
+        store.upsertTrash(record.copy(trashReference = record.containerReference, state = com.zz.filemanager.core.library.TrashState.MOVING))
 
         manager.reconcile()
 
         assertEquals(com.zz.filemanager.core.library.TrashState.TRASHED, store.trashRecords.value.single().state)
+        assertTrue(requireNotNull(store.trashRecords.value.single().trashReference).reference.path!!.endsWith("/recover.txt"))
+        assertTrue(manager.restore(record.id) is TrashResult.Success)
     }
 
     @Test fun favoriteAndRecentRemainLogicallyLinkedAcrossTrashAndRestore() = runTest {
@@ -230,6 +233,22 @@ class TrashManagerTest {
         assertTrue(provider.hasPath("/root/project/readme.txt"))
     }
 
+    @Test fun restoreReplaceFailurePreservesExistingAndTrashPayload() = runTest {
+        val provider = FakeWritableProvider()
+        val store = MemoryLibraryStore()
+        val manager = manager(provider, store)
+        val old = provider.addFile("/root/report.pdf", 10)
+        manager.trash(old, provider.root)
+        provider.addFile("/root/report.pdf", 20)
+        provider.failAtomicReplace = true
+        val record = store.trashRecords.value.single()
+
+        assertTrue(manager.restore(record.id, RestoreCollisionPolicy.REPLACE) is TrashResult.Failed)
+        assertEquals(20L, provider.getMetadata(FileReference("fake", "new", path = "/root/report.pdf"))?.sizeBytes)
+        val retained = store.trashRecords.value.single()
+        assertTrue(provider.exists(requireNotNull(retained.trashReference).reference))
+    }
+
     private fun manager(provider: FakeWritableProvider, store: MemoryLibraryStore): TrashManager {
         val registry = FakeRegistry(provider)
         return TrashManager(registry, store, UserLibraryManager(store, registry), now = { 1_000L })
@@ -249,6 +268,7 @@ private class FakeWritableProvider(private val nativeMoves: Boolean = true) : Wr
     private val nodes = linkedMapOf("/root" to Node("/root", true, null))
     var openOutputCount = 0
     val refuseDeletePaths = mutableSetOf<String>()
+    var failAtomicReplace = false
 
     fun addFile(path: String, size: Long): FileEntry { nodes[path] = Node(path, false, size); return entry(requireNotNull(nodes[path])) }
     fun addDirectory(path: String): FileEntry { nodes[path] = Node(path, true, null); return entry(requireNotNull(nodes[path])) }
@@ -290,6 +310,7 @@ private class FakeWritableProvider(private val nativeMoves: Boolean = true) : Wr
     override suspend fun canMoveNative(item: ScopedFileReference, destination: BrowserLocation, newName: String): Boolean = nativeMoves && destination.storageId == item.storageId && findChild(destination, newName) == null
     override suspend fun moveNative(item: ScopedFileReference, destination: BrowserLocation, newName: String): FileEntry? = move(requireNotNull(item.reference.path), destination.reference.trimEnd('/') + "/" + newName)
     override suspend fun replaceAtomically(staged: ScopedFileReference, existing: ScopedFileReference, finalName: String): FileEntry? {
+        if (failAtomicReplace) return null
         nodes.remove(requireNotNull(existing.reference.path))
         return move(requireNotNull(staged.reference.path), requireNotNull(existing.reference.path))
     }

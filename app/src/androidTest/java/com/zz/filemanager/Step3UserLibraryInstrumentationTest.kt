@@ -7,6 +7,11 @@ import com.zz.filemanager.core.library.UserLibraryRepository
 import com.zz.filemanager.core.library.RecentFile
 import com.zz.filemanager.core.library.ActivityEntry
 import com.zz.filemanager.core.library.ActivityKind
+import com.zz.filemanager.core.library.TrashBackendType
+import com.zz.filemanager.core.library.TrashRecord
+import com.zz.filemanager.core.library.TrashState
+import com.zz.filemanager.core.model.BrowserLocation
+import com.zz.filemanager.core.model.ScopedFileReference
 import com.zz.filemanager.core.library.stableIdentity
 import com.zz.filemanager.core.model.FileEntryType
 import com.zz.filemanager.core.model.FileReference
@@ -59,5 +64,31 @@ class Step3UserLibraryInstrumentationTest {
         assertTrue(repository.recentFiles.value.isEmpty())
         assertTrue(repository.searchHistory.value.isEmpty())
         assertTrue(repository.activityHistory.value.isEmpty())
+    }
+
+    @Test fun trashRecoveryLedgerSurvivesDatabaseRestart() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val repository = UserLibraryRepository(context)
+        repository.initialize()
+        val reference = FileReference("local", "trash-${System.nanoTime()}", path = "/tmp/source.txt")
+        val payload = ScopedFileReference(FileReference("local", "payload-${System.nanoTime()}", path = "/tmp/.ZZFileManagerRecycle/id/source.txt"), "/tmp", "test")
+        val destination = BrowserLocation("local", "local:/tmp/restore", "Restore", "/tmp/restore", "/tmp", "test", true, true)
+        val record = TrashRecord(
+            "trash-ledger-${System.nanoTime()}", TrashBackendType.APP_MANAGED, reference,
+            BrowserLocation("local", "local:/tmp", "tmp", "/tmp", "/tmp", "test", true, true),
+            "source.txt", FileEntryType.TEXT, 30L * 1024L * 1024L * 1024L, 123L, payload,
+            ScopedFileReference(FileReference("local", "container", path = "/tmp/.ZZFileManagerRecycle/id"), "/tmp", "test"),
+            100L, 200L, TrashState.RESTORING, restoreDestination = destination, restoreName = "source (1).txt",
+        )
+        repository.upsertTrash(record)
+
+        val recreated = UserLibraryRepository(context)
+        recreated.initialize()
+        val restored = recreated.trashRecords.value.first { it.id == record.id }
+        assertEquals(TrashState.RESTORING, restored.state)
+        assertEquals(30L * 1024L * 1024L * 1024L, restored.sizeBytes)
+        assertEquals("source (1).txt", restored.restoreName)
+        assertEquals(destination.identity, restored.restoreDestination?.identity)
+        recreated.removeTrash(record.id)
     }
 }
