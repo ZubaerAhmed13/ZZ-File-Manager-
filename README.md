@@ -8,7 +8,7 @@ The project may study common file-manager workflows and navigation patterns, but
 
 ## Current status
 
-**Step 2 of 7 — Professional file operations engine** is implemented on `step2/file-operations-engine` and is under exact-head automated certification. Step 1 remains preserved as the approved native browsing foundation.
+**Step 2 of 7 — Professional file operations engine** is implemented and automated certification is complete on `step2/file-operations-engine`. Functional implementation head `52fad0bd6be9043ff091c495426c853cbe2f27e5` passed GitHub Actions run `34324743879` (#105), including the full clean build/JVM/lint/release gate and 9/9 API-35 emulator instrumentation tests. Step 1 remains preserved as the approved native browsing foundation. Final physical-phone certification is intentionally deferred to Step 7.
 
 ### Step 1 foundation preserved
 
@@ -39,12 +39,13 @@ The project may study common file-manager workflows and navigation patterns, but
 - SQLite-backed operation journal and process-death reconciliation
 - byte/item progress with throttled persistence
 - cooperative pause/resume/cancel
-- retry with a new operation identity
+- retry with a new operation identity and tracked-partial cleanup context
 - operation details/progress sheet in the browser
 - dedicated Android file-operation notification channel and controls
 - user-started foreground-service execution host separated from operation logic
 - Android 15 `dataSync` timeout reconciliation to a safe interrupted/recoverable journal state
 - local + SAF writable provider capability layer
+- tree-aware SAF CRUD using `DocumentsContract`, opaque document IDs and provider mutation flags
 - basic properties and Android-standard one/multiple file sharing through content URIs
 - automatic browser refresh after terminal operations
 
@@ -86,17 +87,18 @@ Android 14+ user-initiated JobScheduler jobs are intentionally not used for Step
 
 ## Build and verification
 
+The Step 2 workflow executes:
+
 ```bash
-./gradlew clean
-./gradlew assembleDebug
-./gradlew testDebugUnitTest
-./gradlew lintDebug
-./gradlew assembleRelease
+./gradlew clean assembleDebug testDebugUnitTest lintDebug assembleRelease assembleDebugAndroidTest
+./gradlew connectedDebugAndroidTest   # API 35 emulator
 ```
 
-GitHub Actions runs the build/unit/lint/release gate on `step1/**`, `step2/**`, and `main`, then runs `connectedDebugAndroidTest` on an API-35 emulator after the build gate succeeds.
+Functional certification run `34324743879` (#105) completed successfully. The API-35 emulator executed **9 tests, 0 skipped, 0 failed**.
 
-Step 2 includes fake-provider JVM tests for queue/copy/move/delete/collision/low-space behavior, Long-counter/recovery/batch-rename tests, and API-35 instrumentation that exercises real app-private local create/copy/move/rename/delete flows.
+Coverage includes fake-provider JVM tests for queue/copy/move/delete/collision/space/interruption/race behavior, `Long` counter and recovery tests, batch-rename tests, duplicate-enqueue protection, a 10,000-source queue test, production local-provider Android operations, production SAF-provider tree CRUD/navigation/ancestry plus engine copy/move, Step 2 Compose interaction coverage, and Step 1 restoration/smoke regressions.
+
+The SAF integration tests use a debug-only deterministic `DocumentsProvider` grant because headless CI cannot reliably drive the system `ACTION_OPEN_DOCUMENT_TREE` UI. The production `SafStorageProvider` itself is unchanged for the test and still executes through Android `ContentResolver`/`DocumentsContract` scoped-tree rules.
 
 ## Large-file and interruption safety
 
@@ -110,15 +112,16 @@ Process death or an Android foreground-service timeout never becomes a false suc
 
 Android 11+ broad storage capability is handled through the platform `MANAGE_EXTERNAL_STORAGE` settings flow because this is a genuine file-manager use case. The app does not assume permission is granted and remains usable through persisted SAF locations and MediaStore categories.
 
-Step 2 writes retain logical-root containment, canonical local-path validation, scoped SAF trees, safe leaf-name validation, symbolic-link loop protection, self/descendant-copy prevention, and provider-neutral persisted references. SAF URIs are not converted into fake local paths.
+Step 2 writes retain logical-root containment, canonical local-path validation, scoped SAF trees, safe leaf-name validation, symbolic-link loop protection, self/descendant-copy prevention, and provider-neutral persisted references. SAF URIs are not converted into fake local paths; document IDs are treated as opaque, tree containment is verified, and provider mutation flags are respected before create/write/delete/rename operations.
 
 ## Physical-device testing
 
-**Physical phone certification is intentionally deferred to Step 7.** Step 2 uses JVM tests, fake providers, static/lint analysis, release compilation, and API-35 emulator instrumentation. Hardware-specific final certification remains a Step 7 requirement.
+**Physical phone certification is intentionally deferred to Step 7.** Step 2 uses JVM tests, fake providers, static/lint analysis, release compilation, API-35 emulator instrumentation, real app-private local-provider I/O and production SAF-provider integration against an instrumented DocumentsProvider. Hardware/OEM-specific final certification remains a Step 7 requirement.
 
 ## Step documentation
 
 - [`docs/STEP2_ARCHITECTURE.md`](docs/STEP2_ARCHITECTURE.md)
 - [`docs/STEP2_FEATURE_MATRIX.md`](docs/STEP2_FEATURE_MATRIX.md)
 - [`docs/STEP2_TEST_MATRIX.md`](docs/STEP2_TEST_MATRIX.md)
+- [`docs/STEP2_COMPLETION_REPORT.md`](docs/STEP2_COMPLETION_REPORT.md)
 - [`docs/STEP1_FEATURE_MATRIX.md`](docs/STEP1_FEATURE_MATRIX.md)
