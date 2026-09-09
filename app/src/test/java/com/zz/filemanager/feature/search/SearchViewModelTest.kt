@@ -93,6 +93,7 @@ private class TestLibraryStore : UserLibraryStore {
     override suspend fun removeFavorite(id: String) { favorites.value = favorites.value.filterNot { it.id == id } }
     override suspend fun updateFavorite(item: FavoriteItem) = upsertFavorite(item)
     override suspend fun recordRecentFile(item: RecentFile) { recentFiles.value = listOf(item) }
+    override suspend fun removeRecentFile(id: String) { recentFiles.value = recentFiles.value.filterNot { it.id == id } }
     override suspend fun recordSearch(query: String, usedAtMillis: Long) { searchHistory.value = listOf(SearchHistoryItem(query.lowercase(), query, usedAtMillis)) }
     override suspend fun recordActivity(entry: ActivityEntry) { activityHistory.value = listOf(entry) }
     override suspend fun upsertTrash(record: TrashRecord) { trashRecords.value = listOf(record) }

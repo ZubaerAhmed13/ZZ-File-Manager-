@@ -41,7 +41,8 @@ class TrashManagerTest {
     @Test fun logicalThirtyGiBFileUsesNativeMoveAndRestoresWithoutCopySpace() = runTest {
         val provider = FakeWritableProvider()
         val store = MemoryLibraryStore()
-        val manager = manager(provider, store)
+        val library = UserLibraryManager(store, FakeRegistry(provider))
+        val manager = TrashManager(FakeRegistry(provider), store, library, now = { 1_000L })
         val huge = provider.addFile("/root/movie.mkv", 30L * 1024L * 1024L * 1024L)
 
         val trashed = manager.trash(huge, provider.root)
@@ -154,12 +155,14 @@ class TrashManagerTest {
     @Test fun missingOriginalParentCanRestoreToDeliberatelyChosenDestination() = runTest {
         val provider = FakeWritableProvider()
         val store = MemoryLibraryStore()
-        val manager = manager(provider, store)
+        val library = UserLibraryManager(store, FakeRegistry(provider))
+        val manager = TrashManager(FakeRegistry(provider), store, library, now = { 1_000L })
         val originalFolder = provider.addDirectory("/root/original")
         val originalLocation = BrowserLocation("fake", originalFolder.id, "original", "/root/original", "/root", "root", true, true)
         val alternateFolder = provider.addDirectory("/root/alternate")
         val alternate = BrowserLocation("fake", alternateFolder.id, "alternate", "/root/alternate", "/root", "root", true, true)
         val source = provider.addFile("/root/original/recover.txt", 10)
+        library.toggleFavorite(source, originalLocation)
         manager.trash(source, originalLocation)
         provider.delete(ScopedFileReference(originalFolder.reference, "/root", "root"))
         val record = store.trashRecords.value.single()
@@ -168,6 +171,8 @@ class TrashManagerTest {
         assertTrue(manager.restoreTo(record.id, alternate) is TrashResult.Success)
         assertTrue(provider.hasPath("/root/alternate/recover.txt"))
         assertTrue(store.trashRecords.value.isEmpty())
+        assertEquals("/root/alternate/recover.txt", store.favorites.value.single().reference.path)
+        assertEquals(alternate.identity, store.favorites.value.single().parentLocation?.identity)
     }
 
     @Test fun startupReconciliationFinishesProvenRestoreAfterMoveBeforeCatalogWrite() = runTest {
@@ -350,6 +355,7 @@ private class MemoryLibraryStore : UserLibraryStore {
     override suspend fun removeFavorite(id: String) { favorites.value = favorites.value.filterNot { it.id == id } }
     override suspend fun updateFavorite(item: FavoriteItem) = upsertFavorite(item)
     override suspend fun recordRecentFile(item: RecentFile) { recentFiles.value = listOf(item) + recentFiles.value.filterNot { it.id == item.id } }
+    override suspend fun removeRecentFile(id: String) { recentFiles.value = recentFiles.value.filterNot { it.id == id } }
     override suspend fun recordSearch(query: String, usedAtMillis: Long) { searchHistory.value = listOf(SearchHistoryItem(query.lowercase(), query, usedAtMillis)) }
     override suspend fun recordActivity(entry: ActivityEntry) { activityHistory.value = listOf(entry) + activityHistory.value }
     override suspend fun upsertTrash(record: TrashRecord) { trashRecords.value = listOf(record) + trashRecords.value.filterNot { it.id == record.id } }

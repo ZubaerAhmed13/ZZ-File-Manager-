@@ -58,8 +58,15 @@ class OperationLibrarySynchronizer(
             when (operation.type) {
                 FileOperationType.MOVE, FileOperationType.RENAME, FileOperationType.BATCH_RENAME -> if (result != null) {
                     val name = item.requestedName ?: item.source.name
-                    favorites.forEach { library.updateFavorite(it.copy(reference = result.reference, rootReference = result.rootReference, storageId = result.storageId, displayName = name, lastValidatedAtMillis = now(), status = LibraryItemStatus.AVAILABLE)) }
-                    recents.forEach { library.recordRecentFile(it.copy(reference = result.reference, rootReference = result.rootReference, storageId = result.storageId, displayName = name)) }
+                    val newId = result.reference.stableIdentity(result.rootReference, result.storageId)
+                    favorites.forEach {
+                        if (it.id != newId) library.removeFavorite(it.id)
+                        library.updateFavorite(it.copy(id = newId, reference = result.reference, rootReference = result.rootReference, storageId = result.storageId, displayName = name, lastValidatedAtMillis = now(), status = LibraryItemStatus.AVAILABLE))
+                    }
+                    recents.forEach {
+                        if (it.id != newId) library.removeRecentFile(it.id)
+                        library.recordRecentFile(it.copy(id = newId, reference = result.reference, rootReference = result.rootReference, storageId = result.storageId, displayName = name))
+                    }
                 }
                 FileOperationType.DELETE -> {
                     favorites.forEach { library.updateFavorite(it.copy(status = LibraryItemStatus.UNAVAILABLE, lastValidatedAtMillis = now())) }

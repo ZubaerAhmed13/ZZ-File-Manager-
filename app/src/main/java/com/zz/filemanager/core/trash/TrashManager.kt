@@ -7,6 +7,7 @@ import com.zz.filemanager.core.library.TrashRecord
 import com.zz.filemanager.core.library.TrashState
 import com.zz.filemanager.core.library.UserLibraryManager
 import com.zz.filemanager.core.library.UserLibraryStore
+import com.zz.filemanager.core.library.stableIdentity
 import com.zz.filemanager.core.model.BrowserLocation
 import com.zz.filemanager.core.model.FileEntry
 import com.zz.filemanager.core.model.ScopedFileReference
@@ -76,7 +77,7 @@ class TrashManager(
         records.forEach { record ->
             store.removeTrash(record.id)
             val metadata = providers.providerFor(record.originalReference.providerId).getMetadata(record.originalReference)
-            if (metadata != null) restoreRelatedItems(record, metadata)
+            if (metadata != null) restoreRelatedItems(record, metadata, record.originalParent)
             else {
                 store.favorites.value.filter { it.trashId == record.id }.forEach { store.updateFavorite(it.copy(status = LibraryItemStatus.AVAILABLE, trashId = null, lastValidatedAtMillis = now())) }
                 store.recentFiles.value.filter { it.trashId == record.id }.forEach { store.recordRecentFile(it.copy(status = LibraryItemStatus.AVAILABLE, trashId = null)) }
@@ -214,7 +215,7 @@ class TrashManager(
                 trashReference = ScopedFileReference(restored.reference, original.originalParent.rootReference, original.originalParent.storageId),
             )
             store.removeTrash(record.id)
-            restoreRelatedItems(original, restored)
+            restoreRelatedItems(original, restored, original.originalParent)
             cleanupContainer(provider, payload, original)
             libraryManager.recordActivity(ActivityKind.RESTORED, "Restored ${original.originalName}", 1L, original.operationId)
             TrashResult.Success(restoredRecord)
@@ -256,7 +257,7 @@ class TrashManager(
                 val restored = payloadProvider.moveNative(payload, destination, original.originalName)
                     ?: throw IllegalStateException("Native restore did not complete")
                 store.removeTrash(original.id)
-                restoreRelatedItems(original, restored)
+                restoreRelatedItems(original, restored, destination)
                 cleanupContainer(payloadProvider, payload, original)
                 libraryManager.recordActivity(ActivityKind.RESTORED, "Restored ${original.originalName}", 1L, original.operationId)
                 TrashResult.Success(moving.copy(state = TrashState.DELETED, trashReference = ScopedFileReference(restored.reference, destination.rootReference, destination.storageId), updatedAtMillis = now()))
@@ -347,7 +348,7 @@ class TrashManager(
                 }.getOrNull() else null
                 if (restored != null && !record.restoreReplace) {
                     store.removeTrash(record.id)
-                    restoreRelatedItems(record, restored)
+                    restoreRelatedItems(record, restored, destination)
                     libraryManager.recordActivity(ActivityKind.RESTORED, "Recovered restored ${record.originalName}", 1L, record.operationId)
                     return@forEach
                 }
@@ -384,7 +385,7 @@ class TrashManager(
                         childCount = null, storageId = result.storageId, thumbnailKey = null,
                     )
                 store.removeTrash(record.id)
-                restoreRelatedItems(record, metadata)
+                restoreRelatedItems(record, metadata, record.restoreDestination)
                 val payload = record.trashReference
                 val provider = payload?.let { providers.writableProviderFor(it.reference.providerId) }
                 if (payload != null && provider != null) cleanupContainer(provider, payload, record)
@@ -558,12 +559,20 @@ class TrashManager(
         store.recentFiles.value.filter { it.reference.providerId == record.originalReference.providerId && it.reference.opaqueId == record.originalReference.opaqueId }.forEach { store.recordRecentFile(it.copy(status = LibraryItemStatus.TRASHED, trashId = record.id)) }
     }
 
-    private suspend fun restoreRelatedItems(record: TrashRecord, restored: FileEntry) {
+    private suspend fun restoreRelatedItems(record: TrashRecord, restored: FileEntry, destination: BrowserLocation?) {
         store.favorites.value.filter { it.trashId == record.id }.forEach { favorite ->
-            store.updateFavorite(favorite.copy(reference = restored.reference, displayName = restored.name, status = LibraryItemStatus.AVAILABLE, trashId = null, lastValidatedAtMillis = now()))
+            val rootReference = destination?.rootReference ?: favorite.rootReference
+            val storageId = destination?.storageId ?: favorite.storageId
+            val id = restored.reference.stableIdentity(rootReference, storageId)
+            if (favorite.id != id) store.removeFavorite(favorite.id)
+            store.updateFavorite(favorite.copy(id = id, reference = restored.reference, rootReference = rootReference, storageId = storageId, parentLocation = destination, displayName = restored.name, status = LibraryItemStatus.AVAILABLE, trashId = null, lastValidatedAtMillis = now()))
         }
         store.recentFiles.value.filter { it.trashId == record.id }.forEach { recent ->
-            store.recordRecentFile(recent.copy(reference = restored.reference, displayName = restored.name, status = LibraryItemStatus.AVAILABLE, trashId = null))
+            val rootReference = destination?.rootReference ?: recent.rootReference
+            val storageId = destination?.storageId ?: recent.storageId
+            val id = restored.reference.stableIdentity(rootReference, storageId)
+            if (recent.id != id) store.removeRecentFile(recent.id)
+            store.recordRecentFile(recent.copy(id = id, reference = restored.reference, rootReference = rootReference, storageId = storageId, parentLocation = destination, displayName = restored.name, status = LibraryItemStatus.AVAILABLE, trashId = null))
         }
     }
 

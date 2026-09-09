@@ -14,6 +14,7 @@ interface UserLibraryStore {
     suspend fun removeFavorite(id: String)
     suspend fun updateFavorite(item: FavoriteItem)
     suspend fun recordRecentFile(item: RecentFile)
+    suspend fun removeRecentFile(id: String)
     suspend fun recordSearch(query: String, usedAtMillis: Long)
     suspend fun recordActivity(entry: ActivityEntry)
     suspend fun upsertTrash(record: TrashRecord)
@@ -22,4 +23,3 @@ interface UserLibraryStore {
     suspend fun clearSearchHistory()
     suspend fun clearActivityHistory()
 }
-

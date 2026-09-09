@@ -52,6 +52,7 @@ class UserLibraryRepository(
         database.upsert("recent_files", item.id, LibraryCodec.recent(item), item.openedAtMillis, item.status.name, item.reference.providerId, item.reference.opaqueId)
         database.trim("recent_files", MAX_RECENT_FILES)
     }
+    override suspend fun removeRecentFile(id: String) = mutate { database.delete("recent_files", id) }
 
     override suspend fun recordSearch(query: String, usedAtMillis: Long) {
         val display = query.trim()
