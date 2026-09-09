@@ -53,6 +53,7 @@ object OperationJsonCodec {
         })
         putNullable("applyToAllCollisionPolicy", operation.applyToAllCollisionPolicy?.name)
         putNullable("retryOfOperationId", operation.retryOfOperationId)
+        put("batchRenameRollbackRequired", operation.batchRenameRollbackRequired)
     }
 
     private fun operationFromJson(json: JSONObject): FileOperation {
@@ -84,6 +85,7 @@ object OperationJsonCodec {
             collisionDecisions = decisions,
             applyToAllCollisionPolicy = json.stringOrNull("applyToAllCollisionPolicy")?.let(CollisionPolicy::valueOf),
             retryOfOperationId = json.stringOrNull("retryOfOperationId"),
+            batchRenameRollbackRequired = json.optBoolean("batchRenameRollbackRequired", false),
         )
     }
 
@@ -98,6 +100,8 @@ object OperationJsonCodec {
         putNullable("failure", item.failure?.let(::failureToJson))
         putNullable("resultReference", item.resultReference?.let(::scopedToJson))
         putNullable("partialOutput", item.partialOutput?.let(::scopedToJson))
+        putNullable("batchRenameTemporaryName", item.batchRenameTemporaryName)
+        put("batchRenamePhase", item.batchRenamePhase.name)
     }
 
     private fun itemFromJson(json: JSONObject) = OperationItem(
@@ -111,6 +115,8 @@ object OperationJsonCodec {
         failure = json.objectOrNull("failure")?.let(::failureFromJson),
         resultReference = json.objectOrNull("resultReference")?.let(::scopedFromJson),
         partialOutput = json.objectOrNull("partialOutput")?.let(::scopedFromJson),
+        batchRenameTemporaryName = json.stringOrNull("batchRenameTemporaryName"),
+        batchRenamePhase = json.stringOrNull("batchRenamePhase")?.let(BatchRenamePhase::valueOf) ?: BatchRenamePhase.ORIGINAL,
     )
 
     private fun sourceToJson(source: OperationSource) = JSONObject().apply {
