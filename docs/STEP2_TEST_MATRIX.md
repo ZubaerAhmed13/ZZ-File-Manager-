@@ -1,6 +1,6 @@
 # Step 2 Test Matrix
 
-Functional certification was completed on implementation head `f21bd3705087cc65620e772e4a549c69baf4b443` by GitHub Actions run `34336655608` (#139). The clean build/JVM/lint/release/instrumentation-compile gate passed, followed by **9/9 passing API-35 emulator instrumentation tests with zero failures and zero skips**.
+Functional certification was completed on repaired implementation head `9f5fd474f64cbbd43308a147479bdaa3668a1170` by GitHub Actions run `34346037170` (#159). The clean build/JVM/lint/release/instrumentation-compile gate passed, followed by **9/9 passing API-35 emulator instrumentation tests with zero failures and zero skips**.
 
 Verified Step 1 baseline: `2be3a6933931a1f7aa9ae3857e7adf2f910bca9e`.
 
@@ -43,7 +43,11 @@ Verified Step 1 baseline: `2be3a6933931a1f7aa9ae3857e7adf2f910bca9e`.
 | Replace cooperative cancellation | Replace | Fake writable | Cancel during staging | Existing destination unchanged; partial removed when possible | PASS | JVM | Not required |
 | Replace final rename failure | Replace | Fake writable | Staged→final rename fails | Existing destination restored; hidden backup/partial cleanup verified | PASS | JVM | Not required |
 | Replace process death after old→backup mutation | Replace | Fake writable | Cancellation after destination rename but before phase save | Persisted BACKUP_PLANNED ledger reconciles; original restored then replacement completes | PASS | JVM | Not required |
-| Replace ledger JSON round-trip | Persistence | JSON/model | Replace phase/original/backup/staged fields incl. 20–30 GiB values | All transaction data restored exactly | PASS | JVM/model | Not required |
+| `replacePostCommitVerificationFailureNeverReportsCompleted` | Replace | Fake writable | Staged→final succeeds, then returned final metadata fails size verification | Operation is `INTERRUPTED`, never `COMPLETED`; no completed timestamp; backup + final-result ledger retained; resume verifies and completes safely | PASS | JVM | Not required |
+| `finishFromItemsCannotCompleteWithRunningItem` | Finalization | Memory store | Operation reaches finalizer with a `RUNNING` item | Finalizer persists `INTERRUPTED`; no false success/completion timestamp | PASS | JVM | Not required |
+| `finishFromItemsCannotCompleteWithUnresolvedReplaceLedger` | Finalization/Replace | Memory store | Item is otherwise completed but `replacePhase = COMMITTING` | Finalizer persists `INTERRUPTED`; Replace ledger remains intact | PASS | JVM | Not required |
+| `replaceProcessDeathAfterStagedToFinalMutationBeforeCommittedJournalSave` | Replace recovery | Fake writable | Staged→final rename mutates, then cancellation occurs before coordinator can persist `COMMITTED` | `COMMITTING` safety ledger is reconciled on resume; final verifies; backup is cleaned; operation completes safely | PASS | JVM | Not required |
+| Replace ledger JSON round-trip | Persistence | JSON/model | Replace phase/original/backup/staged fields incl. 20–30+ GiB values | All transaction data restored exactly | PASS | JVM/model | Not required |
 | Rename without delete capability | Replace/collision | Fake writable | Provider supports rename but not delete | Replace is not offered; Keep-Both remains allowed; existing file preserved | PASS | JVM | Not required |
 | Provider without rename | Copy/finalization | Fake writable | Provider can create/write but cannot safely rename staged file | SAFE_FINALIZATION_UNSUPPORTED; no visible partial final | PASS | JVM | Not required |
 | Native 30 GiB move with 1 GiB free | Move | Fake writable | Provider-safe same-storage native move | Move allowed; no false insufficient-space failure | PASS | JVM/model | Not required |
@@ -63,15 +67,17 @@ Verified Step 1 baseline: `2be3a6933931a1f7aa9ae3857e7adf2f910bca9e`.
 
 ## Final automated functional certification gate
 
-Run `34336655608` (#139), implementation head `f21bd3705087cc65620e772e4a549c69baf4b443`, passed:
+Run `34346037170` (#159), repaired implementation head `9f5fd474f64cbbd43308a147479bdaa3668a1170`, passed:
 
 ```bash
 ./gradlew clean assembleDebug testDebugUnitTest lintDebug assembleRelease assembleDebugAndroidTest
 ./gradlew connectedDebugAndroidTest   # API 35 emulator
 ```
 
-The first Gradle phase reported `BUILD SUCCESSFUL` with `assembleDebug`, JVM tests, lint, release assembly and instrumentation compilation all successful. The API-35 phase reported **9 tests completed, 0 skipped, 0 failed** and `BUILD SUCCESSFUL`.
+The first Gradle phase reported `BUILD SUCCESSFUL` with `assembleDebug`, JVM tests, lint, release assembly and instrumentation compilation all successful. The API-35 phase started **9 tests**, finished all **9 tests with 0 skipped and 0 failed**, and reported `BUILD SUCCESSFUL`.
 
-Failures found on earlier Step 2 heads were corrected rather than suppressed. The final repaired design includes durable Replace process-death recovery, durable batch-rename rollback recovery, safe capability-gated Replace, native-move-aware free-space planning, weak-provider partial-file protection, and the production SAF corrections from earlier certification.
+Run #159 is the authoritative certification of the final functional Step 2 implementation, including the last completion-invariant blocker. The repaired design journals the mutated final reference before post-commit verification, interrupts rather than reports success when verification cannot be proven, reconciles the staged→final process-death window, and makes operation-level finalization reject active or unresolved transactional state.
+
+Failures found on earlier Step 2 heads were corrected rather than suppressed. Other already-certified protections remain in force: durable batch-rename rollback recovery, capability-gated Replace, native-move-aware free-space planning, weak-provider partial-file protection, production local/SAF integration, large-`Long` persistence, race handling, and Step 1 regressions.
 
 Physical phone certification intentionally deferred to Step 7 per project plan.
