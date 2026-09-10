@@ -162,9 +162,10 @@ class Step5DisposableProtocolInteropTest {
             if (requireOffsetIo) {
                 val offset = 6L
                 assertArrayEquals(payload.copyOfRange(offset.toInt(), payload.size), fs.openInput(source, offset).use { it.readBytes() })
-                fs.openOutput(source, offset, truncate = false).use { it.write("OFFSET".encodeToByteArray()) }
-                val changed = fs.openInput(source).use { it.readBytes() }
-                assertArrayEquals(payload.copyOfRange(0, offset.toInt()) + "OFFSET".encodeToByteArray(), changed)
+                val patch = "OFFSET".encodeToByteArray()
+                fs.openOutput(source, offset, truncate = false).use { it.write(patch) }
+                val expected = payload.copyOf().also { patch.copyInto(it, destinationOffset = offset.toInt()) }
+                assertArrayEquals(expected, fs.openInput(source).use { it.readBytes() })
             }
 
             fs.rename(source, renamed, replace = false)
