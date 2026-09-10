@@ -7,14 +7,17 @@ import android.content.pm.PackageManager
 import android.os.Build
 import com.zz.filemanager.core.model.BrowserLocation
 import com.zz.filemanager.core.model.FileEntry
+import com.zz.filemanager.core.model.ScopedFileReference
 import com.zz.filemanager.core.operation.CollisionPolicy
 import com.zz.filemanager.core.step4.SafeOutputWriter
 import com.zz.filemanager.core.step4.SafeWriteResult
 import com.zz.filemanager.core.storage.StorageProviderRegistry
-import kotlinx.coroutines.CancellationException
+import com.zz.filemanager.core.storage.WritableStorageProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileInputStream
@@ -102,36 +105,153 @@ class ApkManager(
         }
     }
 
+    /**
+     * Exports the complete installed APK set into a hidden transaction directory. Components are
+     * never written into the visible final folder. A manifest containing every component's byte
+     * length and SHA-256 is written last; SafeOutputWriter then independently hashes every staged
+     * member and only renames the whole directory after the set is complete and proved.
+     */
     private suspend fun backupSplits(app: InstalledAppInfo, destination: BrowserLocation): ApkBackupResult {
-        val provider = providers.writableProviderFor(destination.providerId) ?: throw IllegalStateException("Backup destination is read-only")
-        val folderName = uniqueFolderName(provider, destination, "${sanitizeLeaf(app.label)}-${app.versionCode}-apks")
-        val folder = provider.createDirectory(destination, folderName)
-        val folderLocation = BrowserLocation(
-            providerId = folder.reference.providerId,
-            id = folder.id,
-            displayName = folder.name,
-            reference = folder.reference.uri ?: folder.reference.path ?: folder.reference.opaqueId,
-            rootReference = destination.rootReference,
-            storageId = destination.storageId,
-            readable = folder.isReadable,
-            writable = folder.isWritable,
-        )
+        val provider = providers.writableProviderFor(destination.providerId)
+            ?: throw IllegalStateException("Backup destination is read-only")
+        val requestedFolder = "${sanitizeLeaf(app.label)}-${app.versionCode}-apks"
         val paths = listOf(app.baseApkPath) + app.splitApkPaths
         val exported = mutableListOf<String>()
-        try {
+
+        safeWriter.writeDirectoryAtomically(
+            parent = destination,
+            requestedName = requestedFolder,
+            stagePrefix = ".zzapkbackup-",
+        ) { stagingDirectory ->
+            val usedNames = mutableSetOf<String>()
+            val componentProofs = mutableListOf<ApkComponentProof>()
             paths.forEachIndexed { index, path ->
                 coroutineContext.ensureActive()
                 val source = File(path)
                 require(source.isFile && source.canRead()) { "Installed APK component is unavailable: $path" }
-                val name = if (index == 0) "base.apk" else sanitizeLeaf(source.name).let { if (it.endsWith(".apk", true)) it else "$it.apk" }
-                val result = FileInputStream(source).use { input ->
-                    safeWriter.write(folderLocation, name, "application/vnd.android.package-archive", input, source.length(), CollisionPolicy.KEEP_BOTH)
+                val preferred = if (index == 0) {
+                    "base.apk"
+                } else {
+                    sanitizeLeaf(source.name).let { if (it.endsWith(".apk", true)) it else "$it.apk" }
                 }
-                exported += (result as SafeWriteResult.Written).entry.name
+                val name = uniqueComponentName(preferred, usedNames)
+                val proof = writeComponent(provider, stagingDirectory, source, name)
+                usedNames += name
+                exported += name
+                componentProofs += proof
             }
-            return ApkBackupResult(ApkBackupMode.COMPLETE_SPLITS, exported, reinstallableSetPreserved = true)
-        } catch (cancelled: CancellationException) {
-            throw cancelled
+
+            require(componentProofs.size == paths.size) { "Not every installed APK component was exported" }
+            val manifestBytes = JSONObject().apply {
+                put("schemaVersion", 1)
+                put("setId", UUID.randomUUID().toString())
+                put("complete", true)
+                put("packageName", app.packageName)
+                put("versionCode", app.versionCode)
+                put("versionName", app.versionName ?: JSONObject.NULL)
+                put("componentCount", componentProofs.size)
+                put("components", JSONArray().apply {
+                    componentProofs.forEach { proof ->
+                        put(JSONObject().apply {
+                            put("name", proof.name)
+                            put("sizeBytes", proof.sizeBytes)
+                            put("sha256", proof.sha256)
+                        })
+                    }
+                })
+            }.toString().toByteArray(Charsets.UTF_8)
+            writeBytes(
+                provider = provider,
+                directory = stagingDirectory,
+                name = MANIFEST_NAME,
+                mimeType = "application/json",
+                bytes = manifestBytes,
+            )
+
+            // Re-read and validate the manifest before allowing directory finalization.
+            val manifestEntry = provider.findChild(stagingDirectory, MANIFEST_NAME)
+                ?: throw IllegalStateException("Complete APK backup manifest disappeared")
+            val parsed = provider.openInputStream(manifestEntry.reference).bufferedReader(Charsets.UTF_8).use { reader ->
+                JSONObject(reader.readText())
+            }
+            if (!parsed.optBoolean("complete") || parsed.optInt("componentCount") != paths.size) {
+                throw IllegalStateException("Complete APK backup manifest verification failed")
+            }
+        }
+
+        return ApkBackupResult(
+            ApkBackupMode.COMPLETE_SPLITS,
+            exported,
+            reinstallableSetPreserved = true,
+        )
+    }
+
+    private data class ApkComponentProof(
+        val name: String,
+        val sizeBytes: Long,
+        val sha256: String,
+    )
+
+    private suspend fun writeComponent(
+        provider: WritableStorageProvider,
+        directory: BrowserLocation,
+        source: File,
+        name: String,
+    ): ApkComponentProof {
+        val created = provider.createFile(directory, name, "application/vnd.android.package-archive")
+        val scoped = ScopedFileReference(created.reference, directory.rootReference, directory.storageId)
+        val digest = MessageDigest.getInstance("SHA-256")
+        var copied = 0L
+        try {
+            FileInputStream(source).use { input ->
+                provider.openOutputStream(scoped, truncate = true).use { output ->
+                    val buffer = ByteArray(COPY_BUFFER_SIZE)
+                    while (true) {
+                        coroutineContext.ensureActive()
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        output.write(buffer, 0, count)
+                        digest.update(buffer, 0, count)
+                        copied += count.toLong()
+                    }
+                    output.flush()
+                }
+            }
+            if (copied != source.length()) throw IllegalStateException("APK component byte count changed during backup: $name")
+            val verified = provider.getMetadata(created.reference)
+                ?: throw IllegalStateException("APK component disappeared during backup: $name")
+            if (verified.sizeBytes != null && verified.sizeBytes != copied) {
+                throw IllegalStateException("APK component size verification failed: $name")
+            }
+            return ApkComponentProof(name, copied, digest.digest().toHex())
+        } catch (error: Throwable) {
+            runCatching { provider.delete(scoped) }
+            throw error
+        }
+    }
+
+    private suspend fun writeBytes(
+        provider: WritableStorageProvider,
+        directory: BrowserLocation,
+        name: String,
+        mimeType: String,
+        bytes: ByteArray,
+    ) {
+        val created = provider.createFile(directory, name, mimeType)
+        val scoped = ScopedFileReference(created.reference, directory.rootReference, directory.storageId)
+        try {
+            provider.openOutputStream(scoped, truncate = true).use { output ->
+                output.write(bytes)
+                output.flush()
+            }
+            val verified = provider.getMetadata(created.reference)
+                ?: throw IllegalStateException("Backup manifest disappeared")
+            if (verified.sizeBytes != null && verified.sizeBytes != bytes.size.toLong()) {
+                throw IllegalStateException("Backup manifest size verification failed")
+            }
+        } catch (error: Throwable) {
+            runCatching { provider.delete(scoped) }
+            throw error
         }
     }
 
@@ -186,16 +306,25 @@ class ApkManager(
         }
     }
 
-    private suspend fun uniqueFolderName(provider: com.zz.filemanager.core.storage.WritableStorageProvider, parent: BrowserLocation, requested: String): String {
-        if (provider.findChild(parent, requested) == null) return requested
+    private fun uniqueComponentName(preferred: String, used: Set<String>): String {
+        if (preferred !in used && preferred != MANIFEST_NAME) return preferred
+        val dot = preferred.lastIndexOf('.')
+        val base = if (dot > 0) preferred.substring(0, dot) else preferred
+        val extension = if (dot > 0) preferred.substring(dot) else ""
         var index = 1
         while (true) {
-            val candidate = "$requested ($index)"
-            if (provider.findChild(parent, candidate) == null) return candidate
+            val candidate = "$base-$index$extension"
+            if (candidate !in used && candidate != MANIFEST_NAME) return candidate
             index++
         }
     }
 
     private fun safeApkName(packageName: String) = sanitizeLeaf(packageName) + ".apk"
     private fun sanitizeLeaf(value: String): String = value.replace(Regex("[\\/:*?\"<>|\\u0000]"), "_").trim().ifBlank { "app" }
+    private fun ByteArray.toHex(): String = joinToString("") { "%02X".format(it) }
+
+    private companion object {
+        const val MANIFEST_NAME = "zz-apk-backup-manifest.json"
+        const val COPY_BUFFER_SIZE = 256 * 1024
+    }
 }
