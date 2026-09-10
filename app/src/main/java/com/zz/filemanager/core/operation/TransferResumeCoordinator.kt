@@ -5,6 +5,8 @@ import com.zz.filemanager.core.storage.ResumableStorageProvider
 import com.zz.filemanager.core.storage.ResumableWritableStorageProvider
 import com.zz.filemanager.core.storage.StorageProvider
 import com.zz.filemanager.core.storage.WritableStorageProvider
+import java.io.InputStream
+import java.io.OutputStream
 
 /**
  * Decides whether a hidden staged transfer can be reopened at a non-zero offset.
@@ -85,6 +87,38 @@ object TransferResumeCoordinator {
             Decision.Blocked(error)
         }
     }
+
+    suspend fun openSource(
+        sourceProvider: StorageProvider,
+        source: OperationSource,
+        offset: Long,
+    ): InputStream = if (offset == 0L) {
+        sourceProvider.openInputStream(source.reference)
+    } else {
+        val resumable = sourceProvider as? ResumableStorageProvider
+            ?: error("Resume source was not revalidated as seek-readable")
+        resumable.openInputStreamAt(source.reference, offset)
+    }
+
+    suspend fun openDestination(
+        destinationProvider: WritableStorageProvider,
+        staged: ScopedFileReference,
+        offset: Long,
+    ): OutputStream = if (offset == 0L) {
+        destinationProvider.openOutputStream(staged, truncate = true)
+    } else {
+        val resumable = destinationProvider as? ResumableWritableStorageProvider
+            ?: error("Resume destination was not revalidated as seek-writable")
+        resumable.openOutputStreamAt(staged, offset)
+    }
+
+    fun withProgress(item: OperationItem, written: Long): OperationItem = item.copy(
+        processedBytes = written,
+        resumeOffset = if (
+            !item.resumeSourceIdentity.isNullOrBlank() &&
+            !item.resumeStagedIdentity.isNullOrBlank()
+        ) written else 0L,
+    )
 
     fun clearCheckpoint(item: OperationItem, keepPartial: Boolean = false): OperationItem = item.copy(
         partialOutput = if (keepPartial) item.partialOutput else null,
