@@ -31,7 +31,15 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true; buildConfig = true }
-    packaging.resources.excludes += setOf("/META-INF/{AL2.0,LGPL2.1}")
+    // Protocol libraries include their own legal metadata. The app packages the libraries
+    // unchanged; duplicate jar-level license/notice entries are excluded from APK merging.
+    packaging.resources.excludes += setOf(
+        "/META-INF/{AL2.0,LGPL2.1}",
+        "/META-INF/LICENSE.md",
+        "/META-INF/LICENSE",
+        "/META-INF/NOTICE.md",
+        "/META-INF/NOTICE",
+    )
     testOptions.unitTests.isIncludeAndroidResources = true
 }
 
@@ -68,8 +76,9 @@ dependencies {
     implementation("commons-net:commons-net:3.13.0")
     implementation("com.hierynomus:sshj:0.40.0")
 
-    // Keep Bouncy Castle artifacts on one Maven-published release so Android never packages
-    // overlapping ASN.1 classes selected transitively by SSHJ/archive dependencies.
+    // Keep the supporting Bouncy Castle modules on a Maven-published release. SSHJ may
+    // resolve a newer bcprov patch transitively; Android packaging handles duplicate legal
+    // metadata above, while duplicate class detection remains enabled as a hard safety gate.
     implementation("org.bouncycastle:bcprov-jdk18on:1.85")
     implementation("org.bouncycastle:bcutil-jdk18on:1.85")
     implementation("org.bouncycastle:bcpkix-jdk18on:1.85")
