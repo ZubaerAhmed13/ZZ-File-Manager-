@@ -68,6 +68,12 @@ dependencies {
     implementation("commons-net:commons-net:3.13.0")
     implementation("com.hierynomus:sshj:0.40.0")
 
+    // SSHJ and archive dependencies may otherwise select different Bouncy Castle generations.
+    // Keep the whole family aligned so Android never packages overlapping ASN.1 classes.
+    implementation("org.bouncycastle:bcprov-jdk18on:1.85.2")
+    implementation("org.bouncycastle:bcutil-jdk18on:1.85.2")
+    implementation("org.bouncycastle:bcpkix-jdk18on:1.85.2")
+
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
     testImplementation("org.json:json:20240303")
