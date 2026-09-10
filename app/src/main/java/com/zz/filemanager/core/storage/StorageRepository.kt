@@ -217,6 +217,20 @@ class StorageRepository(
     }
 
     override suspend fun listChildren(location: BrowserLocation): List<FileEntry> = providerFor(location.providerId).listChildren(location)
+
+    override suspend fun listChildrenIncrementally(
+        location: BrowserLocation,
+        pageSize: Int,
+        onPage: suspend (List<FileEntry>) -> Unit,
+    ) {
+        val provider = providerFor(location.providerId)
+        if (provider is IncrementalStorageProvider) {
+            provider.listChildrenIncrementally(location, pageSize, onPage)
+        } else {
+            onPage(provider.listChildren(location))
+        }
+    }
+
     override suspend fun resolveParent(location: BrowserLocation): BrowserLocation? = providerFor(location.providerId).resolveParent(location)
     override suspend fun breadcrumbs(location: BrowserLocation): List<Breadcrumb> = providerFor(location.providerId).breadcrumbs(location)
     override suspend fun remember(location: BrowserLocation) { preferences.addRecent(location); preferences.setLastLocation(location) }
