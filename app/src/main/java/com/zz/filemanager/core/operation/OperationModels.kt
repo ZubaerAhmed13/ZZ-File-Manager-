@@ -136,6 +136,12 @@ data class OperationItem(
     val failure: OperationFailure? = null,
     val resultReference: ScopedFileReference? = null,
     val partialOutput: ScopedFileReference? = null,
+    // Resumable-transfer checkpoint. A non-zero offset is reusable only when BOTH identities
+    // are present and still match the live source and hidden staged destination. The byte count
+    // must also exactly equal the live staged-object length. All values remain Long-safe.
+    val resumeSourceIdentity: String? = null,
+    val resumeStagedIdentity: String? = null,
+    val resumeOffset: Long = 0L,
     // Batch-rename transaction ledger. source.scoped/source.name are the immutable original
     // reference/name, resultReference is the live current reference, requestedName is the target.
     val batchRenameTemporaryName: String? = null,
