@@ -2,6 +2,7 @@ package com.zz.filemanager
 
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -34,6 +35,11 @@ class MainActivityTest {
     }
 
     @Test fun step3HomeDestinationsAndPrimaryControlsAreReachable() {
+        composeRule.waitUntil(timeoutMillis = 10_000L) {
+            composeRule.onAllNodesWithText("Search files and folders")
+                .fetchSemanticsNodes()
+                .isNotEmpty()
+        }
         composeRule.onNodeWithText("Search files and folders").performClick()
         composeRule.onNodeWithText("Any size").assertIsDisplayed()
         composeRule.onNodeWithContentDescription("Back").performClick()
