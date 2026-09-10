@@ -65,13 +65,29 @@ CI separately scans JUnit XML and fails if skipped tests are present. Physical-p
 | Logical 10 GiB text entry | Engine selects large read-only window mode instead of attempting whole-file editable buffering. |
 | External modification | Save rejects stale fingerprint and leaves external content intact. |
 | Failed staged replace | Existing destination remains byte-for-byte authoritative and uncommitted `.zzstage-*` is cleaned. |
-| Encrypted ZIP create/list/extract | AES ZIP is created, listed and extracted with correct password. |
+| Fresh generated write staging | During the producer callback the requested final filename does not exist, a hidden `.zzstage-*` exists, and a `STAGING` journal record already exists. After success only the final file remains. |
+| Simulated process death during fresh 20 GiB output | A journaled partial `.zzstage-*` in `STAGING` is reconciled without ever creating `movie.mkv`; the hidden stage and journal are removed when safe. |
+| Same-size unrelated final during recovery | A `COMMITTING` replacement whose unrelated final has the expected size but wrong SHA-256 remains unresolved and the known-good backup is preserved. Filename + size are therefore insufficient commit proof. |
+| Generated/archive producer failure | A producer that writes partial bytes and then fails never exposes `Backup.zip`; no uncommitted `.zzstage-*` or completed journal remains after handled cleanup. |
+| Encrypted ZIP create/list/extract | AES ZIP is created through the staged generated-output path, listed and extracted with the correct password. |
 | Wrong archive password | Extraction fails as `BadPassword` and does not materialize requested file. |
 | Replace collision during extraction | Existing destination is replaced through safe-write semantics and contains extracted data. |
 | Malformed APK | Passive inspection rejects invalid APK. |
 | Own APK certificate | Package and signing certificate SHA-256 metadata are populated. |
-| APK backup | Base APK streams to selected destination and produces non-empty `.apk`. |
+| Base APK backup | Base APK streams through the staged file transaction to the selected destination and produces a non-empty `.apk`. |
+| Interrupted complete split backup | Failure after the hidden split-backup directory is created leaves no visible `<App>-<version>-apks` folder and no lingering handled-failure stage/journal. |
+| Successful complete split backup | Base + split files finalize together in the visible directory, `zz-apk-backup-manifest.json` exists with `complete=true`, and the hidden `.zzapkbackup-*` directory is gone. |
 | Malformed media metadata | Metadata service returns safely without crashing caller. |
+
+## Transactional blocker acceptance criteria
+
+The following conditions are explicit Step 4 blockers, not optional hardening:
+
+1. **No direct fresh-to-final streaming.** Every fresh output must create a durable journal record before hidden staging begins and must not expose the requested final filename until commit.
+2. **No direct archive-creation output.** ZIP/TAR-family creation must write through the staged generated-output path.
+3. **No filename+size commit proof.** Recovery must prove the final object using staged mutation identity when available or a streaming cryptographic digest when identity is unavailable. Replacement backups must survive uncertainty.
+4. **No partial complete-split folder.** `COMPLETE_SPLITS` must finalize as one staged directory transaction with verified component membership and manifest.
+5. **No unsafe provider downgrade.** If required create/rename/delete capabilities are unavailable, the operation must fail explicitly rather than advertise transactional safety while writing directly to a final name.
 
 ## Build / static gate
 
@@ -81,6 +97,19 @@ CI separately scans JUnit XML and fails if skipped tests are present. Physical-p
 - `lintDebug` remains mandatory.
 - compileSdk and targetSdk stay at 35 for this step.
 - AndroidX Media3 is pinned to the stable API-35-compatible line so playback features remain present without silently moving certification to API 36.
+
+## Exact-head completion evidence
+
+The completion report may mark Step 4 certified only when one permanent `Android Step 4 CI` run for the current branch head proves all of the following:
+
+- build/unit/lint/release/androidTest-compile step succeeded;
+- JVM zero-skip check succeeded;
+- KVM/emulator preparation succeeded;
+- `connectedDebugAndroidTest` on API 35 actually ran and succeeded;
+- instrumentation zero-skip check succeeded;
+- overall job conclusion is `success`;
+- the run `head_sha` equals the current `step4/archive-media-text-apk-analyzer` branch head;
+- no temporary patch/helper workflow remains in the branch.
 
 ## Failure policy
 
