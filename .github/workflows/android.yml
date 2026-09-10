@@ -17,6 +17,19 @@ jobs:
   certify-step5-api35:
     runs-on: ubuntu-latest
     timeout-minutes: 55
+    env:
+      STEP5_PROTOCOL_INTEROP_REQUIRED: '1'
+      STEP5_PROTOCOL_USER: step5
+      STEP5_PROTOCOL_PASS: step5pass
+      STEP5_SMB_HOST: 127.0.0.1
+      STEP5_SMB_PORT: '1445'
+      STEP5_SMB_SHARE: share
+      STEP5_FTP_HOST: 127.0.0.1
+      STEP5_FTP_PORT: '2121'
+      STEP5_FTPS_HOST: localhost
+      STEP5_FTPS_PORT: '2122'
+      STEP5_SFTP_HOST: 127.0.0.1
+      STEP5_SFTP_PORT: '2222'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -26,10 +39,85 @@ jobs:
       - uses: android-actions/setup-android@v3
       - name: Install Android SDK 35
         run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+
+      - name: Start disposable SMB, FTP, FTPS and SFTP certification servers
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/step5-smb /tmp/step5-ftp /tmp/step5-ftps /tmp/step5-tls
+          chmod 0777 /tmp/step5-smb /tmp/step5-ftp /tmp/step5-ftps
+
+          # SMB2/3 fixture. No SMB1 downgrade: dperson/samba defaults to SMB2 minimum unless -S is used.
+          docker run -d --name step5-smb \
+            -p 1445:445 \
+            -v /tmp/step5-smb:/mount \
+            dperson/samba \
+            -p \
+            -u 'step5;step5pass' \
+            -s 'share;/mount;yes;no;no;step5'
+
+          # OpenSSH SFTP fixture with a writable chroot subdirectory.
+          docker run -d --name step5-sftp \
+            -p 2222:22 \
+            atmoz/sftp:alpine \
+            'step5:step5pass:::upload'
+
+          # FTP/FTPS fixtures are real RFC servers, not mocks. A one-run self-signed certificate
+          # intentionally exercises the product's explicit per-connection certificate pin path.
+          python3 -m pip install --disable-pip-version-check --quiet 'pyftpdlib==2.2.0' 'pyOpenSSL>=24,<27'
+          openssl req -x509 -newkey rsa:2048 -sha256 -days 1 -nodes \
+            -keyout /tmp/step5-tls/ftps.key \
+            -out /tmp/step5-tls/ftps.crt \
+            -subj '/CN=localhost' \
+            -addext 'subjectAltName=DNS:localhost,IP:127.0.0.1'
+
+          python3 -m pyftpdlib \
+            --interface 127.0.0.1 --port 2121 \
+            --directory /tmp/step5-ftp --username step5 --password step5pass --write \
+            --range 30000-30009 \
+            >/tmp/step5-ftp.log 2>&1 &
+          echo $! >/tmp/step5-ftp.pid
+
+          python3 -m pyftpdlib \
+            --interface 127.0.0.1 --port 2122 \
+            --directory /tmp/step5-ftps --username step5 --password step5pass --write \
+            --range 30100-30109 \
+            --tls --keyfile /tmp/step5-tls/ftps.key --certfile /tmp/step5-tls/ftps.crt \
+            --tls-control-required --tls-data-required \
+            >/tmp/step5-ftps.log 2>&1 &
+          echo $! >/tmp/step5-ftps.pid
+
+          # The production pin comparator accepts normalized SHA-256 hex. Export the exact leaf
+          # certificate used by this disposable server to the JVM certification process.
+          printf 'STEP5_FTPS_CERT_SHA256=' >> "$GITHUB_ENV"
+          openssl x509 -in /tmp/step5-tls/ftps.crt -outform der | sha256sum | awk '{print $1}' >> "$GITHUB_ENV"
+
+          wait_port() {
+            local host="$1" port="$2" name="$3"
+            for _ in $(seq 1 60); do
+              if nc -z "$host" "$port" >/dev/null 2>&1; then
+                echo "$name ready on $host:$port"
+                return 0
+              fi
+              sleep 1
+            done
+            echo "$name failed readiness" >&2
+            docker logs step5-smb 2>/dev/null || true
+            docker logs step5-sftp 2>/dev/null || true
+            cat /tmp/step5-ftp.log 2>/dev/null || true
+            cat /tmp/step5-ftps.log 2>/dev/null || true
+            return 1
+          }
+          wait_port 127.0.0.1 1445 SMB
+          wait_port 127.0.0.1 2222 SFTP
+          wait_port 127.0.0.1 2121 FTP
+          wait_port 127.0.0.1 2122 FTPS
+
       - name: Build, unit test, lint, release compile and instrumentation compile
         run: |
           chmod +x ./gradlew
           ./gradlew clean assembleDebug testDebugUnitTest lintDebug assembleRelease assembleDebugAndroidTest --stacktrace
+
       - name: Enforce Step 5 JVM certification tests and zero skips
         if: always()
         shell: bash
@@ -62,24 +150,38 @@ jobs:
               'ftpsCertificateChangeBlocksConnection',
               'usbRemovalDuringMovePreservesSource',
               'networkTimeoutDoesNotDeadlockOperationQueue',
+              'smbClientPerformsNegotiationOffsetIoRemoteCopyAndAtomicReplaceAgainstDisposableServer',
+              'ftpClientPerformsRealSessionAgainstDisposableServer',
+              'ftpsClientPerformsRealTlsSessionAgainstDisposableServer',
+              'sftpClientPerformsRealSessionAgainstDisposableServer',
+              'privateKeyImportReadStopsAtConfiguredSentinelLimit',
+              'wifiOnlyBackgroundTransfersBlockRemoteExecutionOffWifi',
+              'warnOnMeteredNetworksProducesVisibleWarningWithoutFalseBlock',
+              'autoResumeInterruptedTransfersHonorsSettingAndDoesNotReplayDelete',
           }
           missing = sorted(required - seen)
           print('STEP5_JVM_TOTALS ' + ' '.join(f'{k}={v}' for k, v in totals.items()))
           if missing:
               raise SystemExit('Missing mandatory Step 5 JVM tests: ' + ', '.join(missing))
+          if totals['failures'] or totals['errors']:
+              raise SystemExit(f"Failed JVM tests detected: failures={totals['failures']} errors={totals['errors']}")
           if totals['skipped']:
               raise SystemExit(f"Skipped JVM certification tests detected: {totals['skipped']}")
           PY
-      - name: Upload JVM and lint reports
+
+      - name: Upload JVM, lint and protocol-server reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: jvm-lint-reports
+          name: jvm-lint-protocol-reports
           path: |
             app/build/test-results/testDebugUnitTest/
             app/build/reports/tests/testDebugUnitTest/
             app/build/reports/lint-results-debug.html
+            /tmp/step5-ftp.log
+            /tmp/step5-ftps.log
           if-no-files-found: ignore
+
       - name: Enable KVM access
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -115,6 +217,8 @@ jobs:
                   for key in totals:
                       totals[key] += int(suite.attrib.get(key, 0))
           print('STEP5_INSTRUMENTATION_TOTALS ' + ' '.join(f'{k}={v}' for k, v in totals.items()))
+          if totals['failures'] or totals['errors']:
+              raise SystemExit(f"Failed instrumentation tests detected: failures={totals['failures']} errors={totals['errors']}")
           if totals['skipped']:
               raise SystemExit(f"Skipped instrumentation certification tests detected: {totals['skipped']}")
           PY
@@ -127,3 +231,11 @@ jobs:
             app/build/reports/androidTests/connected/
             app/build/outputs/androidTest-results/connected/
           if-no-files-found: ignore
+
+      - name: Stop disposable protocol servers
+        if: always()
+        shell: bash
+        run: |
+          test -f /tmp/step5-ftp.pid && kill "$(cat /tmp/step5-ftp.pid)" 2>/dev/null || true
+          test -f /tmp/step5-ftps.pid && kill "$(cat /tmp/step5-ftps.pid)" 2>/dev/null || true
+          docker rm -f step5-smb step5-sftp >/dev/null 2>&1 || true
