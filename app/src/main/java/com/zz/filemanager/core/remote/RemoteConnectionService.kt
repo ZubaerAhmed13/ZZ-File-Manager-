@@ -4,6 +4,8 @@ sealed interface ConnectionTestResult {
     data object Success : ConnectionTestResult
     data class HostKeyTrustRequired(val fingerprint: String, val algorithm: String?) : ConnectionTestResult
     data class ServerIdentityChanged(val expected: String?, val observed: String?) : ConnectionTestResult
+    data class CertificateTrustRequired(val observed: String) : ConnectionTestResult
+    data class CertificateIdentityChanged(val expected: String, val observed: String) : ConnectionTestResult
     data class Failure(val state: RemoteConnectionState, val message: String) : ConnectionTestResult
 }
 
@@ -45,13 +47,40 @@ class RemoteConnectionService(
         providers.syncSavedConnections()
     }
 
+    /** First-contact SFTP trust. Existing trust cannot be silently overwritten through this path. */
     fun trustSftpHostKey(connectionId: String, observedSha256: String) {
         val connection = repository.get(connectionId) ?: throw IllegalArgumentException("Unknown connection")
         require(connection.protocol == RemoteProtocol.SFTP)
-        val normalized = observedSha256.trim()
-        require(normalized.startsWith("SHA256:") && normalized.length > "SHA256:".length)
-        repository.upsert(connection.copy(sshHostKeySha256 = normalized, connectionState = RemoteConnectionState.DISCONNECTED))
-        providers.syncSavedConnections()
+        require(connection.sshHostKeySha256.isNullOrBlank()) { "A trusted host key already exists; use explicit replacement." }
+        persistSftpHostKey(connection, observedSha256)
+    }
+
+    /** Explicit recovery after a changed-host-key block and independent verification. */
+    fun replaceTrustedSftpHostKey(connectionId: String, observedSha256: String) {
+        val connection = repository.get(connectionId) ?: throw IllegalArgumentException("Unknown connection")
+        require(connection.protocol == RemoteProtocol.SFTP)
+        require(!connection.sshHostKeySha256.isNullOrBlank()) { "No existing trusted host key to replace." }
+        persistSftpHostKey(connection, observedSha256)
+    }
+
+    /** First explicit FTPS/HTTPS WebDAV certificate pin. */
+    fun trustCertificate(connectionId: String, observedSha256: String) {
+        val connection = repository.get(connectionId) ?: throw IllegalArgumentException("Unknown connection")
+        requireCertificateProtocol(connection)
+        require(connection.certificatePolicy == RemoteCertificatePolicy.SYSTEM || connection.certificateSha256.isNullOrBlank()) {
+            "A certificate pin already exists; use explicit replacement."
+        }
+        persistCertificatePin(connection, observedSha256)
+    }
+
+    /** Explicit certificate-pin replacement after a changed-certificate block. */
+    fun replaceTrustedCertificate(connectionId: String, observedSha256: String) {
+        val connection = repository.get(connectionId) ?: throw IllegalArgumentException("Unknown connection")
+        requireCertificateProtocol(connection)
+        require(connection.certificatePolicy == RemoteCertificatePolicy.PINNED && !connection.certificateSha256.isNullOrBlank()) {
+            "No existing certificate pin to replace."
+        }
+        persistCertificatePin(connection, observedSha256)
     }
 
     fun test(connectionId: String): ConnectionTestResult {
@@ -78,6 +107,19 @@ class RemoteConnectionService(
             repository.updateState(connection.id, RemoteConnectionState.SERVER_CHANGED)
             providers.syncSavedConnections()
             ConnectionTestResult.ServerIdentityChanged(changed.expected, changed.observed)
+        } catch (certificate: RemoteAccessException.Certificate) {
+            val expected = certificate.expected ?: connection.certificateSha256
+            val observed = certificate.observed ?: CertificateFingerprintProbe.probe(connection, repository.settings())
+            repository.updateState(connection.id, RemoteConnectionState.CERTIFICATE_ERROR)
+            providers.syncSavedConnections()
+            when {
+                observed != null && connection.certificatePolicy == RemoteCertificatePolicy.SYSTEM ->
+                    ConnectionTestResult.CertificateTrustRequired(observed)
+                observed != null && expected != null &&
+                    CertificatePinPolicy.normalize(expected) != CertificatePinPolicy.normalize(observed) ->
+                    ConnectionTestResult.CertificateIdentityChanged(expected, observed)
+                else -> ConnectionTestResult.Failure(RemoteConnectionState.CERTIFICATE_ERROR, safeMessage(RemoteConnectionState.CERTIFICATE_ERROR))
+            }
         } catch (error: Throwable) {
             val state = stateFor(error)
             repository.updateState(connection.id, state)
@@ -89,6 +131,33 @@ class RemoteConnectionService(
     }
 
     fun rootFor(connectionId: String) = providers.rootFor(connectionId)
+
+    private fun persistSftpHostKey(connection: NetworkConnection, observedSha256: String) {
+        val normalized = observedSha256.trim()
+        require(normalized.startsWith("SHA256:") && normalized.length > "SHA256:".length)
+        repository.upsert(connection.copy(sshHostKeySha256 = normalized, connectionState = RemoteConnectionState.DISCONNECTED))
+        providers.syncSavedConnections()
+    }
+
+    private fun requireCertificateProtocol(connection: NetworkConnection) {
+        require(
+            connection.protocol == RemoteProtocol.FTPS ||
+                (connection.protocol == RemoteProtocol.WEBDAV && connection.tlsMode == RemoteTlsMode.HTTPS),
+        ) { "Certificate pinning is available only for FTPS and HTTPS WebDAV." }
+    }
+
+    private fun persistCertificatePin(connection: NetworkConnection, observedSha256: String) {
+        val normalized = CertificatePinPolicy.normalize(observedSha256)
+        require(normalized.length == 64 && normalized.all { it in '0'..'9' || it in 'a'..'f' }) { "Invalid SHA-256 certificate fingerprint." }
+        repository.upsert(
+            connection.copy(
+                certificatePolicy = RemoteCertificatePolicy.PINNED,
+                certificateSha256 = "SHA256:$normalized",
+                connectionState = RemoteConnectionState.DISCONNECTED,
+            ),
+        )
+        providers.syncSavedConnections()
+    }
 
     private fun stateFor(error: Throwable): RemoteConnectionState = when (error) {
         is RemoteAccessException.AuthenticationRequired -> RemoteConnectionState.AUTH_REQUIRED
