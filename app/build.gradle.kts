@@ -32,13 +32,16 @@ android {
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true; buildConfig = true }
     // Protocol libraries include their own legal metadata. The app packages the libraries
-    // unchanged; duplicate jar-level license/notice entries are excluded from APK merging.
+    // unchanged; duplicate jar-level license/notice/OSGi manifest entries are excluded only
+    // from APK Java-resource merging. Crypto/provider classes remain fully packaged and duplicate
+    // class detection stays enabled as a hard safety gate.
     packaging.resources.excludes += setOf(
         "/META-INF/{AL2.0,LGPL2.1}",
         "/META-INF/LICENSE.md",
         "/META-INF/LICENSE",
         "/META-INF/NOTICE.md",
         "/META-INF/NOTICE",
+        "/META-INF/versions/9/OSGI-INF/MANIFEST.MF",
     )
     testOptions.unitTests.isIncludeAndroidResources = true
 }
