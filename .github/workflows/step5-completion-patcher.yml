@@ -1,0 +1,30 @@
+name: Step 5 one-shot resume integration
+
+on:
+  push:
+    branches: [ 'step5/removable-network-cloud' ]
+    paths: [ '.github/workflows/step5-completion-patcher.yml' ]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: step5/removable-network-cloud
+          fetch-depth: 0
+      - name: Apply reviewed Step 5 patch
+        run: python3 tools/step5_apply_resume_patch.py
+      - name: Remove one-shot patch machinery and commit
+        run: |
+          rm tools/step5_apply_resume_patch.py .github/workflows/step5-completion-patcher.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "step5: integrate identity-verified transfer resume"
+          git push origin HEAD:step5/removable-network-cloud
