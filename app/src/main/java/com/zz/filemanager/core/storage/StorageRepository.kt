@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.Environment
 import android.os.StatFs
 import android.os.storage.StorageManager
+import android.provider.DocumentsContract
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.documentfile.provider.DocumentFile
@@ -27,14 +28,44 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 
 class StorageRepository(
     private val context: Context,
     private val preferences: PreferencesRepository,
 ) : BrowserStorage, StorageProviderRegistry, SearchRootSource {
-    private val providers: Map<String, StorageProvider> = listOf(
+    private val builtInProviders: Map<String, StorageProvider> = listOf(
         LocalStorageProvider(context), SafStorageProvider(context), MediaStoreProvider(context)
     ).associateBy { it.id }
+
+    private data class RegisteredLocation(
+        val provider: StorageProvider,
+        val location: StorageLocation,
+        val includeInGlobalSearch: Boolean,
+    )
+
+    /** Runtime registrations are rebuilt from durable connection/account metadata at app start. */
+    private val registeredLocations = ConcurrentHashMap<String, RegisteredLocation>()
+
+    fun registerExternalProvider(
+        provider: StorageProvider,
+        location: StorageLocation,
+        includeInGlobalSearch: Boolean = false,
+    ) {
+        require(provider.id == location.root.providerId) { "Provider/location identity mismatch" }
+        registeredLocations[provider.id] = RegisteredLocation(provider, location, includeInGlobalSearch)
+    }
+
+    fun unregisterExternalProvider(providerId: String) {
+        registeredLocations.remove(providerId)
+    }
+
+    fun retainExternalProviders(providerIds: Set<String>) {
+        registeredLocations.keys.filterNot(providerIds::contains).forEach(registeredLocations::remove)
+    }
+
+    fun registeredStorageLocations(): List<StorageLocation> = registeredLocations.values.map { it.location }
 
     suspend fun discoverStorageLocations(): List<StorageLocation> = withContext(Dispatchers.IO) {
         val local = discoverLocalVolumes()
@@ -42,7 +73,7 @@ class StorageRepository(
             StorageLocation(
                 id = location.storageId,
                 displayName = location.displayName,
-                type = StorageType.SAF_TREE,
+                type = safStorageType(location),
                 totalBytes = null,
                 freeBytes = null,
                 readable = location.readable,
@@ -51,43 +82,105 @@ class StorageRepository(
                 root = location,
             )
         }
-        local + saf
+        (local + saf + registeredStorageLocations()).distinctBy { it.id }
     }
 
+    /**
+     * Global search intentionally excludes saved network/cloud roots. Remote recursion must start
+     * only from a user-selected remote scope; otherwise rendering Search could auto-connect every
+     * account/server. Removable SAF roots remain normal explicitly-authorized local roots.
+     */
     override suspend fun accessibleRoots(): List<BrowserLocation> {
-        val storageRoots = discoverStorageLocations().filter { it.available && it.readable }.map { it.root }
+        val storageRoots = discoverStorageLocations()
+            .filter { it.available && it.readable && it.type !in setOf(StorageType.NETWORK, StorageType.CLOUD) }
+            .map { it.root }
+        val explicitExternalSearchRoots = registeredLocations.values
+            .filter { it.includeInGlobalSearch && it.location.available && it.location.readable }
+            .map { it.location.root }
         val mediaRoots = MediaCategory.entries.map(::mediaLocation)
-        return (storageRoots + mediaRoots).distinctBy { it.identity }
+        return (storageRoots + explicitExternalSearchRoots + mediaRoots).distinctBy { it.identity }
     }
 
+    /** Includes saved SAF roots even when their grant is missing so Home can show/reconnect them. */
     suspend fun validSafLocations(): List<BrowserLocation> = withContext(Dispatchers.IO) {
-        val persisted = context.contentResolver.persistedUriPermissions.filter { it.isReadPermission }.map { it.uri.toString() }.toSet()
+        val persisted = context.contentResolver.persistedUriPermissions
+            .filter { it.isReadPermission }
+            .associateBy { it.uri.toString() }
         preferences.safLocations.first().map { location ->
-            if (location.rootReference in persisted) location.copy(readable = true) else location.copy(readable = false, writable = false)
+            val grant = persisted[location.rootReference]
+            if (grant != null) {
+                val document = runCatching { DocumentFile.fromTreeUri(context, Uri.parse(location.rootReference)) }.getOrNull()
+                val readable = document?.canRead() == true
+                location.copy(readable = readable, writable = readable && grant.isWritePermission && document?.canWrite() == true)
+            } else {
+                location.copy(readable = false, writable = false)
+            }
         }
     }
 
-    suspend fun registerSafLocation(uri: Uri): BrowserLocation = withContext(Dispatchers.IO) {
-        val resolver = context.contentResolver
-        val readWrite = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-        runCatching { resolver.takePersistableUriPermission(uri, readWrite) }
-            .recoverCatching { resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-            .getOrElse { throw StorageAccessException.PermissionRequired(it) }
+    suspend fun registerSafLocation(uri: Uri): BrowserLocation = registerSafLocation(uri, SafLocationKind.GENERIC)
+
+    suspend fun registerSafLocation(uri: Uri, kind: SafLocationKind): BrowserLocation = withContext(Dispatchers.IO) {
+        val grant = takeTreeGrant(uri)
         val document = DocumentFile.fromTreeUri(context, uri)
-        val label = document?.name?.takeIf { it.isNotBlank() } ?: context.getString(R.string.folder_location)
-        val writable = document?.canWrite() == true
+            ?: throw StorageAccessException.Unavailable()
+        val label = document.name?.takeIf { it.isNotBlank() } ?: context.getString(R.string.folder_location)
+        val writable = grant.second && document.canWrite()
+        val stableId = stableSafStorageId(uri, kind)
+        val displayName = when (kind) {
+            SafLocationKind.SD_CARD -> "SD Card · $label"
+            SafLocationKind.USB -> "USB · $label"
+            SafLocationKind.CLOUD -> "Cloud · $label"
+            SafLocationKind.GENERIC -> label
+        }
         val location = BrowserLocation(
             providerId = SafStorageProvider.ID,
             id = "saf:${uri}",
-            displayName = label,
+            displayName = displayName,
             reference = uri.toString(),
             rootReference = uri.toString(),
-            storageId = "saf:$label",
+            storageId = stableId,
             readable = true,
             writable = writable,
         )
         preferences.addSafLocation(location)
         location
+    }
+
+    /** Re-authorize a missing removable root without silently mapping it to another volume. */
+    suspend fun reconnectSafLocation(saved: BrowserLocation, uri: Uri): BrowserLocation = withContext(Dispatchers.IO) {
+        require(saved.providerId == SafStorageProvider.ID)
+        val kind = safKind(saved)
+        val expectedToken = stableSafVolumeTokenFromStorageId(saved.storageId)
+        val observedToken = stableSafVolumeToken(uri)
+        if (kind in setOf(SafLocationKind.SD_CARD, SafLocationKind.USB) && expectedToken != null && observedToken != null && expectedToken != observedToken) {
+            throw StorageAccessException.Unavailable(IllegalStateException("Selected removable storage does not match the saved volume identity"))
+        }
+        val grant = takeTreeGrant(uri)
+        val document = DocumentFile.fromTreeUri(context, uri) ?: throw StorageAccessException.Unavailable()
+        val replacement = saved.copy(
+            id = "saf:${uri}",
+            reference = uri.toString(),
+            rootReference = uri.toString(),
+            readable = document.canRead(),
+            writable = document.canRead() && grant.second && document.canWrite(),
+            storageId = if (expectedToken != null) saved.storageId else stableSafStorageId(uri, kind),
+        )
+        preferences.removeSafLocation(saved.rootReference)
+        preferences.addSafLocation(replacement)
+        replacement
+    }
+
+    suspend fun removableStatus(location: BrowserLocation): RemovableStorageStatus = withContext(Dispatchers.IO) {
+        if (location.providerId != SafStorageProvider.ID || safKind(location) !in setOf(SafLocationKind.SD_CARD, SafLocationKind.USB)) {
+            return@withContext RemovableStorageStatus.UNSUPPORTED
+        }
+        val persisted = context.contentResolver.persistedUriPermissions.any { it.uri.toString() == location.rootReference && it.isReadPermission }
+        if (!persisted) return@withContext RemovableStorageStatus.PERMISSION_LOST
+        val document = runCatching { DocumentFile.fromTreeUri(context, Uri.parse(location.rootReference)) }.getOrNull()
+            ?: return@withContext RemovableStorageStatus.REMOVED
+        if (!document.exists() || !document.canRead()) return@withContext RemovableStorageStatus.REMOVED
+        if (!document.canWrite()) RemovableStorageStatus.READ_ONLY else RemovableStorageStatus.AVAILABLE
     }
 
     suspend fun removeSafLocation(location: BrowserLocation) = withContext(Dispatchers.IO) {
@@ -128,10 +221,13 @@ class StorageRepository(
     override suspend fun breadcrumbs(location: BrowserLocation): List<Breadcrumb> = providerFor(location.providerId).breadcrumbs(location)
     override suspend fun remember(location: BrowserLocation) { preferences.addRecent(location); preferences.setLastLocation(location) }
 
-    override fun providerFor(providerId: String): StorageProvider = providers[providerId]
+    override fun providerFor(providerId: String): StorageProvider = builtInProviders[providerId]
+        ?: registeredLocations[providerId]?.provider
         ?: throw StorageAccessException.Unavailable()
 
-    override fun writableProviderFor(providerId: String): WritableStorageProvider? = providers[providerId] as? WritableStorageProvider
+    override fun writableProviderFor(providerId: String): WritableStorageProvider? = providerForOrNull(providerId) as? WritableStorageProvider
+
+    fun providerForOrNull(providerId: String): StorageProvider? = builtInProviders[providerId] ?: registeredLocations[providerId]?.provider
 
     suspend fun capabilities(location: BrowserLocation): ProviderCapabilities =
         writableProviderFor(location.providerId)?.capabilities(location) ?: ProviderCapabilities.ReadOnly
@@ -160,7 +256,7 @@ class StorageRepository(
                 }
             }
             MediaStoreProvider.ID -> location.takeIf { runCatching { MediaCategory.valueOf(location.reference) }.isSuccess }
-            else -> null
+            else -> location.takeIf { providerForOrNull(location.providerId) != null }
         }
     }
 
@@ -182,6 +278,56 @@ class StorageRepository(
         ?: entry.reference.path?.let { path ->
             runCatching { FileProvider.getUriForFile(context, "${context.packageName}.files", File(path)) }.getOrNull()
         }
+
+    private fun takeTreeGrant(uri: Uri): Pair<Boolean, Boolean> {
+        val resolver = context.contentResolver
+        val readWrite = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        val writeGranted = runCatching {
+            resolver.takePersistableUriPermission(uri, readWrite)
+            true
+        }.recoverCatching {
+            resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            false
+        }.getOrElse { throw StorageAccessException.PermissionRequired(it) }
+        return true to writeGranted
+    }
+
+    private fun safStorageType(location: BrowserLocation): StorageType = when (safKind(location)) {
+        SafLocationKind.SD_CARD -> StorageType.SD_CARD
+        SafLocationKind.USB -> StorageType.USB
+        SafLocationKind.CLOUD -> StorageType.CLOUD
+        SafLocationKind.GENERIC -> StorageType.SAF_TREE
+    }
+
+    private fun safKind(location: BrowserLocation): SafLocationKind = when {
+        location.storageId.startsWith("sd:") -> SafLocationKind.SD_CARD
+        location.storageId.startsWith("usb:") -> SafLocationKind.USB
+        location.storageId.startsWith("cloud-saf:") -> SafLocationKind.CLOUD
+        else -> SafLocationKind.GENERIC
+    }
+
+    private fun stableSafStorageId(uri: Uri, kind: SafLocationKind): String {
+        val token = stableSafVolumeToken(uri) ?: shortHash(uri.toString())
+        val authority = uri.authority?.takeIf { it.isNotBlank() } ?: "documents"
+        return "${kind.storagePrefix}:$authority:$token"
+    }
+
+    private fun stableSafVolumeToken(uri: Uri): String? = runCatching {
+        DocumentsContract.getTreeDocumentId(uri).substringBefore(':').takeIf { it.isNotBlank() }
+    }.getOrNull()
+
+    private fun stableSafVolumeTokenFromStorageId(storageId: String): String? {
+        val first = storageId.indexOf(':')
+        if (first < 0) return null
+        val second = storageId.indexOf(':', first + 1)
+        if (second < 0 || second == storageId.lastIndex) return null
+        return storageId.substring(second + 1).takeIf { it.isNotBlank() }
+    }
+
+    private fun shortHash(value: String): String = MessageDigest.getInstance("SHA-256")
+        .digest(value.toByteArray(Charsets.UTF_8))
+        .take(8)
+        .joinToString("") { "%02x".format(it) }
 
     @Suppress("DEPRECATION")
     private fun discoverLocalVolumes(): List<StorageLocation> {

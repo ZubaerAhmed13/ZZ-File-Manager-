@@ -15,6 +15,14 @@ import com.zz.filemanager.core.operation.OperationJournal
 import com.zz.filemanager.core.operation.OperationRepository
 import com.zz.filemanager.core.operation.android.AndroidOperationExecutionHost
 import com.zz.filemanager.core.preferences.PreferencesRepository
+import com.zz.filemanager.core.remote.AndroidKeystoreCredentialStore
+import com.zz.filemanager.core.remote.FtpRemoteFileSystemFactory
+import com.zz.filemanager.core.remote.NetworkConnectionManager
+import com.zz.filemanager.core.remote.NetworkConnectionRepository
+import com.zz.filemanager.core.remote.RemoteFileSystemFactoryRegistry
+import com.zz.filemanager.core.remote.RemoteProviderCoordinator
+import com.zz.filemanager.core.remote.SftpRemoteFileSystemFactory
+import com.zz.filemanager.core.remote.WebDavRemoteFileSystemFactory
 import com.zz.filemanager.core.search.SearchCoordinator
 import com.zz.filemanager.core.search.SearchRepository
 import com.zz.filemanager.core.step4.SafeOutputWriter
@@ -28,7 +36,28 @@ import com.zz.filemanager.core.util.ThumbnailRepository
 class AppContainer(context: Context) {
     private val appContext = context.applicationContext
     val preferences = PreferencesRepository(appContext)
+
+    // Step 5 connection metadata is intentionally separate from encrypted secret material.
+    val networkConnections = NetworkConnectionRepository(appContext)
+    val secureCredentials = AndroidKeystoreCredentialStore(appContext)
+    val remoteFileSystems = RemoteFileSystemFactoryRegistry(
+        listOf(
+            FtpRemoteFileSystemFactory(),
+            SftpRemoteFileSystemFactory(),
+            WebDavRemoteFileSystemFactory(),
+        ),
+    )
+
     val storage = StorageRepository(appContext, preferences)
+    val remoteProviders = RemoteProviderCoordinator(storage, networkConnections, secureCredentials, remoteFileSystems)
+    val networkConnectionManager = NetworkConnectionManager(networkConnections, secureCredentials)
+
+    init {
+        // Rebuild runtime provider registrations synchronously from non-secret metadata. No network
+        // I/O or credential decryption occurs here, so application startup never auto-connects.
+        remoteProviders.syncSavedConnections()
+    }
+
     val thumbnails = ThumbnailRepository(appContext)
 
     val operationStore = OperationRepository(OperationJournal(appContext))
