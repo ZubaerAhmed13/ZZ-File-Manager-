@@ -693,10 +693,12 @@ class FileOperationEngine(
                 val raced = destinationProvider.findChild(parent, finalName)
                 if (raced != null) {
                     val cleaned = cleanupPartial(destinationProvider, outputRef)
-                    item = item.copy(
-                        state = OperationItemState.QUEUED,
-                        partialOutput = if (cleaned) null else outputRef,
-                        processedBytes = 0L,
+                    item = TransferResumeCoordinator.clearCheckpoint(
+                        item.copy(
+                            state = OperationItemState.QUEUED,
+                            partialOutput = if (cleaned) null else outputRef,
+                        ),
+                        keepPartial = !cleaned,
                     )
                     operation = replaceItem(operation, item)
                     var collision = collisionFor(operation, item, raced, finalName)

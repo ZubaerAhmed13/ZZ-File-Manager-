@@ -239,7 +239,7 @@ fun ZZFileManagerApp(container: AppContainer) {
                 RecycleBinScreen(vm, onBack = { nav.popBackStack() })
             }
             composable("remote") {
-                val vm: RemoteLocationsViewModel = viewModel(factory = RemoteLocationsViewModel.Factory(container.remoteConnectionService))
+                val vm: RemoteLocationsViewModel = viewModel(factory = RemoteLocationsViewModel.Factory(container.remoteConnectionService, container.lanDiscovery))
                 RemoteLocationsScreen(
                     viewModel = vm,
                     onBack = { nav.popBackStack() },
@@ -247,7 +247,7 @@ fun ZZFileManagerApp(container: AppContainer) {
                 )
             }
             composable("settings") {
-                val vm: SettingsViewModel = viewModel(factory = SettingsViewModel.Factory(container.storage, container.preferences))
+                val vm: SettingsViewModel = viewModel(factory = SettingsViewModel.Factory(container.storage, container.preferences, container.remoteConnectionService))
                 SettingsScreen(vm, onBack = { nav.popBackStack() })
             }
         }

@@ -169,6 +169,41 @@ fun RemoteLocationsScreen(
             Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            Text("LAN discovery", style = MaterialTheme.typography.titleLarge)
+            Text(
+                "DNS-SD/mDNS only. ZZ File Manager does not brute-force IP ranges, scan arbitrary ports, try credentials or create saved connections automatically.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            if (!state.lanDiscoveryEnabled) {
+                Text("LAN discovery is disabled in Settings.", style = MaterialTheme.typography.bodyMedium)
+            } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { if (state.discovering) viewModel.stopDiscovery() else viewModel.startDiscovery() }) {
+                        Text(if (state.discovering) "Stop discovery" else "Discover LAN services")
+                    }
+                    if (state.discovered.isNotEmpty()) {
+                        TextButton(onClick = viewModel::clearDiscovery) { Text("Clear") }
+                    }
+                }
+                state.discovered.forEach { candidate ->
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(candidate.serviceName, style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                "${candidate.protocol.name} · ${candidate.hostName}" +
+                                    (candidate.address?.let { " · $it" } ?: "") +
+                                    ":${candidate.port}",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            TextButton(onClick = {
+                                editing = viewModel.connectionDraft(candidate)
+                                showForm = true
+                            }) { Text("Add / Connect") }
+                        }
+                    }
+                }
+            }
+
             Text("Saved servers", style = MaterialTheme.typography.titleLarge)
             Text(
                 "Credentials are stored separately using Android Keystore. Opening this screen does not auto-connect to saved servers.",
