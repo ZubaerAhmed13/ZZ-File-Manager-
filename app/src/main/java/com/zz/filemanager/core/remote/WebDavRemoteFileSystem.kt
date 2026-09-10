@@ -21,7 +21,6 @@ import java.io.PipedInputStream
 import java.io.PipedOutputStream
 import java.net.ConnectException
 import java.net.SocketTimeoutException
-import java.security.MessageDigest
 import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
 import java.time.ZonedDateTime
@@ -33,7 +32,6 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLHandshakeException
-import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.X509TrustManager
 import javax.xml.parsers.SAXParserFactory
 
@@ -60,13 +58,12 @@ class WebDavRemoteFileSystemFactory : RemoteFileSystemFactory {
             .readTimeout(settings.readTimeoutMillis.toLong(), TimeUnit.MILLISECONDS)
             .writeTimeout(settings.writeTimeoutMillis.toLong(), TimeUnit.MILLISECONDS)
             .callTimeout((settings.connectTimeoutMillis + settings.readTimeoutMillis + settings.writeTimeoutMillis).toLong(), TimeUnit.MILLISECONDS)
-            // Authentication or DAV redirects must be reviewed instead of silently crossing hosts/schemes.
             .followRedirects(false)
             .followSslRedirects(false)
 
         if (base.isHttps && connection.certificatePolicy == RemoteCertificatePolicy.PINNED) {
             val expected = connection.certificateSha256 ?: throw RemoteAccessException.Certificate()
-            val trustManager = PinnedDelegatingTrustManager(expected)
+            val trustManager = PinnedLeafTrustManager(expected)
             val sslContext = SSLContext.getInstance("TLS")
             sslContext.init(null, arrayOf(trustManager), null)
             clientBuilder.sslSocketFactory(sslContext.socketFactory, trustManager)
@@ -109,15 +106,27 @@ private class WebDavRemoteFileSystem(
         nativeMove = discovered.move,
         serverSideCopy = discovered.copy,
         atomicReplace = false,
-        // Range support is file-specific. Do not globally promise resume merely from DAV support.
         seekRead = false,
         seekWrite = false,
         stableIdentity = false,
     )
 
     override fun list(path: String): List<RemoteNode> {
+        val output = ArrayList<RemoteNode>()
+        kotlinx.coroutines.runBlocking {
+            listPages(path, RemoteFileSystem.MAX_REMOTE_DIRECTORY_PAGE_SIZE) { output.addAll(it) }
+        }
+        return output
+    }
+
+    /** SAX emits bounded pages while the PROPFIND body is still being consumed. */
+    override suspend fun listPages(path: String, pageSize: Int, onPage: suspend (List<RemoteNode>) -> Unit) {
+        require(pageSize in 1..RemoteFileSystem.MAX_REMOTE_DIRECTORY_PAGE_SIZE)
         val normalized = RemotePath.normalize(path)
-        return propfind(normalized, depth = 1).filterNot { it.path == normalized }
+        propfindPages(normalized, depth = 1, pageSize = pageSize) { page ->
+            val children = page.filterNot { it.path == normalized }
+            if (children.isNotEmpty()) onPage(children)
+        }
     }
 
     override fun stat(path: String): RemoteNode? {
@@ -126,11 +135,11 @@ private class WebDavRemoteFileSystem(
             propfind(normalized, depth = 0).firstOrNull { it.path == normalized }
                 ?: propfind(normalized, depth = 0).firstOrNull()
         } catch (error: RemoteAccessException.Protocol) {
-    val http = error.cause as? DavHttpException
-    if (http?.code == 404) null else throw error
-} catch (error: DavHttpException) {
-    if (error.code == 404) null else throw mapDavError(error)
-}
+            val http = error.cause as? DavHttpException
+            if (http?.code == 404) null else throw error
+        } catch (error: DavHttpException) {
+            if (error.code == 404) null else throw mapDavError(error)
+        }
     }
 
     override fun openInput(path: String, offset: Long): InputStream {
@@ -224,6 +233,19 @@ private class WebDavRemoteFileSystem(
     }
 
     private fun propfind(path: String, depth: Int): List<RemoteNode> {
+        val output = ArrayList<RemoteNode>()
+        kotlinx.coroutines.runBlocking {
+            propfindPages(path, depth, RemoteFileSystem.MAX_REMOTE_DIRECTORY_PAGE_SIZE) { output.addAll(it) }
+        }
+        return output
+    }
+
+    private suspend fun propfindPages(
+        path: String,
+        depth: Int,
+        pageSize: Int,
+        onPage: suspend (List<RemoteNode>) -> Unit,
+    ) {
         val xml = """<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:"><d:prop><d:displayname/><d:resourcetype/><d:getcontentlength/><d:getlastmodified/><d:getetag/></d:prop></d:propfind>"""
         execute(
             "PROPFIND",
@@ -233,7 +255,7 @@ private class WebDavRemoteFileSystem(
         ).use { response ->
             if (response.code != 207 && !response.isSuccessful) throw mapDavError(DavHttpException(response.code))
             val body = response.body ?: throw RemoteAccessException.Protocol(IllegalStateException("WebDAV PROPFIND returned no body"))
-            return parseMultiStatus(body.byteStream())
+            parseMultiStatusPages(body.byteStream(), pageSize, onPage)
         }
     }
 
@@ -252,7 +274,9 @@ private class WebDavRemoteFileSystem(
                     copy = "COPY" in allow,
                 )
             }
-        } catch (_: Throwable) {
+        } catch (error: Throwable) {
+            // TLS/certificate identity failures must remain visible to the test/connect workflow.
+            if (mapDavError(error) is RemoteAccessException.Certificate) throw mapDavError(error)
             DavCapabilities.minimum()
         }
     }
@@ -299,8 +323,12 @@ private class WebDavRemoteFileSystem(
         return RemotePath.normalize("/" + remoteSegments.joinToString("/"))
     }
 
-    private fun parseMultiStatus(stream: InputStream): List<RemoteNode> {
-        val output = mutableListOf<RemoteNode>()
+    private suspend fun parseMultiStatusPages(
+        stream: InputStream,
+        pageSize: Int,
+        onPage: suspend (List<RemoteNode>) -> Unit,
+    ) {
+        val page = ArrayList<RemoteNode>(pageSize)
         val factory = SAXParserFactory.newInstance().apply { isNamespaceAware = true }
         runCatching { factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true) }
         runCatching { factory.setFeature("http://xml.org/sax/features/external-general-entities", false) }
@@ -335,14 +363,20 @@ private class WebDavRemoteFileSystem(
                         val item = current
                         val remotePath = item?.href?.let(::pathFromHref)
                         if (item != null && remotePath != null) {
-                            output += RemoteNode(
+                            page += RemoteNode(
                                 path = remotePath,
                                 name = item.displayName?.takeIf(String::isNotBlank) ?: RemotePath.name(remotePath),
                                 directory = item.directory,
                                 sizeBytes = if (item.directory) null else item.size,
                                 modifiedAtMillis = item.modified,
+                                hidden = (item.displayName ?: RemotePath.name(remotePath)).startsWith('.'),
                                 revision = item.etag ?: if (item.size != null || item.modified != null) "webdav:size=${item.size ?: -1};mtime=${item.modified ?: -1}" else null,
                             )
+                            if (page.size == pageSize) {
+                                val ready = page.toList()
+                                page.clear()
+                                kotlinx.coroutines.runBlocking { onPage(ready) }
+                            }
                         }
                         current = null
                     }
@@ -353,10 +387,10 @@ private class WebDavRemoteFileSystem(
         }
         try {
             stream.use { factory.newSAXParser().parse(it, handler) }
+            if (page.isNotEmpty()) onPage(page.toList())
         } catch (error: Throwable) {
             throw RemoteAccessException.Protocol(error)
         }
-        return output
     }
 
     private fun parseHttpDate(value: String): Long? = runCatching {
@@ -436,40 +470,58 @@ private class StreamingDavOutputStream(
 
 private class DavHttpException(val code: Int) : IOException("WebDAV HTTP $code")
 
-private class PinnedDelegatingTrustManager(expectedSha256: String) : X509TrustManager {
-    private val delegate: X509TrustManager = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm()).run {
-        init(null as java.security.KeyStore?)
-        trustManagers.filterIsInstance<X509TrustManager>().firstOrNull()
-            ?: throw CertificateException("System X509 trust manager unavailable")
-    }
-    private val expected = normalizeFingerprint(expectedSha256)
+/**
+ * Per-connection pin trust. It intentionally accepts a currently valid self-signed leaf when its
+ * SHA-256 pin matches; OkHttp's normal hostname verifier still validates the endpoint name.
+ */
+private class PinnedLeafTrustManager(expectedSha256: String) : X509TrustManager {
+    private val expected = expectedSha256
+    private val pin = CertificatePinPolicy(expectedSha256)
 
-    override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = delegate.checkClientTrusted(chain, authType)
+    override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
 
     override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {
-        delegate.checkServerTrusted(chain, authType)
         val leaf = chain?.firstOrNull() ?: throw CertificateException("Missing server certificate")
-        val actual = MessageDigest.getInstance("SHA-256").digest(leaf.encoded).joinToString("") { "%02x".format(it) }
-        if (actual != expected) throw CertificateException("Server certificate fingerprint changed")
+        leaf.checkValidity()
+        if (!pin.matches(leaf.encoded)) {
+            throw PinnedWebDavCertificateException(expected, CertificatePinPolicy.display(leaf.encoded))
+        }
     }
 
-    override fun getAcceptedIssuers(): Array<X509Certificate> = delegate.acceptedIssuers
-
-    private fun normalizeFingerprint(value: String): String = value.filter(Char::isLetterOrDigit).lowercase().removePrefix("sha256")
+    override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
 }
 
-private fun mapDavError(error: Throwable): RemoteAccessException = when (error) {
-    is RemoteAccessException -> error
-    is DavHttpException -> when (error.code) {
-        401 -> RemoteAccessException.AuthenticationFailed(error)
-        403 -> RemoteAccessException.PermissionDenied(error)
-        408, 504 -> RemoteAccessException.Timeout(error)
+private class PinnedWebDavCertificateException(
+    val expected: String,
+    val observed: String,
+) : CertificateException("Server certificate fingerprint changed")
+
+private fun findPinnedWebDavCertificateFailure(error: Throwable): PinnedWebDavCertificateException? {
+    var current: Throwable? = error
+    while (current != null) {
+        if (current is PinnedWebDavCertificateException) return current
+        current = current.cause
+    }
+    return null
+}
+
+private fun mapDavError(error: Throwable): RemoteAccessException {
+    findPinnedWebDavCertificateFailure(error)?.let { pin ->
+        return RemoteAccessException.Certificate(error, expected = pin.expected, observed = pin.observed)
+    }
+    return when (error) {
+        is RemoteAccessException -> error
+        is DavHttpException -> when (error.code) {
+            401 -> RemoteAccessException.AuthenticationFailed(error)
+            403 -> RemoteAccessException.PermissionDenied(error)
+            408, 504 -> RemoteAccessException.Timeout(error)
+            else -> RemoteAccessException.Protocol(error)
+        }
+        is SSLHandshakeException, is CertificateException -> RemoteAccessException.Certificate(error)
+        is SocketTimeoutException -> RemoteAccessException.Timeout(error)
+        is ConnectException -> RemoteAccessException.HostUnreachable(error)
+        is SecurityException -> RemoteAccessException.PermissionDenied(error)
+        is IOException -> RemoteAccessException.Protocol(error)
         else -> RemoteAccessException.Protocol(error)
     }
-    is SSLHandshakeException, is CertificateException -> RemoteAccessException.Certificate(error)
-    is SocketTimeoutException -> RemoteAccessException.Timeout(error)
-    is ConnectException -> RemoteAccessException.HostUnreachable(error)
-    is SecurityException -> RemoteAccessException.PermissionDenied(error)
-    is IOException -> RemoteAccessException.Protocol(error)
-    else -> RemoteAccessException.Protocol(error)
 }
