@@ -33,6 +33,8 @@ import com.zz.filemanager.feature.search.SearchViewModel
 import com.zz.filemanager.feature.library.FavoritesScreen
 import com.zz.filemanager.feature.library.RecentScreen
 import com.zz.filemanager.feature.library.LibraryViewModel
+import com.zz.filemanager.feature.remote.RemoteLocationsScreen
+import com.zz.filemanager.feature.remote.RemoteLocationsViewModel
 import com.zz.filemanager.feature.trash.RecycleBinScreen
 import com.zz.filemanager.feature.trash.RecycleBinViewModel
 import com.zz.filemanager.core.library.FavoriteItem
@@ -54,7 +56,7 @@ fun ZZFileManagerApp(container: AppContainer) {
         val nav = rememberNavController()
         val context = LocalContext.current
         val scope = rememberCoroutineScope()
-        fun openLocation(location: com.zz.filemanager.core.model.BrowserLocation) {
+        fun openLocation(location: BrowserLocation) {
             nav.navigate("browser?location=${Uri.encode(BrowserLocationCodec.encode(location))}")
         }
         fun requestBroadAccess() {
@@ -115,6 +117,7 @@ fun ZZFileManagerApp(container: AppContainer) {
                     onOpenFavorites = { nav.navigate("favorites") },
                     onOpenRecent = { nav.navigate("recent") },
                     onOpenTrash = { nav.navigate("recycle") },
+                    onOpenRemote = { nav.navigate("remote") },
                 )
             }
             composable(
@@ -234,6 +237,14 @@ fun ZZFileManagerApp(container: AppContainer) {
             composable("recycle") {
                 val vm: RecycleBinViewModel = viewModel(factory = RecycleBinViewModel.Factory(container.userLibrary, container.trashManager, container.mediaStoreTrash, container.storage))
                 RecycleBinScreen(vm, onBack = { nav.popBackStack() })
+            }
+            composable("remote") {
+                val vm: RemoteLocationsViewModel = viewModel(factory = RemoteLocationsViewModel.Factory(container.remoteConnectionService))
+                RemoteLocationsScreen(
+                    viewModel = vm,
+                    onBack = { nav.popBackStack() },
+                    onOpenLocation = ::openLocation,
+                )
             }
             composable("settings") {
                 val vm: SettingsViewModel = viewModel(factory = SettingsViewModel.Factory(container.storage, container.preferences))

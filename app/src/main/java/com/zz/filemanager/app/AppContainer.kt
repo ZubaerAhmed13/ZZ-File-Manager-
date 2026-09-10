@@ -19,6 +19,7 @@ import com.zz.filemanager.core.remote.AndroidKeystoreCredentialStore
 import com.zz.filemanager.core.remote.FtpRemoteFileSystemFactory
 import com.zz.filemanager.core.remote.NetworkConnectionManager
 import com.zz.filemanager.core.remote.NetworkConnectionRepository
+import com.zz.filemanager.core.remote.RemoteConnectionService
 import com.zz.filemanager.core.remote.RemoteFileSystemFactoryRegistry
 import com.zz.filemanager.core.remote.RemoteProviderCoordinator
 import com.zz.filemanager.core.remote.SftpRemoteFileSystemFactory
@@ -53,6 +54,13 @@ class AppContainer(context: Context) {
     val storage = StorageRepository(appContext, preferences)
     val remoteProviders = RemoteProviderCoordinator(storage, networkConnections, secureCredentials, remoteFileSystems)
     val networkConnectionManager = NetworkConnectionManager(networkConnections, secureCredentials)
+    val remoteConnectionService = RemoteConnectionService(
+        networkConnections,
+        networkConnectionManager,
+        secureCredentials,
+        remoteFileSystems,
+        remoteProviders,
+    )
 
     init {
         // Rebuild runtime provider registrations synchronously from non-secret metadata. No network

@@ -67,6 +67,8 @@ import com.zz.filemanager.Step4ToolsActivity
 import com.zz.filemanager.core.model.BrowserLocation
 import com.zz.filemanager.core.model.MediaCategory
 import com.zz.filemanager.core.model.StorageLocation
+import com.zz.filemanager.core.model.StorageType
+import com.zz.filemanager.core.storage.SafLocationKind
 import com.zz.filemanager.core.util.Formatters
 
 @Composable
@@ -78,14 +80,23 @@ fun HomeScreen(
     onOpenFavorites: () -> Unit,
     onOpenRecent: () -> Unit,
     onOpenTrash: () -> Unit,
+    onOpenRemote: () -> Unit,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var pendingCategory by remember { mutableStateOf<MediaCategory?>(null) }
+    var pendingSafKind by remember { mutableStateOf(SafLocationKind.GENERIC) }
+    var reconnectTarget by remember { mutableStateOf<BrowserLocation?>(null) }
 
     val treeLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
-        if (uri != null) viewModel.addSafLocation(uri)
+        val reconnect = reconnectTarget
+        reconnectTarget = null
+        if (uri != null) {
+            if (reconnect != null) viewModel.reconnectSafLocation(reconnect, uri)
+            else viewModel.addSafLocation(uri, pendingSafKind)
+        }
+        pendingSafKind = SafLocationKind.GENERIC
     }
     val mediaPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         val category = pendingCategory
@@ -153,6 +164,15 @@ fun HomeScreen(
         }
     }
 
+    fun addSaf(kind: SafLocationKind) {
+        pendingSafKind = kind
+        reconnectTarget = null
+        treeLauncher.launch(null)
+    }
+
+    val localLocations = state.storageLocations.filter { it.type !in setOf(StorageType.NETWORK, StorageType.CLOUD) }
+    val remoteLocations = state.storageLocations.filter { it.type in setOf(StorageType.NETWORK, StorageType.CLOUD) }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -199,18 +219,37 @@ fun HomeScreen(
                     }
                 }
                 if (!state.broadStorageAccess) item { PermissionCard(::requestBroadAccess) }
-                item { SectionTitle(stringResource(R.string.storage)) }
-                items(state.storageLocations, key = { it.id }) { StorageCard(it, onOpenLocation) }
+
+                item { SectionTitle("Local & Removable") }
+                items(localLocations, key = { it.id }) { StorageCard(it, onOpenLocation) }
                 item {
-                    Button(
-                        onClick = { treeLauncher.launch(null) },
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                    ) {
-                        Icon(Icons.Default.FolderOpen, null)
-                        Spacer(Modifier.padding(4.dp))
-                        Text(stringResource(R.string.add_location))
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                        TextButton(onClick = { addSaf(SafLocationKind.SD_CARD) }) { Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.Storage, null); Text("Add SD") } }
+                        TextButton(onClick = { addSaf(SafLocationKind.USB) }) { Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.Storage, null); Text("Add USB") } }
+                        TextButton(onClick = { addSaf(SafLocationKind.GENERIC) }) { Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.FolderOpen, null); Text("Add folder") } }
                     }
                 }
+                state.safLocations.filterNot { it.readable }.forEach { missing ->
+                    item(key = "reconnect:${missing.storageId}") {
+                        Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
+                            Column(Modifier.padding(16.dp)) {
+                                Text(missing.displayName, style = MaterialTheme.typography.titleMedium)
+                                Text("Unavailable or permission lost", color = MaterialTheme.colorScheme.error)
+                                TextButton(onClick = { reconnectTarget = missing; treeLauncher.launch(null) }) { Text("Locate / Reconnect") }
+                            }
+                        }
+                    }
+                }
+
+                item { SectionTitle("Remote") }
+                item {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                        TextButton(onClick = onOpenRemote) { Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.Storage, null); Text("Network") } }
+                        TextButton(onClick = { addSaf(SafLocationKind.CLOUD) }) { Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.FolderOpen, null); Text("Cloud") } }
+                    }
+                }
+                items(remoteLocations, key = { it.id }) { StorageCard(it, onOpenLocation) }
+
                 item { SectionTitle(stringResource(R.string.categories)) }
                 item {
                     Row(
@@ -275,6 +314,9 @@ private fun StorageCard(storage: StorageLocation, onOpen: (BrowserLocation) -> U
                 Icon(Icons.Default.Storage, null)
                 Spacer(Modifier.padding(4.dp))
                 Text(storage.displayName, style = MaterialTheme.typography.titleMedium)
+            }
+            if (!storage.available || !storage.readable) {
+                Text("Unavailable", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             }
             val total = storage.totalBytes
             val used = storage.usedBytes

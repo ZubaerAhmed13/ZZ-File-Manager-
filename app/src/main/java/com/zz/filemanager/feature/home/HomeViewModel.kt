@@ -8,6 +8,7 @@ import com.zz.filemanager.core.model.BrowserLocation
 import com.zz.filemanager.core.model.HomeUiState
 import com.zz.filemanager.core.model.MediaCategory
 import com.zz.filemanager.core.preferences.PreferencesRepository
+import com.zz.filemanager.core.storage.SafLocationKind
 import com.zz.filemanager.core.storage.StorageRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -41,9 +42,16 @@ class HomeViewModel(
         }
     }
 
-    fun addSafLocation(uri: Uri) {
+    fun addSafLocation(uri: Uri, kind: SafLocationKind = SafLocationKind.GENERIC) {
         viewModelScope.launch {
-            runCatching { storage.registerSafLocation(uri) }
+            runCatching { storage.registerSafLocation(uri, kind) }
+            refresh()
+        }
+    }
+
+    fun reconnectSafLocation(saved: BrowserLocation, uri: Uri) {
+        viewModelScope.launch {
+            runCatching { storage.reconnectSafLocation(saved, uri) }
             refresh()
         }
     }
