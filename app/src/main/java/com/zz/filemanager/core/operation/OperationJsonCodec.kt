@@ -100,6 +100,9 @@ object OperationJsonCodec {
         putNullable("failure", item.failure?.let(::failureToJson))
         putNullable("resultReference", item.resultReference?.let(::scopedToJson))
         putNullable("partialOutput", item.partialOutput?.let(::scopedToJson))
+        putNullable("resumeSourceIdentity", item.resumeSourceIdentity)
+        putNullable("resumeStagedIdentity", item.resumeStagedIdentity)
+        put("resumeOffset", item.resumeOffset)
         putNullable("batchRenameTemporaryName", item.batchRenameTemporaryName)
         put("batchRenamePhase", item.batchRenamePhase.name)
         put("replacePhase", item.replacePhase.name)
@@ -122,6 +125,9 @@ object OperationJsonCodec {
         failure = json.objectOrNull("failure")?.let(::failureFromJson),
         resultReference = json.objectOrNull("resultReference")?.let(::scopedFromJson),
         partialOutput = json.objectOrNull("partialOutput")?.let(::scopedFromJson),
+        resumeSourceIdentity = json.stringOrNull("resumeSourceIdentity"),
+        resumeStagedIdentity = json.stringOrNull("resumeStagedIdentity"),
+        resumeOffset = json.optLong("resumeOffset", 0L),
         batchRenameTemporaryName = json.stringOrNull("batchRenameTemporaryName"),
         batchRenamePhase = json.stringOrNull("batchRenamePhase")?.let(BatchRenamePhase::valueOf) ?: BatchRenamePhase.ORIGINAL,
         replacePhase = json.stringOrNull("replacePhase")?.let(ReplacePhase::valueOf) ?: ReplacePhase.NONE,
