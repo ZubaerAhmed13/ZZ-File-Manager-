@@ -1,11 +1,12 @@
 package com.zz.filemanager.core.remote
 
-import com.sun.net.httpserver.HttpExchange
-import com.sun.net.httpserver.HttpServer
-import java.net.InetSocketAddress
 import java.net.URI
 import java.nio.charset.StandardCharsets
-import java.util.concurrent.Executors
+import okhttp3.mockwebserver.Dispatcher
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.RecordedRequest
+import okio.Buffer
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -77,81 +78,71 @@ private class DisposableWebDavServer : AutoCloseable {
     private data class Node(val directory: Boolean, var bytes: ByteArray = ByteArray(0))
 
     private val nodes = linkedMapOf("/" to Node(directory = true))
-    private val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
-        executor = Executors.newCachedThreadPool()
-        createContext("/") { exchange -> handle(exchange) }
+    private val server = MockWebServer().apply {
+        dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = handle(request)
+        }
         start()
     }
-    val port: Int get() = server.address.port
+
+    val port: Int get() = server.port
 
     override fun close() {
-        server.stop(0)
-        (server.executor as? java.util.concurrent.ExecutorService)?.shutdownNow()
+        server.shutdown()
     }
 
-    private fun handle(exchange: HttpExchange) {
-        try {
-            val path = normalize(exchange.requestURI.path)
-            when (exchange.requestMethod.uppercase()) {
-                "OPTIONS" -> {
-                    exchange.responseHeaders.add("DAV", "1,2")
-                    exchange.responseHeaders.add("Allow", "OPTIONS, PROPFIND, GET, PUT, MKCOL, DELETE, MOVE, COPY")
-                    send(exchange, 200)
-                }
-                "PROPFIND" -> propfind(exchange, path)
-                "MKCOL" -> {
-                    nodes[path] = Node(directory = true)
-                    send(exchange, 201)
-                }
-                "PUT" -> {
-                    nodes[path] = Node(directory = false, bytes = exchange.requestBody.use { it.readBytes() })
-                    send(exchange, 201)
-                }
-                "GET" -> {
-                    val node = nodes[path]
-                    if (node == null || node.directory) send(exchange, 404)
-                    else send(exchange, 200, node.bytes, "application/octet-stream")
-                }
-                "MOVE" -> {
-                    val destination = destinationPath(exchange)
-                    val node = nodes.remove(path)
-                    if (node == null) send(exchange, 404)
-                    else {
-                        nodes[destination] = node
-                        moveDescendants(path, destination)
-                        send(exchange, 201)
-                    }
-                }
-                "COPY" -> {
-                    val destination = destinationPath(exchange)
-                    val node = nodes[path]
-                    if (node == null) send(exchange, 404)
-                    else {
-                        nodes[destination] = Node(node.directory, node.bytes.copyOf())
-                        send(exchange, 201)
-                    }
-                }
-                "DELETE" -> {
-                    nodes.remove(path)
-                    nodes.keys.filter { it.startsWith(path.trimEnd('/') + "/") }.toList().forEach(nodes::remove)
-                    send(exchange, 204)
-                }
-                else -> send(exchange, 405)
+    @Synchronized
+    private fun handle(request: RecordedRequest): MockResponse {
+        val path = requestPath(request)
+        return when (request.method?.uppercase()) {
+            "OPTIONS" -> response(200)
+                .addHeader("DAV", "1,2")
+                .addHeader("Allow", "OPTIONS, PROPFIND, GET, PUT, MKCOL, DELETE, MOVE, COPY")
+            "PROPFIND" -> propfind(request, path)
+            "MKCOL" -> {
+                nodes[path] = Node(directory = true)
+                response(201)
             }
-        } catch (_: Throwable) {
-            runCatching { send(exchange, 500) }
-        } finally {
-            exchange.close()
+            "PUT" -> {
+                nodes[path] = Node(directory = false, bytes = request.body.readByteArray())
+                response(201)
+            }
+            "GET" -> {
+                val node = nodes[path]
+                if (node == null || node.directory) response(404)
+                else response(200, node.bytes, "application/octet-stream")
+            }
+            "MOVE" -> {
+                val destination = destinationPath(request)
+                val node = nodes.remove(path)
+                if (node == null) response(404)
+                else {
+                    nodes[destination] = node
+                    moveDescendants(path, destination)
+                    response(201)
+                }
+            }
+            "COPY" -> {
+                val destination = destinationPath(request)
+                val node = nodes[path]
+                if (node == null) response(404)
+                else {
+                    nodes[destination] = Node(node.directory, node.bytes.copyOf())
+                    response(201)
+                }
+            }
+            "DELETE" -> {
+                nodes.remove(path)
+                nodes.keys.filter { it.startsWith(path.trimEnd('/') + "/") }.toList().forEach(nodes::remove)
+                response(204)
+            }
+            else -> response(405)
         }
     }
 
-    private fun propfind(exchange: HttpExchange, path: String) {
-        val node = nodes[path]
-        if (node == null) {
-            send(exchange, 404)
-            return
-        }
-        val depth = exchange.requestHeaders.getFirst("Depth") ?: "0"
+    private fun propfind(request: RecordedRequest, path: String): MockResponse {
+        val node = nodes[path] ?: return response(404)
+        val depth = request.getHeader("Depth") ?: "0"
         val selected = buildList {
             add(path to node)
             if (depth == "1") {
@@ -172,11 +163,16 @@ private class DisposableWebDavServer : AutoCloseable {
             }
             append("</d:multistatus>")
         }.toByteArray(StandardCharsets.UTF_8)
-        send(exchange, 207, xml, "application/xml; charset=utf-8")
+        return response(207, xml, "application/xml; charset=utf-8")
     }
 
-    private fun destinationPath(exchange: HttpExchange): String {
-        val raw = exchange.requestHeaders.getFirst("Destination") ?: error("Destination required")
+    private fun requestPath(request: RecordedRequest): String {
+        val encoded = request.path ?: "/"
+        return normalize(URI("http://localhost$encoded").path)
+    }
+
+    private fun destinationPath(request: RecordedRequest): String {
+        val raw = request.getHeader("Destination") ?: error("Destination required")
         return normalize(URI(raw).path)
     }
 
@@ -202,13 +198,10 @@ private class DisposableWebDavServer : AutoCloseable {
         .replace(">", "&gt;")
         .replace("\"", "&quot;")
 
-    private fun send(exchange: HttpExchange, code: Int, body: ByteArray = ByteArray(0), contentType: String? = null) {
-        contentType?.let { exchange.responseHeaders.set("Content-Type", it) }
-        if (code == 204) {
-            exchange.sendResponseHeaders(code, -1L)
-            return
-        }
-        exchange.sendResponseHeaders(code, body.size.toLong())
-        if (body.isNotEmpty()) exchange.responseBody.write(body)
+    private fun response(code: Int, body: ByteArray = ByteArray(0), contentType: String? = null): MockResponse {
+        val response = MockResponse().setResponseCode(code)
+        contentType?.let { response.addHeader("Content-Type", it) }
+        if (body.isNotEmpty()) response.setBody(Buffer().write(body))
+        return response
     }
 }
