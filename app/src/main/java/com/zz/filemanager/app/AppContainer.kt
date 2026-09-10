@@ -17,6 +17,7 @@ import com.zz.filemanager.core.operation.android.AndroidOperationExecutionHost
 import com.zz.filemanager.core.preferences.PreferencesRepository
 import com.zz.filemanager.core.remote.AndroidKeystoreCredentialStore
 import com.zz.filemanager.core.remote.FtpRemoteFileSystemFactory
+import com.zz.filemanager.core.remote.LanDiscoveryService
 import com.zz.filemanager.core.remote.NetworkConnectionManager
 import com.zz.filemanager.core.remote.NetworkConnectionRepository
 import com.zz.filemanager.core.remote.RemoteConnectionService
@@ -61,6 +62,7 @@ class AppContainer(context: Context) {
         remoteFileSystems,
         remoteProviders,
     )
+    val lanDiscovery = LanDiscoveryService(appContext)
 
     init {
         // Rebuild runtime provider registrations synchronously from non-secret metadata. No network
