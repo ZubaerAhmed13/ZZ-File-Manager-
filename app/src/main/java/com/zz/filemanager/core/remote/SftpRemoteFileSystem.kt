@@ -1,10 +1,12 @@
 package com.zz.filemanager.core.remote
 
+import com.hierynomus.sshj.sftp.RemoteResourceSelector
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.common.Buffer
 import net.schmizz.sshj.sftp.FileAttributes
 import net.schmizz.sshj.sftp.OpenMode
 import net.schmizz.sshj.sftp.RemoteFile
+import net.schmizz.sshj.sftp.RemoteResourceInfo
 import net.schmizz.sshj.sftp.SFTPClient
 import net.schmizz.sshj.transport.verification.HostKeyVerifier
 import net.schmizz.sshj.userauth.UserAuthException
@@ -124,24 +126,39 @@ private class SftpRemoteFileSystem(
         stableIdentity = false,
     )
 
-    override fun list(path: String): List<RemoteNode> = try {
-        sftp.ls(RemotePath.normalize(path))
-            .asSequence()
-            .filterNot { it.name == "." || it.name == ".." }
-            .map { info ->
-                val attrs = info.attributes
-                RemoteNode(
-                    path = RemotePath.normalize(info.path),
-                    name = info.name,
-                    directory = info.isDirectory,
-                    sizeBytes = if (info.isDirectory) null else attrs.getSizeOrNull(),
-                    modifiedAtMillis = attrs.getModifiedMillisOrNull(),
-                    revision = attrs.revisionToken(),
-                )
+    override fun list(path: String): List<RemoteNode> {
+        val output = ArrayList<RemoteNode>()
+        kotlinx.coroutines.runBlocking {
+            listPages(path, RemoteFileSystem.MAX_REMOTE_DIRECTORY_PAGE_SIZE) { output.addAll(it) }
+        }
+        return output
+    }
+
+    /**
+     * SSHJ's RemoteDirectory.scan reads SFTP READDIR packets incrementally. A selector returning
+     * CONTINUE prevents SSHJ from accumulating its own result list; pages are emitted as packets are
+     * decoded, keeping memory bounded for very large directories.
+     */
+    override suspend fun listPages(path: String, pageSize: Int, onPage: suspend (List<RemoteNode>) -> Unit) {
+        require(pageSize in 1..RemoteFileSystem.MAX_REMOTE_DIRECTORY_PAGE_SIZE)
+        val normalized = RemotePath.normalize(path)
+        val page = ArrayList<RemoteNode>(pageSize)
+        try {
+            sftp.sftpEngine.openDir(normalized).use { directory ->
+                directory.scan(RemoteResourceSelector { info ->
+                    page += info.toNode()
+                    if (page.size == pageSize) {
+                        val ready = page.toList()
+                        page.clear()
+                        kotlinx.coroutines.runBlocking { onPage(ready) }
+                    }
+                    RemoteResourceSelector.Result.CONTINUE
+                })
             }
-            .toList()
-    } catch (error: Throwable) {
-        throw mapSftpError(error)
+            if (page.isNotEmpty()) onPage(page.toList())
+        } catch (error: Throwable) {
+            throw mapSftpError(error)
+        }
     }
 
     override fun stat(path: String): RemoteNode? = try {
@@ -207,6 +224,19 @@ private class SftpRemoteFileSystem(
         runCatching { ssh.disconnect() }
         runCatching { ssh.close() }
     }
+}
+
+private fun RemoteResourceInfo.toNode(): RemoteNode {
+    val attrs = attributes
+    return RemoteNode(
+        path = RemotePath.normalize(path),
+        name = name,
+        directory = isDirectory,
+        sizeBytes = if (isDirectory) null else attrs.getSizeOrNull(),
+        modifiedAtMillis = attrs.getModifiedMillisOrNull(),
+        hidden = name.startsWith('.'),
+        revision = attrs.revisionToken(),
+    )
 }
 
 private class ClosingRemoteInputStream(input: InputStream, private val remote: RemoteFile) : FilterInputStream(input) {
