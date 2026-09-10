@@ -70,7 +70,7 @@ class SftpRemoteFileSystemFactory : RemoteFileSystemFactory {
     }
 }
 
-private class PinnedSha256HostKeyVerifier(private val expectedRaw: String?) : HostKeyVerifier {
+internal class PinnedSha256HostKeyVerifier(private val expectedRaw: String?) : HostKeyVerifier {
     @Volatile private var observed: String? = null
     @Volatile private var algorithm: String? = null
 

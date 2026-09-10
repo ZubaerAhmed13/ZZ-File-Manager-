@@ -205,21 +205,15 @@ private class FtpRemoteFileSystem(private val client: FTPClient) : RemoteFileSys
 
 /** Explicit per-connection trust decision: only the pinned leaf certificate is accepted. */
 private class PinnedCertificateTrustManager(expectedSha256: String) : X509TrustManager {
-    private val expected = normalizeFingerprint(expectedSha256)
+    private val pin = CertificatePinPolicy(expectedSha256)
 
     override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
 
     override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {
         val certificate = chain?.firstOrNull() ?: throw CertificateException("Missing server certificate")
         certificate.checkValidity()
-        val actual = sha256(certificate.encoded)
-        if (actual != expected) throw CertificateException("Server certificate fingerprint changed")
+        if (!pin.matches(certificate.encoded)) throw CertificateException("Server certificate fingerprint changed")
     }
 
     override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
-
-    companion object {
-        private fun normalizeFingerprint(value: String): String = value.filter(Char::isLetterOrDigit).lowercase()
-        private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
-    }
 }
