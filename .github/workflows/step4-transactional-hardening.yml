@@ -22,35 +22,15 @@ jobs:
         shell: bash
         run: |
           python3 - <<'PY'
+          import base64
           from pathlib import Path
-
           path = Path('app/src/main/java/com/zz/filemanager/core/archive/ArchiveManager.kt')
           text = path.read_text()
           function_start = text.index('    suspend fun create(\n')
           body_start = text.index('        val provider = providers.writableProviderFor(request.destination.providerId)', function_start)
           function_end = text.index('\n    }\n\n    private suspend fun listZip', body_start)
-
-          replacement = '''        val result = safeWriter.writeGenerated(
-              parent = request.destination,
-              requestedName = request.archiveName,
-              mimeType = archiveMime(request.format),
-              expectedBytes = null,
-              collisionPolicy = CollisionPolicy.KEEP_BOTH,
-          ) { raw ->
-              when (request.format) {
-                  ArchiveFormat.ZIP -> createZip(raw, request, onProgress)
-                  ArchiveFormat.TAR, ArchiveFormat.TAR_GZ, ArchiveFormat.TAR_BZ2, ArchiveFormat.TAR_XZ -> createTar(raw, request, onProgress)
-                  else -> error("validated above")
-              }
-          }
-          when (result) {
-              is com.zz.filemanager.core.step4.SafeWriteResult.Written -> result.entry
-              is com.zz.filemanager.core.step4.SafeWriteResult.Skipped ->
-                  throw IllegalStateException("Keep Both archive creation unexpectedly skipped output")
-          }
-'''
-          updated = text[:body_start] + replacement + text[function_end:]
-          path.write_text(updated)
+          replacement = base64.b64decode('ICAgICAgICB2YWwgcmVzdWx0ID0gc2FmZVdyaXRlci53cml0ZUdlbmVyYXRlZCgKICAgICAgICAgICAgcGFyZW50ID0gcmVxdWVzdC5kZXN0aW5hdGlvbiwKICAgICAgICAgICAgcmVxdWVzdGVkTmFtZSA9IHJlcXVlc3QuYXJjaGl2ZU5hbWUsCiAgICAgICAgICAgIG1pbWVUeXBlID0gYXJjaGl2ZU1pbWUocmVxdWVzdC5mb3JtYXQpLAogICAgICAgICAgICBleHBlY3RlZEJ5dGVzID0gbnVsbCwKICAgICAgICAgICAgY29sbGlzaW9uUG9saWN5ID0gQ29sbGlzaW9uUG9saWN5LktFRVBfQk9USCwKICAgICAgICApIHsgcmF3IC0+CiAgICAgICAgICAgIHdoZW4gKHJlcXVlc3QuZm9ybWF0KSB7CiAgICAgICAgICAgICAgICBBcmNoaXZlRm9ybWF0LlpJUCAtPiBjcmVhdGVaaXAocmF3LCByZXF1ZXN0LCBvblByb2dyZXNzKQogICAgICAgICAgICAgICAgQXJjaGl2ZUZvcm1hdC5UQVIsIEFyY2hpdmVGb3JtYXQuVEFSX0daLCBBcmNoaXZlRm9ybWF0LlRBUl9CWjIsIEFyY2hpdmVGb3JtYXQuVEFSX1haIC0+IGNyZWF0ZVRhcihyYXcsIHJlcXVlc3QsIG9uUHJvZ3Jlc3MpCiAgICAgICAgICAgICAgICBlbHNlIC0+IGVycm9yKCJ2YWxpZGF0ZWQgYWJvdmUiKQogICAgICAgICAgICB9CiAgICAgICAgfQogICAgICAgIHdoZW4gKHJlc3VsdCkgewogICAgICAgICAgICBpcyBjb20uenouZmlsZW1hbmFnZXIuY29yZS5zdGVwNC5TYWZlV3JpdGVSZXN1bHQuV3JpdHRlbiAtPiByZXN1bHQuZW50cnkKICAgICAgICAgICAgaXMgY29tLnp6LmZpbGVtYW5hZ2VyLmNvcmUuc3RlcDQuU2FmZVdyaXRlUmVzdWx0LlNraXBwZWQgLT4KICAgICAgICAgICAgICAgIHRocm93IElsbGVnYWxTdGF0ZUV4Y2VwdGlvbigiS2VlcCBCb3RoIGFyY2hpdmUgY3JlYXRpb24gdW5leHBlY3RlZGx5IHNraXBwZWQgb3V0cHV0IikKICAgICAgICB9Cg==').decode()
+          path.write_text(text[:body_start] + replacement + text[function_end:])
           PY
           git config user.name 'Zubaer Ahmed'
           git config user.email 'zubaerknight@gmail.com'
