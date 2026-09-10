@@ -2,15 +2,32 @@ package com.zz.filemanager
 
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
-import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.test.platform.app.InstrumentationRegistry
+import com.zz.filemanager.core.preferences.PreferencesRepository
+import kotlinx.coroutines.runBlocking
 import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.ExternalResource
+import org.junit.rules.RuleChain
 
 class MainActivityTest {
-    @get:Rule val composeRule = createAndroidComposeRule<MainActivity>()
+    private val resetLaunchStateRule = object : ExternalResource() {
+        override fun before() {
+            val context = InstrumentationRegistry.getInstrumentation().targetContext
+            runBlocking { PreferencesRepository(context).clearLastLocation() }
+        }
+    }
+
+    private val composeRule = createAndroidComposeRule<MainActivity>()
+
+    @get:Rule
+    val ruleChain: RuleChain = RuleChain
+        .outerRule(resetLaunchStateRule)
+        .around(composeRule)
 
     @Test fun homeRendersWithoutPhysicalDeviceDependency() {
         composeRule.onNodeWithText("ZZ File Manager").assertIsDisplayed()
