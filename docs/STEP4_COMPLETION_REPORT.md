@@ -84,6 +84,19 @@ A handled pre-commit failure/cancellation removes only the hidden stage. Process
 
 Step 4 does not introduce a public hard maximum such as 2 GiB or 4 GiB. Sizes and counters use `Long`; streaming/bounded algorithms are used where practical; random-access formats may use capacity-checked temporary staging. Tests include logical 3 GiB, 10 GiB, 20 GiB and 30 GiB values and a 100,000-entry analyzer workload to catch regression toward `Int`-bounded assumptions.
 
+## Documentation set
+
+The Step 4 branch contains the complete Step 4 documentation set:
+
+- `STEP4_ARCHITECTURE.md` — architecture, subsystem boundaries and data-flow design;
+- `STEP4_SECURITY.md` — threat model, trust boundaries, transactional/recovery security invariants and residual-risk contract;
+- `STEP4_IMPLEMENTATION.md` — source map, service wiring, subsystem implementation flows and provider requirements;
+- `STEP4_FEATURE_MATRIX.md` — implemented capability/status matrix;
+- `STEP4_TEST_MATRIX.md` — executable certification and blocker-coverage contract;
+- `STEP4_COMPLETION_REPORT.md` — completion and exact-head acceptance record.
+
+`STEP4_SECURITY.md` and `STEP4_IMPLEMENTATION.md` are required Step 4 deliverables, not optional supplementary notes.
+
 ## Certification assets
 
 The branch contains:
@@ -93,9 +106,10 @@ The branch contains:
 - `Step4CoreBehaviorInstrumentationTest` for actual file-engine/archive/APK/media/safe-write behavior;
 - transactional blocker regressions that prove hidden fresh staging, process-death cleanup for a logical 20 GiB fresh output, rejection of a same-size wrong-content final during recovery, generated/archive failure visibility safety, interrupted complete-split cleanup, and successful complete-split finalization with a manifest;
 - CI that builds debug and release variants, runs JVM tests, lint, instrumentation compilation and API-35 connected instrumentation;
-- zero-skipped-test enforcement for JVM and Android test XML.
+- zero-skipped-test enforcement for JVM and Android test XML;
+- the complete architecture/security/implementation/feature/test/completion documentation set listed above.
 
-See `STEP4_TEST_MATRIX.md` for the exact coverage contract.
+See `STEP4_TEST_MATRIX.md` for the exact coverage contract and `STEP4_SECURITY.md` for the security acceptance model.
 
 ## Dependency compatibility correction
 
@@ -109,9 +123,11 @@ Media3 1.11.0 and 1.10.1 publish AAR metadata requiring compileSdk 36, so neithe
 
 ## Certification status
 
-**CERTIFIED**, provided the permanent `Android Step 4 CI` run automatically associated with this exact report commit concludes `success`. This wording intentionally makes the exact-head workflow result authoritative rather than embedding a run number that would require another documentation commit.
+**CERTIFIED only when the permanent `Android Step 4 CI` run automatically associated with this exact completion-report commit concludes `success`.** This wording intentionally makes the exact-head workflow result authoritative rather than embedding a run number that would require another documentation commit.
 
-The immediately preceding clean implementation head `2b6caebeb4e48b2edbed6b34c4d45f8476b0012b` passed permanent **Android Step 4 CI #226** end to end: build/unit/lint/release/androidTest compilation, zero-skipped JVM enforcement, KVM setup, real API-35 `connectedDebugAndroidTest`, zero-skipped instrumentation enforcement, and report upload all succeeded. This report-only commit changes no production code, tests, dependencies, or workflow behavior, but the project's exact-head rule still requires the automatically triggered permanent run for this commit to pass before the certification statement above is valid.
+The earlier exact head `930900df55d3f87bd28a19448a8bfeafb750a255` passed permanent **Android Step 4 CI #227** end to end with 37/37 connected API-35 instrumentation tests, zero instrumentation failures, zero instrumentation skips, successful build/unit/lint/release/androidTest compilation, zero-skipped JVM enforcement, KVM setup and report upload. That run proves the production/test/workflow tree prior to adding the two previously missing documentation files.
+
+The subsequent documentation commits add `STEP4_SECURITY.md`, `STEP4_IMPLEMENTATION.md`, and this updated completion report. They do not change production code, tests, dependencies, or workflow behavior, but the project's exact-head rule still requires the permanent run for this newest head to pass before the certification statement above is valid.
 
 ## Final acceptance rule
 
@@ -125,6 +141,7 @@ Step 4 is accepted only when all of the following are true on one exact head SHA
 6. API-35 `connectedDebugAndroidTest` actually executes and passes;
 7. instrumentation results contain zero skipped tests;
 8. the passing run's `head_sha` equals the current `step4/archive-media-text-apk-analyzer` branch head;
-9. no temporary hardening/patch workflow remains in the branch.
+9. no temporary hardening/patch workflow remains in the branch;
+10. `STEP4_ARCHITECTURE.md`, `STEP4_SECURITY.md`, `STEP4_IMPLEMENTATION.md`, `STEP4_FEATURE_MATRIX.md`, `STEP4_TEST_MATRIX.md`, and `STEP4_COMPLETION_REPORT.md` all exist in `docs/`.
 
 If the exact-head run fails, this certification statement is invalid until the failure is fixed and a new exact-head run succeeds.
