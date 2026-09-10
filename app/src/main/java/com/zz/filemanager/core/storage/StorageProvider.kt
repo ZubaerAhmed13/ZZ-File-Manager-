@@ -68,6 +68,23 @@ interface StorageProvider {
     suspend fun revisionIdentity(item: FileReference): String? = null
 }
 
+/**
+ * Providers that can produce directory results incrementally implement this contract. The provider
+ * owns the underlying session for the duration of the call and invokes [onPage] as soon as each
+ * bounded page is available. This avoids a mandatory 10k/100k-entry materialization boundary.
+ */
+interface IncrementalStorageProvider : StorageProvider {
+    suspend fun listChildrenIncrementally(
+        location: BrowserLocation,
+        pageSize: Int = DEFAULT_DIRECTORY_PAGE_SIZE,
+        onPage: suspend (List<FileEntry>) -> Unit,
+    )
+
+    companion object {
+        const val DEFAULT_DIRECTORY_PAGE_SIZE = 256
+    }
+}
+
 interface WritableStorageProvider : StorageProvider {
     suspend fun capabilities(location: BrowserLocation): ProviderCapabilities
     suspend fun createDirectory(parent: BrowserLocation, name: String): FileEntry
