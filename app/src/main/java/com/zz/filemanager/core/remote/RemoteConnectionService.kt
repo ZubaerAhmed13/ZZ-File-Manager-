@@ -16,6 +16,8 @@ class RemoteConnectionService(
     private val providers: RemoteProviderCoordinator,
 ) {
     fun list(): List<NetworkConnection> = repository.list()
+    fun settings(): RemoteTransferSettings = repository.settings()
+    fun setSettings(settings: RemoteTransferSettings) = repository.setSettings(settings)
 
     fun save(
         connection: NetworkConnection,
