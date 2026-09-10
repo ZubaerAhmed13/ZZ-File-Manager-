@@ -1,0 +1,28 @@
+name: Step 5 one-shot hard tests
+
+on:
+  push:
+    branches: [ 'step5/removable-network-cloud' ]
+    paths: [ '.github/workflows/step5-hard-tests-patcher.yml' ]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: step5/removable-network-cloud
+          fetch-depth: 0
+      - run: python3 tools/step5_add_hard_operation_tests.py
+      - run: |
+          rm tools/step5_add_hard_operation_tests.py .github/workflows/step5-hard-tests-patcher.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "test(step5): add hard operation safety certification"
+          git push origin HEAD:step5/removable-network-cloud
