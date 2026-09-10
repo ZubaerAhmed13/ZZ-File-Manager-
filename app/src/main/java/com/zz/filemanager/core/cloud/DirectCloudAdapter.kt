@@ -48,11 +48,21 @@ sealed class CloudAuthException(message: String, cause: Throwable? = null) : Exc
 
 /**
  * Direct provider boundary. Production adapters obtain a short-lived session from a Keystore-backed
- * refresh-token reference. Callers must clear the supplied refresh-token CharArray after open.
+ * refresh token. Callers clear the supplied refresh-token CharArray after open.
  */
 interface DirectCloudAdapter {
     val providerKey: String
     fun open(account: CloudAccountIdentity, refreshToken: CharArray): DirectCloudSession
+}
+
+/** Registered adapter lookup. Production builds may intentionally contain zero vendor adapters. */
+class DirectCloudAdapterRegistry(adapters: List<DirectCloudAdapter>) {
+    private val byKey = adapters.associateBy { it.providerKey }
+
+    fun adapterFor(providerKey: String): DirectCloudAdapter? = byKey[providerKey]
+    fun requireAdapter(providerKey: String): DirectCloudAdapter = byKey[providerKey]
+        ?: throw IllegalArgumentException("No direct-cloud adapter registered for $providerKey")
+    fun providerKeys(): Set<String> = byKey.keys
 }
 
 interface DirectCloudSession : Closeable {
@@ -67,6 +77,8 @@ interface DirectCloudSession : Closeable {
         name: String,
         expectedSizeBytes: Long?,
         resume: CloudResumeToken? = null,
+        /** Null creates a new file; non-null updates this provider-native file id on commit. */
+        targetNativeFileId: String? = null,
     ): CloudUploadSession
     suspend fun rename(nativeFileId: String, newName: String, ifRevision: String? = null): CloudItem
     suspend fun move(nativeFileId: String, newParentNativeFileId: String, ifRevision: String? = null): CloudItem
@@ -80,4 +92,23 @@ interface CloudUploadSession : Closeable {
     fun outputStream(): OutputStream
     suspend fun commit(expectedTotalBytes: Long?, sourceRevision: String): CloudItem
     suspend fun abort()
+}
+
+/**
+ * Vendor OAuth lifecycle boundary. Actual browser/PKCE registration is supplied by a vendor adapter;
+ * repository-safe Step 5 code owns the post-authorization refresh/disconnect/revoke lifecycle.
+ */
+interface DirectCloudOAuthDriver {
+    val providerKey: String
+
+    /** Exchange/refresh without exposing the resulting refresh token outside this lifecycle layer. */
+    suspend fun refresh(account: CloudAccountIdentity, currentRefreshToken: CharArray): CharArray
+
+    /** Revoke the provider-side grant. Implementations must be idempotent where the vendor allows. */
+    suspend fun revoke(account: CloudAccountIdentity, currentRefreshToken: CharArray)
+}
+
+class DirectCloudOAuthDriverRegistry(drivers: List<DirectCloudOAuthDriver>) {
+    private val byKey = drivers.associateBy { it.providerKey }
+    fun driverFor(providerKey: String): DirectCloudOAuthDriver? = byKey[providerKey]
 }
