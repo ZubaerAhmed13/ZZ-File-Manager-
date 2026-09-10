@@ -21,22 +21,24 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
+
           path = Path('app/src/main/java/com/zz/filemanager/core/remote/WebDavRemoteFileSystem.kt')
           text = path.read_text()
-          old = '''        } catch (error: DavHttpException) {
-              if (error.code == 404) null else throw mapDavError(error)
-          }
-          '''
-          new = '''        } catch (error: RemoteAccessException.Protocol) {
+          pattern = re.compile(
+              r'(override fun stat\(path: String\): RemoteNode\? \{.*?return try \{.*?\})\s*catch \(error: DavHttpException\) \{\s*if \(error\.code == 404\) null else throw mapDavError\(error\)\s*\}',
+              re.S,
+          )
+          replacement = r'''\1 catch (error: RemoteAccessException.Protocol) {
               val http = error.cause as? DavHttpException
               if (http?.code == 404) null else throw error
           } catch (error: DavHttpException) {
               if (error.code == 404) null else throw mapDavError(error)
-          }
-          '''
-          if old not in text:
-              raise SystemExit('Expected WebDAV stat catch block not found; refusing blind patch')
-          path.write_text(text.replace(old, new, 1))
+          }'''
+          updated, count = pattern.subn(replacement, text, count=1)
+          if count != 1:
+              raise SystemExit(f'Expected exactly one WebDAV stat catch block; matched {count}')
+          path.write_text(updated)
           PY
       - name: Commit production fix and remove one-shot workflow
         shell: bash
