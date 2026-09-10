@@ -52,6 +52,7 @@ import com.zz.filemanager.core.model.BrowserLocation
 import com.zz.filemanager.core.remote.ConnectionTestResult
 import com.zz.filemanager.core.remote.NetworkConnection
 import com.zz.filemanager.core.remote.RemoteAuthenticationType
+import com.zz.filemanager.core.remote.RemoteCertificatePolicy
 import com.zz.filemanager.core.remote.RemoteConnectionState
 import com.zz.filemanager.core.remote.RemoteProtocol
 import com.zz.filemanager.core.remote.RemoteTlsMode
@@ -103,24 +104,73 @@ fun RemoteLocationsScreen(
                 },
                 dismissButton = { TextButton(onClick = viewModel::clearFeedback) { Text("Cancel") } },
             )
+
             is ConnectionTestResult.ServerIdentityChanged -> AlertDialog(
                 onDismissRequest = viewModel::clearFeedback,
                 title = { Text("Server identity changed") },
                 text = {
                     Column {
-                        Text("Connection is blocked. Do not replace the saved key unless you have independently verified the new fingerprint.")
+                        Text("Connection is blocked. Independently verify the new fingerprint before replacing the saved key.")
+                        Spacer(Modifier.height(8.dp))
                         result.expected?.let { Text("Expected: $it") }
                         result.observed?.let { Text("Observed: $it") }
                     }
                 },
-                confirmButton = { TextButton(onClick = viewModel::clearFeedback) { Text("Close") } },
+                confirmButton = {
+                    val observed = result.observed
+                    if (observed != null) {
+                        TextButton(onClick = { viewModel.replaceTrustedHostKeyAndRetest(feedback.connectionId, observed) }) {
+                            Text("Replace trusted key & test")
+                        }
+                    }
+                },
+                dismissButton = { TextButton(onClick = viewModel::clearFeedback) { Text("Cancel") } },
             )
+
+            is ConnectionTestResult.CertificateTrustRequired -> AlertDialog(
+                onDismissRequest = viewModel::clearFeedback,
+                title = { Text("Trust server certificate?") },
+                text = {
+                    Column {
+                        Text("The system trust store did not accept this certificate. Independently verify its SHA-256 fingerprint before pinning it to this saved connection.")
+                        Spacer(Modifier.height(8.dp))
+                        Text("Observed: ${result.observed}", style = MaterialTheme.typography.bodyMedium)
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { viewModel.trustCertificateAndRetest(feedback.connectionId, result.observed) }) {
+                        Text("Trust certificate & test")
+                    }
+                },
+                dismissButton = { TextButton(onClick = viewModel::clearFeedback) { Text("Cancel") } },
+            )
+
+            is ConnectionTestResult.CertificateIdentityChanged -> AlertDialog(
+                onDismissRequest = viewModel::clearFeedback,
+                title = { Text("Server certificate changed") },
+                text = {
+                    Column {
+                        Text("Connection is blocked because the pinned certificate changed. Independently verify the new certificate before replacing the pin.")
+                        Spacer(Modifier.height(8.dp))
+                        Text("Expected: ${result.expected}")
+                        Text("Observed: ${result.observed}")
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { viewModel.replaceTrustedCertificateAndRetest(feedback.connectionId, result.observed) }) {
+                        Text("Replace certificate pin & test")
+                    }
+                },
+                dismissButton = { TextButton(onClick = viewModel::clearFeedback) { Text("Cancel") } },
+            )
+
             ConnectionTestResult.Success -> AlertDialog(
                 onDismissRequest = viewModel::clearFeedback,
                 title = { Text("Connection successful") },
                 text = { Text("The server authenticated and the configured root was verified.") },
                 confirmButton = { TextButton(onClick = viewModel::clearFeedback) { Text("OK") } },
             )
+
             is ConnectionTestResult.Failure -> AlertDialog(
                 onDismissRequest = viewModel::clearFeedback,
                 title = { Text(result.state.displayLabel()) },
@@ -143,7 +193,7 @@ fun RemoteLocationsScreen(
             },
             onSave = { connection, password, key, passphrase ->
                 viewModel.save(connection, password, key, passphrase)
-                importedPrivateKey = null // service clears the handed-off key buffer
+                importedPrivateKey = null
                 editing = null
                 showForm = false
             },
@@ -265,6 +315,9 @@ private fun RemoteConnectionCard(
                 Text("HTTP WebDAV is not encrypted.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             }
             connection.sshHostKeySha256?.let { Text("Trusted host key: $it", style = MaterialTheme.typography.bodySmall) }
+            if (connection.certificatePolicy == RemoteCertificatePolicy.PINNED) {
+                connection.certificateSha256?.let { Text("Pinned certificate: $it", style = MaterialTheme.typography.bodySmall) }
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = onOpen, enabled = !busy) { Text("Open") }
                 TextButton(onClick = onTest, enabled = !busy) {
@@ -300,6 +353,8 @@ private fun ConnectionEditorDialog(
     var usePrivateKey by remember(existing?.id) { mutableStateOf(existing?.authenticationType == RemoteAuthenticationType.PRIVATE_KEY) }
     var keyPassphrase by remember(existing?.id) { mutableStateOf("") }
     var implicitFtps by remember(existing?.id) { mutableStateOf(existing?.tlsMode == RemoteTlsMode.IMPLICIT) }
+    var certificatePolicy by remember(existing?.id) { mutableStateOf(existing?.certificatePolicy ?: RemoteCertificatePolicy.SYSTEM) }
+    var certificateSha256 by remember(existing?.id) { mutableStateOf(existing?.certificateSha256.orEmpty()) }
     var webDavUrl by remember(existing?.id) {
         mutableStateOf(
             if (existing?.protocol == RemoteProtocol.WEBDAV) {
@@ -316,7 +371,14 @@ private fun ConnectionEditorDialog(
         guest = false
         usePrivateKey = false
         if (next == RemoteProtocol.WEBDAV && !webDavUrl.startsWith("http")) webDavUrl = "https://"
+        if (next !in setOf(RemoteProtocol.FTPS, RemoteProtocol.WEBDAV)) {
+            certificatePolicy = RemoteCertificatePolicy.SYSTEM
+            certificateSha256 = ""
+        }
     }
+
+    val tlsCertificateCapable = protocol == RemoteProtocol.FTPS ||
+        (protocol == RemoteProtocol.WEBDAV && !webDavUrl.startsWith("http://", ignoreCase = true))
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -357,6 +419,34 @@ private fun ConnectionEditorDialog(
                 }
                 if (protocol == RemoteProtocol.FTP) {
                     Text("FTP is not encrypted. Credentials and file data can be exposed on the network.", color = MaterialTheme.colorScheme.error)
+                }
+
+                if (tlsCertificateCapable) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Switch(
+                            checked = certificatePolicy == RemoteCertificatePolicy.PINNED,
+                            onCheckedChange = { checked ->
+                                certificatePolicy = if (checked) RemoteCertificatePolicy.PINNED else RemoteCertificatePolicy.SYSTEM
+                                if (!checked) certificateSha256 = ""
+                            },
+                        )
+                        Spacer(Modifier.padding(4.dp))
+                        Text(if (certificatePolicy == RemoteCertificatePolicy.PINNED) "Pinned certificate trust" else "System certificate trust")
+                    }
+                    if (certificatePolicy == RemoteCertificatePolicy.PINNED) {
+                        Text(
+                            "Pin a SHA-256 certificate only after independently verifying the fingerprint. A test failure can also show the observed fingerprint for explicit trust/replacement.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        OutlinedTextField(
+                            certificateSha256,
+                            { certificateSha256 = it.trim() },
+                            label = { Text("Certificate SHA-256") },
+                            placeholder = { Text("SHA256:…") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                        )
+                    }
                 }
 
                 if (!guest) {
@@ -414,6 +504,13 @@ private fun ConnectionEditorDialog(
                         protocol == RemoteProtocol.SFTP && usePrivateKey -> RemoteAuthenticationType.PRIVATE_KEY
                         else -> RemoteAuthenticationType.PASSWORD
                     }
+                    val resolvedCertificatePolicy = if (
+                        protocol == RemoteProtocol.FTPS || (protocol == RemoteProtocol.WEBDAV && tlsMode == RemoteTlsMode.HTTPS)
+                    ) certificatePolicy else RemoteCertificatePolicy.SYSTEM
+                    val resolvedCertificateSha256 = if (resolvedCertificatePolicy == RemoteCertificatePolicy.PINNED) {
+                        certificateSha256.trim().also { value -> require(value.isNotEmpty()) { "Enter the verified certificate SHA-256 fingerprint." } }
+                    } else null
+
                     val connection = NetworkConnection(
                         id = existing?.id ?: java.util.UUID.randomUUID().toString(),
                         protocol = protocol,
@@ -426,8 +523,8 @@ private fun ConnectionEditorDialog(
                         share = share.trim().takeIf { it.isNotEmpty() },
                         domain = domain.trim().takeIf { it.isNotEmpty() },
                         tlsMode = tlsMode,
-                        certificatePolicy = existing?.certificatePolicy ?: com.zz.filemanager.core.remote.RemoteCertificatePolicy.SYSTEM,
-                        certificateSha256 = existing?.certificateSha256,
+                        certificatePolicy = resolvedCertificatePolicy,
+                        certificateSha256 = resolvedCertificateSha256,
                         sshHostKeySha256 = existing?.sshHostKeySha256,
                         privateKeyAlias = if (auth == RemoteAuthenticationType.PRIVATE_KEY) "keystore:${existing?.id ?: "new"}" else null,
                         lastConnectedAt = existing?.lastConnectedAt,
