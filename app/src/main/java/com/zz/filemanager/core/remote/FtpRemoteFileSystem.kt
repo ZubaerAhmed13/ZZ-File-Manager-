@@ -11,7 +11,6 @@ import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.SocketTimeoutException
-import java.security.MessageDigest
 import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
 import java.time.Duration
@@ -25,8 +24,8 @@ class FtpRemoteFileSystemFactory : RemoteFileSystemFactory {
         val client: FTPClient = when (connection.protocol) {
             RemoteProtocol.FTP -> FTPClient()
             RemoteProtocol.FTPS -> FTPSClient(connection.tlsMode == RemoteTlsMode.IMPLICIT).apply {
-                // Commons Net validates the certificate chain by default, but hostname checking is
-                // opt-in. Keep endpoint identification enabled for every FTPS connection.
+                // Hostname verification remains mandatory even when a user explicitly pins a
+                // self-signed leaf. Pinning replaces CA trust only; it never disables endpoint ID.
                 setEndpointCheckingEnabled(true)
                 if (connection.certificatePolicy == RemoteCertificatePolicy.PINNED) {
                     val expected = connection.certificateSha256 ?: throw RemoteAccessException.Certificate()
@@ -51,12 +50,7 @@ class FtpRemoteFileSystemFactory : RemoteFileSystemFactory {
                 else -> connection.username ?: throw RemoteAccessException.AuthenticationRequired()
             }
             val password = secrets.password?.concatToString().orEmpty()
-            try {
-                if (!client.login(username, password)) throw RemoteAccessException.AuthenticationFailed()
-            } finally {
-                // Commons Net requires String credentials at this boundary. The String is not
-                // retained by our repositories or logs; the source CharArray is cleared upstream.
-            }
+            if (!client.login(username, password)) throw RemoteAccessException.AuthenticationFailed()
 
             if (client is FTPSClient) {
                 client.execPBSZ(0L)
@@ -72,12 +66,17 @@ class FtpRemoteFileSystemFactory : RemoteFileSystemFactory {
         }
     }
 
-    private fun mapConnectFailure(error: Throwable): Throwable = when (error) {
-        is RemoteAccessException -> error
-        is SocketTimeoutException -> RemoteAccessException.Timeout(error)
-        is SSLHandshakeException, is CertificateException -> RemoteAccessException.Certificate(error)
-        is IOException -> RemoteAccessException.HostUnreachable(error)
-        else -> RemoteAccessException.Protocol(error)
+    private fun mapConnectFailure(error: Throwable): Throwable {
+        findPinnedCertificateFailure(error)?.let { pin ->
+            return RemoteAccessException.Certificate(error, expected = pin.expected, observed = pin.observed)
+        }
+        return when (error) {
+            is RemoteAccessException -> error
+            is SocketTimeoutException -> RemoteAccessException.Timeout(error)
+            is SSLHandshakeException, is CertificateException -> RemoteAccessException.Certificate(error)
+            is IOException -> RemoteAccessException.HostUnreachable(error)
+            else -> RemoteAccessException.Protocol(error)
+        }
     }
 }
 
@@ -102,12 +101,30 @@ private class FtpRemoteFileSystem(private val client: FTPClient) : RemoteFileSys
     )
 
     override fun list(path: String): List<RemoteNode> {
+        val output = ArrayList<RemoteNode>()
+        kotlinx.coroutines.runBlocking {
+            listPages(path, RemoteFileSystem.MAX_REMOTE_DIRECTORY_PAGE_SIZE) { output.addAll(it) }
+        }
+        return output
+    }
+
+    /** Apache Commons Net's FTPListParseEngine exposes true bounded pages over one listing session. */
+    override suspend fun listPages(path: String, pageSize: Int, onPage: suspend (List<RemoteNode>) -> Unit) {
+        require(pageSize in 1..RemoteFileSystem.MAX_REMOTE_DIRECTORY_PAGE_SIZE)
         val normalized = RemotePath.normalize(path)
-        val files = client.listFiles(normalized) ?: throw RemoteAccessException.Protocol()
-        return files.asSequence()
-            .filter { it.isValid && it.name != "." && it.name != ".." }
-            .map { it.toNode(RemotePath.resolve(normalized, it.name)) }
-            .toList()
+        try {
+            val engine = client.initiateListParsing(normalized)
+            while (engine.hasNext()) {
+                val page = engine.getNext(pageSize)
+                    .asSequence()
+                    .filter { it.isValid && it.name != "." && it.name != ".." }
+                    .map { it.toNode(RemotePath.resolve(normalized, it.name)) }
+                    .toList()
+                if (page.isNotEmpty()) onPage(page)
+            }
+        } catch (error: Throwable) {
+            throw mapFtpOperationError(error)
+        }
     }
 
     override fun stat(path: String): RemoteNode? {
@@ -153,8 +170,6 @@ private class FtpRemoteFileSystem(private val client: FTPClient) : RemoteFileSys
     }
 
     override fun rename(sourcePath: String, destinationPath: String, replace: Boolean) {
-        // FTP RNFR/RNTO overwrite semantics vary by server, so this adapter never claims atomic
-        // replacement. The shared transaction coordinator handles safe replace by backup/commit.
         if (replace && stat(destinationPath) != null) throw RemoteAccessException.Protocol(IllegalStateException("Atomic FTP replace is not guaranteed"))
         if (!client.rename(RemotePath.normalize(sourcePath), RemotePath.normalize(destinationPath))) throw RemoteAccessException.PermissionDenied()
     }
@@ -203,8 +218,9 @@ private class FtpRemoteFileSystem(private val client: FTPClient) : RemoteFileSys
     }
 }
 
-/** Explicit per-connection trust decision: only the pinned leaf certificate is accepted. */
+/** Explicit per-connection trust decision: only the pinned, currently valid leaf certificate is accepted. */
 private class PinnedCertificateTrustManager(expectedSha256: String) : X509TrustManager {
+    private val expected = expectedSha256
     private val pin = CertificatePinPolicy(expectedSha256)
 
     override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
@@ -212,8 +228,32 @@ private class PinnedCertificateTrustManager(expectedSha256: String) : X509TrustM
     override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {
         val certificate = chain?.firstOrNull() ?: throw CertificateException("Missing server certificate")
         certificate.checkValidity()
-        if (!pin.matches(certificate.encoded)) throw CertificateException("Server certificate fingerprint changed")
+        if (!pin.matches(certificate.encoded)) {
+            throw PinnedCertificateException(expected, CertificatePinPolicy.display(certificate.encoded))
+        }
     }
 
     override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+}
+
+private class PinnedCertificateException(
+    val expected: String,
+    val observed: String,
+) : CertificateException("Server certificate fingerprint changed")
+
+private fun findPinnedCertificateFailure(error: Throwable): PinnedCertificateException? {
+    var current: Throwable? = error
+    while (current != null) {
+        if (current is PinnedCertificateException) return current
+        current = current.cause
+    }
+    return null
+}
+
+private fun mapFtpOperationError(error: Throwable): RemoteAccessException = when (error) {
+    is RemoteAccessException -> error
+    is SocketTimeoutException -> RemoteAccessException.Timeout(error)
+    is IOException -> RemoteAccessException.Protocol(error)
+    is SecurityException -> RemoteAccessException.PermissionDenied(error)
+    else -> RemoteAccessException.Protocol(error)
 }
