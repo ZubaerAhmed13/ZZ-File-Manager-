@@ -99,7 +99,11 @@ sealed class RemoteAccessException(message: String? = null, cause: Throwable? = 
     class HostUnreachable(cause: Throwable? = null) : RemoteAccessException(cause = cause)
     class Timeout(cause: Throwable? = null) : RemoteAccessException(cause = cause)
     class Tls(cause: Throwable? = null) : RemoteAccessException(cause = cause)
-    class Certificate(cause: Throwable? = null) : RemoteAccessException(cause = cause)
+    class Certificate(
+        cause: Throwable? = null,
+        val expected: String? = null,
+        val observed: String? = null,
+    ) : RemoteAccessException("Server certificate could not be trusted", cause)
     class HostKeyTrustRequired(val fingerprint: String, val algorithm: String? = null) : RemoteAccessException("SFTP host key trust required")
     class ServerIdentityChanged(val expected: String? = null, val observed: String? = null, cause: Throwable? = null) : RemoteAccessException("Server identity changed", cause)
     class PermissionDenied(cause: Throwable? = null) : RemoteAccessException(cause = cause)
