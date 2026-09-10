@@ -16,17 +16,28 @@ All Step 4 data access uses the existing `StorageProvider` / `WritableStoragePro
 
 ## Safe writes and crash recovery
 
-Step 4 destructive writes use `SafeOutputWriter` and `Step4WriteJournal` rather than blind overwrite. Replace follows a staged-and-verified sequence:
+Step 4 file outputs use `SafeOutputWriter` and `Step4WriteJournal` rather than writing directly to a user-visible destination name. This applies to both fresh outputs and replacement outputs.
 
-1. write a unique `.zzstage-*` file;
-2. verify byte count/metadata;
-3. persist the transaction phase;
-4. prefer provider-native `replaceAtomically`;
-5. otherwise use a durable backup/rename commit sequence;
-6. retain ambiguous data and journal state rather than guessing after failure;
-7. reconcile pending transactions through `Step4RecoveryWorker`.
+The file transaction is:
 
-Cancellation before a destructive boundary removes only the uncommitted stage. The existing destination remains authoritative. This is deliberately separate from the Step 2 operation journal because editor/archive output is not a queued file-operation item.
+1. choose the eventual final name and generate a transaction ID;
+2. persist a `STAGING` journal record **before** creating output bytes;
+3. create a hidden `.zzstage-*` file;
+4. stream the output into that stage using bounded buffers while counting bytes and computing SHA-256;
+5. verify streamed byte count and provider metadata, obtain provider `mutationIdentity` when one is durably available, then persist `STAGED` plus the proof data;
+6. re-check the destination state to detect concurrent mutation;
+7. for a fresh output, journal `COMMITTING` and rename the hidden stage to the final name;
+8. for replacement, prefer provider `replaceAtomically`; otherwise rename the authoritative old file to a hidden backup, rename the stage to the final name, and retain the backup until commit proof succeeds;
+9. prove that the final object is the staged object using provider mutation identity when available, otherwise a streaming SHA-256 comparison; filename and size alone are never sufficient commit proof;
+10. only after proof succeeds mark `COMMITTED`, remove any replacement backup, and clear the journal record.
+
+A provider must expose the create/rename/delete capabilities needed to keep an incomplete result hidden until commit. If it cannot safely finalize a hidden stage, the operation is rejected instead of silently degrading to direct-to-final output.
+
+### Recovery rule
+
+`Step4RecoveryWorker` reconciles journal records after process death. Pre-commit `STAGING`/`STAGED` stages can be cleaned without ever materializing the requested final filename. During an uncertain commit, recovery accepts a final only when the persisted staged-object proof matches it. A same-name/same-size object is not proof. For replacement transactions, a preserved backup is not deleted until the final is proved; when proof is absent or mismatched, data and journal state are retained rather than guessed away.
+
+The journal format remains backward-aware: older records without strong proof fields are decoded, but missing proof is treated as uncertainty rather than success.
 
 ## Archive subsystem
 
@@ -39,6 +50,8 @@ Cancellation before a destructive boundary removes only the uncommitted stage. T
 - cancellation-aware streamed extraction/creation;
 - explicit collision policy through the same safe-write layer;
 - temporary random-access staging only when required by the archive library/provider combination.
+
+Archive **creation** uses `SafeOutputWriter.writeGenerated`: ZIP/TAR bytes are written only into the hidden `.zzstage-*` object. `Backup.zip`, for example, is not created until compression has closed successfully and the staged output is ready to commit. A handled failure/cancellation cleans the uncommitted hidden stage; process death leaves a journaled hidden stage for reconciliation rather than a partial archive masquerading under the requested name.
 
 The suspicious-expansion guard is structural rather than an arbitrary maximum archive size, preserving legitimate large archives when capacity and ratios are sane.
 
@@ -56,11 +69,17 @@ Media3 is pinned to the API-35-compatible stable line because Step 4 certificati
 
 Editable file size is derived from actual VM heap headroom rather than a hard product cap. Files beyond the safe editable bound open in streamed, read-only line windows. The Compose editor provides view/edit switching, wrap, optional line numbers, bounded undo/redo, search, Save, Save As, and an explicit external-change decision (Reload / Save As / Overwrite).
 
+Both replacement Save and fresh Save As use the staged transactional writer. A partial Save As therefore cannot remain under the user-requested final filename after abrupt process death.
+
 ## APK subsystem
 
 `ApkManager` passively inspects APK metadata through Android package APIs, including label, package name, version, SDK levels, requested permissions and signing-certificate SHA-256. Installed-app listing follows Android package-visibility rules; `QUERY_ALL_PACKAGES` is intentionally not requested.
 
-Backup supports base-only APK export and a complete split-APK set. A base-only export clearly reports when it is not a complete reinstallable package. Install and uninstall actions are handed to Android system confirmation UIs; there is no silent install/uninstall path.
+Base-only backup exports through the same hidden staged-file transaction used by other fresh file outputs.
+
+Complete split-APK backup is a directory-level transaction. The app creates a hidden `.zzapkbackup-*` directory, copies `base.apk` plus every required split with streaming byte-count/SHA-256 verification, writes a manifest containing package/version/component count and per-component sizes/digests, re-reads the manifest, then asks `SafeOutputWriter` to independently prove every direct file member before renaming the whole directory to its visible `<App>-<version>-apks` name. A failed/cancelled pre-commit backup is cleaned only from the hidden staging directory. Providers that cannot create files/directories and rename/delete the staged directory are explicitly unsupported for complete-set backup.
+
+A base-only export clearly reports when it is not a complete reinstallable package. Install and uninstall actions are handed to Android system confirmation UIs; there is no silent install/uninstall path.
 
 ## Storage analyzer
 
@@ -76,4 +95,6 @@ A sampled collision can therefore never be surfaced as a verified duplicate. No 
 
 ## UI and safety integration
 
-Step 4 keeps file properties, Share, Open with, Favorites and Recycle Bin actions available from the internal viewer. All destructive actions remain explicit. SAF grants and Android system dialogs remain user-controlled. Physical-phone testing remains deferred to the project’s final certification step; Step 4 itself is certified through JVM/unit checks, static/lint/release compilation and API-35 emulator instrumentation.
+Step 4 keeps file properties, Share, Open with, Favorites and Recycle Bin actions available from the internal viewer. All destructive actions remain explicit. SAF grants and Android system dialogs remain user-controlled.
+
+Physical-phone testing remains deferred to the project’s final certification step. Step 4 itself is accepted only when the exact final branch head passes JVM/unit checks with zero skips, lint, debug/release and instrumentation compilation, plus real API-35 connected instrumentation with zero skipped tests.
