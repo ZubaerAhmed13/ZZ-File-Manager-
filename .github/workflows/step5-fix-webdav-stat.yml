@@ -1,0 +1,49 @@
+name: Step 5 one-shot WebDAV stat fix
+
+on:
+  push:
+    branches: [ 'step5/removable-network-cloud' ]
+    paths: [ '.github/workflows/step5-fix-webdav-stat.yml' ]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: step5/removable-network-cloud
+          fetch-depth: 0
+      - name: Fix WebDAV missing-object stat semantics
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('app/src/main/java/com/zz/filemanager/core/remote/WebDavRemoteFileSystem.kt')
+          text = path.read_text()
+          old = '''        } catch (error: DavHttpException) {
+              if (error.code == 404) null else throw mapDavError(error)
+          }
+          '''
+          new = '''        } catch (error: RemoteAccessException.Protocol) {
+              val http = error.cause as? DavHttpException
+              if (http?.code == 404) null else throw error
+          } catch (error: DavHttpException) {
+              if (error.code == 404) null else throw mapDavError(error)
+          }
+          '''
+          if old not in text:
+              raise SystemExit('Expected WebDAV stat catch block not found; refusing blind patch')
+          path.write_text(text.replace(old, new, 1))
+          PY
+      - name: Commit production fix and remove one-shot workflow
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/java/com/zz/filemanager/core/remote/WebDavRemoteFileSystem.kt
+          git rm .github/workflows/step5-fix-webdav-stat.yml
+          git commit -m 'fix(step5): return null for missing WebDAV stat targets'
+          git push origin HEAD:step5/removable-network-cloud
