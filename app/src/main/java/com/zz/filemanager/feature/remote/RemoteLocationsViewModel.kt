@@ -150,11 +150,38 @@ class RemoteLocationsViewModel(
         }
     }
 
-    fun trustHostKeyAndRetest(connectionId: String, fingerprint: String) {
+    fun trustHostKeyAndRetest(connectionId: String, fingerprint: String) = trustAndRetest(connectionId) {
+        service.trustSftpHostKey(connectionId, fingerprint)
+    }
+
+    fun replaceTrustedHostKeyAndRetest(connectionId: String, fingerprint: String) = trustAndRetest(connectionId) {
+        service.replaceTrustedSftpHostKey(connectionId, fingerprint)
+    }
+
+    fun trustCertificateAndRetest(connectionId: String, fingerprint: String) = trustAndRetest(connectionId) {
+        service.trustCertificate(connectionId, fingerprint)
+    }
+
+    fun replaceTrustedCertificateAndRetest(connectionId: String, fingerprint: String) = trustAndRetest(connectionId) {
+        service.replaceTrustedCertificate(connectionId, fingerprint)
+    }
+
+    private fun trustAndRetest(connectionId: String, action: () -> Unit) {
         viewModelScope.launch {
-            withContext(Dispatchers.IO) { service.trustSftpHostKey(connectionId, fingerprint) }
-            _state.value = _state.value.copy(connections = service.list(), feedback = null)
-            test(connectionId)
+            runCatching { withContext(Dispatchers.IO) { action() } }
+                .onSuccess {
+                    _state.value = _state.value.copy(connections = service.list(), feedback = null)
+                    test(connectionId)
+                }
+                .onFailure {
+                    _state.value = _state.value.copy(
+                        busyConnectionId = null,
+                        feedback = RemoteTestFeedback(
+                            connectionId,
+                            ConnectionTestResult.Failure(com.zz.filemanager.core.remote.RemoteConnectionState.UNKNOWN, "Trust decision could not be saved."),
+                        ),
+                    )
+                }
         }
     }
 
