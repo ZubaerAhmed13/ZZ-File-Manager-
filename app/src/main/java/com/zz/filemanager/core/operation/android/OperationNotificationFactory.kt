@@ -27,11 +27,12 @@ class OperationNotificationFactory(private val context: Context) {
         }
     }
 
-    /** statusOverride is used for enforceable network-policy state such as waiting for Wi-Fi. */
-    fun build(operation: FileOperation?, statusOverride: String? = null): Notification {
+    /** statusPrefix keeps policy warnings visible without hiding normal transfer progress. */
+    fun build(operation: FileOperation?, statusPrefix: String? = null): Notification {
         ensureChannel()
         val title = operation?.let(::titleFor) ?: context.getString(R.string.file_operations)
-        val text = statusOverride ?: operation?.let(::textFor) ?: context.getString(R.string.preparing_operation)
+        val normalText = operation?.let(::textFor) ?: context.getString(R.string.preparing_operation)
+        val text = if (statusPrefix.isNullOrBlank()) normalText else "$statusPrefix • $normalText"
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle(title)
@@ -41,17 +42,15 @@ class OperationNotificationFactory(private val context: Context) {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
 
-        if (operation != null && statusOverride == null) {
+        if (operation != null) {
             if (operation.totalBytes != null && operation.totalBytes > 0L) {
                 val percentage = ((operation.processedBytes.toDouble() / operation.totalBytes.toDouble()) * 100.0).toInt().coerceIn(0, 100)
                 builder.setProgress(100, percentage, false)
             } else if (operation.state in setOf(FileOperationState.RUNNING, FileOperationState.PREPARING)) {
                 builder.setProgress(0, 0, true)
             }
-        }
 
-        if (operation != null) {
-            if (statusOverride == null && (operation.state == FileOperationState.RUNNING || operation.state == FileOperationState.PREPARING)) {
+            if (operation.state == FileOperationState.RUNNING || operation.state == FileOperationState.PREPARING) {
                 builder.addAction(0, context.getString(R.string.pause), actionPendingIntent(OperationActionReceiver.ACTION_PAUSE, operation.id, 1))
             }
             if (!operation.state.isTerminal) {
