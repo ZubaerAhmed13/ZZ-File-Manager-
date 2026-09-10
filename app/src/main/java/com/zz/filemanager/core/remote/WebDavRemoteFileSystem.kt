@@ -125,9 +125,12 @@ private class WebDavRemoteFileSystem(
         return try {
             propfind(normalized, depth = 0).firstOrNull { it.path == normalized }
                 ?: propfind(normalized, depth = 0).firstOrNull()
-        } catch (error: DavHttpException) {
-            if (error.code == 404) null else throw mapDavError(error)
-        }
+        } catch (error: RemoteAccessException.Protocol) {
+    val http = error.cause as? DavHttpException
+    if (http?.code == 404) null else throw error
+} catch (error: DavHttpException) {
+    if (error.code == 404) null else throw mapDavError(error)
+}
     }
 
     override fun openInput(path: String, offset: Long): InputStream {
