@@ -435,36 +435,56 @@ class FileOperationEngine(
             }
         }
 
-        // A non-transactional process/service interruption can leave a recorded staged output.
-        // It is never the final visible filename and can be cleaned before restarting the copy.
-        item.partialOutput?.let { stalePartial ->
-            val staleProvider = providers.writableProviderFor(stalePartial.reference.providerId)
-                ?: return markItemFailed(
-                    operation,
-                    item,
-                    OperationFailure(
-                        OperationFailureCode.PROVIDER_UNAVAILABLE,
-                        "A previous staged output could not be cleaned because its storage provider is unavailable.",
-                        item.source.name,
-                    ),
-                )
-            if (!cleanupPartial(staleProvider, stalePartial)) {
+        val sourceProvider = providers.providerFor(item.source.reference.providerId)
+        var resumeOffset = 0L
+        var resumedOutputRef: ScopedFileReference? = null
+        when (val decision = TransferResumeCoordinator.evaluate(item, sourceProvider, destinationProvider)) {
+            TransferResumeCoordinator.Decision.None -> Unit
+            is TransferResumeCoordinator.Decision.Resume -> {
+                resumeOffset = decision.offset
+                resumedOutputRef = decision.staged
+            }
+            is TransferResumeCoordinator.Decision.Restart -> {
+                if (!cleanupPartial(destinationProvider, decision.staged)) {
+                    return markItemFailed(
+                        operation,
+                        item,
+                        OperationFailure(
+                            OperationFailureCode.PROVIDER_UNAVAILABLE,
+                            "A previous staged output could not be cleaned. Reconnect the destination and retry.",
+                            item.source.name,
+                        ),
+                    )
+                }
+                item = TransferResumeCoordinator.clearCheckpoint(item)
+                operation = recalculate(replaceItem(operation, item))
+                save(operation)
+            }
+            is TransferResumeCoordinator.Decision.SourceChanged -> {
+                if (!cleanupPartial(destinationProvider, decision.staged)) {
+                    return markItemFailed(
+                        operation,
+                        item,
+                        OperationFailure(
+                            OperationFailureCode.PROVIDER_UNAVAILABLE,
+                            "The changed source was detected, but its old staged output could not be cleaned.",
+                            item.source.name,
+                        ),
+                    )
+                }
+                item = TransferResumeCoordinator.clearCheckpoint(item)
+                operation = recalculate(replaceItem(operation, item))
+                save(operation)
                 return markItemFailed(
                     operation,
                     item,
-                    OperationFailure(
-                        OperationFailureCode.PROVIDER_UNAVAILABLE,
-                        "A previous staged output could not be cleaned. Reconnect the destination and retry.",
-                        item.source.name,
-                    ),
+                    OperationFailure(OperationFailureCode.SOURCE_CHANGED, decision.reason, item.source.name),
                 )
             }
-            item = item.copy(partialOutput = null, processedBytes = 0L)
-            operation = recalculate(replaceItem(operation, item))
-            save(operation)
+            is TransferResumeCoordinator.Decision.Blocked -> {
+                return markItemFailed(operation, item, mapFailure(decision.failure, item.source.name))
+            }
         }
-
-        val sourceProvider = providers.providerFor(item.source.reference.providerId)
         val metadata = sourceProvider.getMetadata(item.source.reference)
             ?: return markItemFailed(operation, item, OperationFailure(OperationFailureCode.SOURCE_MISSING, "Source item no longer exists.", item.source.name))
         if (item.source.sizeBytes != null && metadata.sizeBytes != null && item.source.sizeBytes != metadata.sizeBytes) {
@@ -572,22 +592,41 @@ class FileOperationEngine(
             }
         }
 
-        val outputName = uniqueTemporaryName(destinationProvider, parent, operation.id, item.id)
-        val outputEntry = try {
-            destinationProvider.createFile(parent, outputName, item.source.mimeType)
-        } catch (error: Throwable) {
-            return markItemFailed(operation, item, mapFailure(error, item.source.name))
+        val outputRef: ScopedFileReference
+        if (resumedOutputRef != null) {
+            outputRef = resumedOutputRef!!
+            item = item.copy(
+                state = OperationItemState.RUNNING,
+                partialOutput = outputRef,
+                processedBytes = resumeOffset,
+                resumeOffset = resumeOffset,
+            )
+        } else {
+            val outputName = uniqueTemporaryName(destinationProvider, parent, operation.id, item.id)
+            val outputEntry = try {
+                destinationProvider.createFile(parent, outputName, item.source.mimeType)
+            } catch (error: Throwable) {
+                return markItemFailed(operation, item, mapFailure(error, item.source.name))
+            }
+            outputRef = ScopedFileReference(outputEntry.reference, destination.rootReference, destination.storageId)
+            val proof = TransferResumeCoordinator.captureProof(sourceProvider, destinationProvider, item.source, outputRef)
+            item = item.copy(
+                state = OperationItemState.RUNNING,
+                partialOutput = outputRef,
+                processedBytes = 0L,
+                resumeSourceIdentity = proof?.sourceIdentity,
+                resumeStagedIdentity = proof?.stagedIdentity,
+                resumeOffset = 0L,
+            )
         }
-        val outputRef = ScopedFileReference(outputEntry.reference, destination.rootReference, destination.storageId)
-        item = item.copy(state = OperationItemState.RUNNING, partialOutput = outputRef, processedBytes = 0L)
         operation = replaceItem(operation.copy(currentItemName = item.source.name), item)
         save(recalculate(operation))
 
         try {
-            var written = 0L
+            var written = resumeOffset
             var lastPersistAt = now()
-            sourceProvider.openInputStream(item.source.reference).use { inputStream ->
-                destinationProvider.openOutputStream(outputRef, truncate = true).use { outputStream ->
+            TransferResumeCoordinator.openSource(sourceProvider, item.source, resumeOffset).use { inputStream ->
+                TransferResumeCoordinator.openDestination(destinationProvider, outputRef, resumeOffset).use { outputStream ->
                     val buffer = ByteArray(bufferSize)
                     while (true) {
                         coroutineContext.ensureActive()
@@ -598,7 +637,7 @@ class FileOperationEngine(
                         val tick = now()
                         if (tick - lastPersistAt >= progressIntervalMillis) {
                             checkControl(operation.id)
-                            item = item.copy(processedBytes = written)
+                            item = TransferResumeCoordinator.withProgress(item, written)
                             operation = recalculate(
                                 replaceItem(operation, item).copy(
                                     currentItemName = item.source.name,
@@ -626,10 +665,12 @@ class FileOperationEngine(
                     }
                     !sameDestinationSnapshot(replaceExisting, currentDestination) -> {
                         val cleaned = cleanupPartial(destinationProvider, outputRef)
-                        item = item.copy(
-                            state = OperationItemState.QUEUED,
-                            partialOutput = if (cleaned) null else outputRef,
-                            processedBytes = 0L,
+                        item = TransferResumeCoordinator.clearCheckpoint(
+                            item.copy(
+                                state = OperationItemState.QUEUED,
+                                partialOutput = if (cleaned) null else outputRef,
+                            ),
+                            keepPartial = !cleaned,
                         )
                         operation = replaceItem(operation, item)
                         return waitForCollision(
@@ -669,11 +710,25 @@ class FileOperationEngine(
                 ReplaceCommitResult(destinationProvider.rename(outputRef, finalName), false)
             }
 
+            val identityBeforeProof = destinationProvider.mutationIdentity(commitResult.entry.reference)
+            val committedMetadata = destinationProvider.getMetadata(commitResult.entry.reference)
+                ?: throw IOException("Committed destination disappeared before destination proof completed")
+            if (item.source.sizeBytes != null && committedMetadata.sizeBytes != item.source.sizeBytes) {
+                throw IOException("Committed destination size does not match the source")
+            }
+            val identityAfterProof = destinationProvider.mutationIdentity(commitResult.entry.reference)
+            if (identityBeforeProof != null && identityAfterProof != identityBeforeProof) {
+                throw IOException("Committed destination identity changed during destination proof")
+            }
+
             item = item.copy(
                 processedBytes = written,
                 state = OperationItemState.COMPLETED,
                 resultReference = ScopedFileReference(commitResult.entry.reference, destination.rootReference, destination.storageId),
                 partialOutput = null,
+                resumeSourceIdentity = null,
+                resumeStagedIdentity = null,
+                resumeOffset = 0L,
             )
             operation = replaceItem(operation, item)
             save(recalculate(operation.copy(updatedAtMillis = now())))
@@ -697,12 +752,18 @@ class FileOperationEngine(
             }
         } catch (pause: PauseSignal) {
             val cleaned = cleanupPartial(destinationProvider, outputRef)
-            item = item.copy(state = OperationItemState.QUEUED, partialOutput = if (cleaned) null else outputRef, processedBytes = 0L)
+            item = TransferResumeCoordinator.clearCheckpoint(
+                item.copy(state = OperationItemState.QUEUED, partialOutput = if (cleaned) null else outputRef),
+                keepPartial = !cleaned,
+            )
             save(recalculate(replaceItem(operation, item)))
             throw pause
         } catch (cancel: CancelSignal) {
             val cleaned = cleanupPartial(destinationProvider, outputRef)
-            item = item.copy(state = OperationItemState.CANCELLED, partialOutput = if (cleaned) null else outputRef)
+            item = TransferResumeCoordinator.clearCheckpoint(
+                item.copy(state = OperationItemState.CANCELLED, partialOutput = if (cleaned) null else outputRef),
+                keepPartial = !cleaned,
+            )
             save(recalculate(replaceItem(operation, item)))
             throw cancel
         } catch (cancelled: CancellationException) {
@@ -713,10 +774,16 @@ class FileOperationEngine(
             if (error is ReplaceTransactionNeedsRecovery || latest.state == FileOperationState.INTERRUPTED || latestItem.replacePhase != ReplacePhase.NONE) {
                 return latest
             }
-            val cleaned = cleanupPartial(destinationProvider, latestItem.partialOutput ?: outputRef)
+            val recordedPartial = latestItem.partialOutput ?: outputRef
+            val cleaned = cleanupPartial(destinationProvider, recordedPartial)
+            val failedItem = if (cleaned) {
+                TransferResumeCoordinator.clearCheckpoint(latestItem)
+            } else {
+                latestItem.copy(partialOutput = recordedPartial)
+            }
             return markItemFailed(
                 latest,
-                latestItem.copy(partialOutput = if (cleaned) null else (latestItem.partialOutput ?: outputRef)),
+                failedItem,
                 mapFailure(error, latestItem.source.name),
             )
         }
