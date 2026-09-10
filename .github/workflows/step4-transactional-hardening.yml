@@ -1,0 +1,39 @@
+name: Step4 Transactional Hardening
+
+on:
+  push:
+    branches:
+      - step4/archive-media-text-apk-analyzer
+    paths:
+      - .github/workflows/step4-transactional-hardening.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: step4/archive-media-text-apk-analyzer
+          fetch-depth: 0
+      - name: Route archive creation through staged writer
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import base64
+          from pathlib import Path
+          path = Path('app/src/main/java/com/zz/filemanager/core/archive/ArchiveManager.kt')
+          text = path.read_text()
+          old = base64.b64decode('ICAgICAgICB2YWwgcHJvdmlkZXIgPSBwcm92aWRlcnMud3JpdGFibGVQcm92aWRlckZvcihyZXF1ZXN0LmRlc3RpbmF0aW9uLnByb3ZpZGVySWQpCiAgICAgICAgICAgID86IHRocm93IEFyY2hpdmVGYWlsdXJlLlByb3ZpZGVyTGltaXQoIkFyY2hpdmUgZGVzdGluYXRpb24gaXMgcmVhZC1vbmx5IikKICAgICAgICB2YWwgb3V0cHV0TmFtZSA9IHVuaXF1ZU5hbWUocHJvdmlkZXIsIHJlcXVlc3QuZGVzdGluYXRpb24sIHJlcXVlc3QuYXJjaGl2ZU5hbWUpCiAgICAgICAgdmFsIG91dHB1dCA9IHByb3ZpZGVyLmNyZWF0ZUZpbGUocmVxdWVzdC5kZXN0aW5hdGlvbiwgb3V0cHV0TmFtZSwgYXJjaGl2ZU1pbWUocmVxdWVzdC5mb3JtYXQpKQogICAgICAgIHZhbCBzY29wZWQgPSBTY29wZWRGaWxlUmVmZXJlbmNlKG91dHB1dC5yZWZlcmVuY2UsIHJlcXVlc3QuZGVzdGluYXRpb24ucm9vdFJlZmVyZW5jZSwgcmVxdWVzdC5kZXN0aW5hdGlvbi5zdG9yYWdlSWQpCiAgICAgICAgdHJ5IHsKICAgICAgICAgICAgcHJvdmlkZXIub3Blbk91dHB1dFN0cmVhbShzY29wZWQsIHRydW5jYXRlID0gdHJ1ZSkudXNlIHsgcmF3IC0+CiAgICAgICAgICAgICAgICB3aGVuIChyZXF1ZXN0LmZvcm1hdCkgewogICAgICAgICAgICAgICAgICAgIEFyY2hpdmVGb3JtYXQuWklQIC0+IGNyZWF0ZVppcChyYXcsIHJlcXVlc3QsIG9uUHJvZ3Jlc3MpCiAgICAgICAgICAgICAgICAgICAgQXJjaGl2ZUZvcm1hdC5UQVIsIEFyY2hpdmVGb3JtYXQuVEFSX0daLCBBcmNoaXZlRm9ybWF0LlRBUl9CWjIsIEFyY2hpdmVGb3JtYXQuVEFSX1haIC0+IGNyZWF0ZVRhcihyYXcsIHJlcXVlc3QsIG9uUHJvZ3Jlc3MpCiAgICAgICAgICAgICAgICAgICAgZWxzZSAtPiBlcnJvcigidmFsaWRhdGVkIGFib3ZlIikKICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgfQogICAgICAgICAgICBwcm92aWRlci5nZXRNZXRhZGF0YShvdXRwdXQucmVmZXJlbmNlKSA/OiB0aHJvdyBJbGxlZ2FsU3RhdGVFeGNlcHRpb24oIkNyZWF0ZWQgYXJjaGl2ZSBkaXNhcHBlYXJlZCIpCiAgICAgICAgfSBjYXRjaCAoY2FuY2VsbGVkOiBDYW5jZWxsYXRpb25FeGNlcHRpb24pIHsKICAgICAgICAgICAgcnVuQ2F0Y2hpbmcgeyBwcm92aWRlci5kZWxldGUoc2NvcGVkKSB9CiAgICAgICAgICAgIHRocm93IGNhbmNlbGxlZAogICAgICAgIH0gY2F0Y2ggKGVycm9yOiBUaHJvd2FibGUpIHsKICAgICAgICAgICAgcnVuQ2F0Y2hpbmcgeyBwcm92aWRlci5kZWxldGUoc2NvcGVkKSB9CiAgICAgICAgICAgIHRocm93IGVycm9yCiAgICAgICAgfQo=').decode()
+          new = base64.b64decode('ICAgICAgICB2YWwgcmVzdWx0ID0gc2FmZVdyaXRlci53cml0ZUdlbmVyYXRlZCgKICAgICAgICAgICAgcGFyZW50ID0gcmVxdWVzdC5kZXN0aW5hdGlvbiwKICAgICAgICAgICAgcmVxdWVzdGVkTmFtZSA9IHJlcXVlc3QuYXJjaGl2ZU5hbWUsCiAgICAgICAgICAgIG1pbWVUeXBlID0gYXJjaGl2ZU1pbWUocmVxdWVzdC5mb3JtYXQpLAogICAgICAgICAgICBleHBlY3RlZEJ5dGVzID0gbnVsbCwKICAgICAgICAgICAgY29sbGlzaW9uUG9saWN5ID0gQ29sbGlzaW9uUG9saWN5LktFRVBfQk9USCwKICAgICAgICApIHsgcmF3IC0+CiAgICAgICAgICAgIHdoZW4gKHJlcXVlc3QuZm9ybWF0KSB7CiAgICAgICAgICAgICAgICBBcmNoaXZlRm9ybWF0LlpJUCAtPiBjcmVhdGVaaXAocmF3LCByZXF1ZXN0LCBvblByb2dyZXNzKQogICAgICAgICAgICAgICAgQXJjaGl2ZUZvcm1hdC5UQVIsIEFyY2hpdmVGb3JtYXQuVEFSX0daLCBBcmNoaXZlRm9ybWF0LlRBUl9CWjIsIEFyY2hpdmVGb3JtYXQuVEFSX1haIC0+IGNyZWF0ZVRhcihyYXcsIHJlcXVlc3QsIG9uUHJvZ3Jlc3MpCiAgICAgICAgICAgICAgICBlbHNlIC0+IGVycm9yKCJ2YWxpZGF0ZWQgYWJvdmUiKQogICAgICAgICAgICB9CiAgICAgICAgfQogICAgICAgIHdoZW4gKHJlc3VsdCkgewogICAgICAgICAgICBpcyBjb20uenouZmlsZW1hbmFnZXIuY29yZS5zdGVwNC5TYWZlV3JpdGVSZXN1bHQuV3JpdHRlbiAtPiByZXN1bHQuZW50cnkKICAgICAgICAgICAgaXMgY29tLnp6LmZpbGVtYW5hZ2VyLmNvcmUuc3RlcDQuU2FmZV3JpdGVSZXN1bHQuU2tpcHBlZCAtPgogICAgICAgICAgICAgICAgdGhyb3cgSWxsZWdhbFN0YXRlRXhjZXB0aW9uKCJLZWVwIEJvdGggYXJjaGl2ZSBjcmVhdGlvbiB1bmV4cGVjdGVkbHkgc2tpcHBlZCBvdXRwdXQiKQogICAgICAgIH0K').decode()
+          if text.count(old) != 1:
+              raise SystemExit(f'expected exactly one archive create block, found {text.count(old)}')
+          path.write_text(text.replace(old, new))
+          PY
+          git config user.name 'Zubaer Ahmed'
+          git config user.email 'zubaerknight@gmail.com'
+          git add app/src/main/java/com/zz/filemanager/core/archive/ArchiveManager.kt
+          git commit -m 'step4: stage archive creation before finalization'
+          git push origin HEAD:step4/archive-media-text-apk-analyzer
