@@ -15,11 +15,6 @@ suspend fun OperationStore.markHostExecutionInterrupted(nowMillis: Long = System
                     pendingCollision = null,
                     items = operation.items.map { item ->
                         if (item.state == OperationItemState.RUNNING) {
-                            // The recovery layer deliberately never assumes that a staged object is
-                            // reusable merely because a byte count was journaled. A checkpoint is
-                            // carried across process death only when it has all three persisted proof
-                            // elements. The engine revalidates those values against the live providers
-                            // before opening either stream at a non-zero offset.
                             val hasResumeProof =
                                 item.partialOutput != null &&
                                     item.resumeOffset > 0L &&
@@ -44,4 +39,35 @@ suspend fun OperationStore.markHostExecutionInterrupted(nowMillis: Long = System
                 ),
             )
         }
+}
+
+/**
+ * Implements the Step 5 auto-resume preference. Only interrupted COPY/MOVE transfers are made
+ * runnable automatically; destructive metadata operations are never silently replayed. Existing
+ * staged-object/source identity proofs are preserved and FileOperationEngine revalidates them
+ * before any non-zero-offset resume.
+ */
+suspend fun OperationStore.autoResumeInterruptedTransfers(
+    enabled: Boolean,
+    nowMillis: Long = System.currentTimeMillis(),
+): Int {
+    initialize()
+    if (!enabled) return 0
+    var resumed = 0
+    operations.value
+        .filter {
+            it.state == FileOperationState.INTERRUPTED &&
+                it.type in setOf(FileOperationType.COPY, FileOperationType.MOVE)
+        }
+        .forEach { operation ->
+            save(
+                operation.copy(
+                    state = FileOperationState.QUEUED,
+                    failure = if (operation.batchRenameRollbackRequired) operation.failure else null,
+                    updatedAtMillis = nowMillis,
+                ),
+            )
+            resumed += 1
+        }
+    return resumed
 }
