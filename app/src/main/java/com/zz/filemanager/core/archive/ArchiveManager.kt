@@ -95,27 +95,25 @@ class ArchiveManager(
         if (request.format !in setOf(ArchiveFormat.ZIP, ArchiveFormat.TAR, ArchiveFormat.TAR_GZ, ArchiveFormat.TAR_BZ2, ArchiveFormat.TAR_XZ)) {
             throw ArchiveFailure.UnsupportedFormat(request.format)
         }
-        val provider = providers.writableProviderFor(request.destination.providerId)
-            ?: throw ArchiveFailure.ProviderLimit("Archive destination is read-only")
-        val outputName = uniqueName(provider, request.destination, request.archiveName)
-        val output = provider.createFile(request.destination, outputName, archiveMime(request.format))
-        val scoped = ScopedFileReference(output.reference, request.destination.rootReference, request.destination.storageId)
-        try {
-            provider.openOutputStream(scoped, truncate = true).use { raw ->
-                when (request.format) {
-                    ArchiveFormat.ZIP -> createZip(raw, request, onProgress)
-                    ArchiveFormat.TAR, ArchiveFormat.TAR_GZ, ArchiveFormat.TAR_BZ2, ArchiveFormat.TAR_XZ -> createTar(raw, request, onProgress)
-                    else -> error("validated above")
-                }
+        val result = safeWriter.writeGenerated(
+            parent = request.destination,
+            requestedName = request.archiveName,
+            mimeType = archiveMime(request.format),
+            expectedBytes = null,
+            collisionPolicy = CollisionPolicy.KEEP_BOTH,
+        ) { raw ->
+            when (request.format) {
+                ArchiveFormat.ZIP -> createZip(raw, request, onProgress)
+                ArchiveFormat.TAR, ArchiveFormat.TAR_GZ, ArchiveFormat.TAR_BZ2, ArchiveFormat.TAR_XZ -> createTar(raw, request, onProgress)
+                else -> error("validated above")
             }
-            provider.getMetadata(output.reference) ?: throw IllegalStateException("Created archive disappeared")
-        } catch (cancelled: CancellationException) {
-            runCatching { provider.delete(scoped) }
-            throw cancelled
-        } catch (error: Throwable) {
-            runCatching { provider.delete(scoped) }
-            throw error
         }
+        when (result) {
+            is com.zz.filemanager.core.step4.SafeWriteResult.Written -> result.entry
+            is com.zz.filemanager.core.step4.SafeWriteResult.Skipped ->
+                throw IllegalStateException("Keep Both archive creation unexpectedly skipped output")
+        }
+
     }
 
     private suspend fun listZip(source: ArchiveSource, password: CharArray?): ArchiveListing {
