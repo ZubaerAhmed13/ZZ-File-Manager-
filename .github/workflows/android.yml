@@ -2,7 +2,7 @@ name: Android Step 5 CI
 
 on:
   push:
-    branches: [ main, 'step1/**', 'step2/**', 'step3/**', 'step4/**', 'step5/**' ]
+    branches: [ main, 'step1/**', 'step2/**', 'step3/**', 'step4/**', 'step5/**', 'hardening/**' ]
   pull_request:
     branches: [ main ]
 
