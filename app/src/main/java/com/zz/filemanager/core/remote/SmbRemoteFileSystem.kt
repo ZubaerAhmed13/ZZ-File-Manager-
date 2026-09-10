@@ -48,7 +48,6 @@ class SmbRemoteFileSystemFactory : RemoteFileSystemFactory {
                 SMB2Dialect.SMB_2_0_2,
             )
             .withTimeout(ioTimeout.toLong(), TimeUnit.MILLISECONDS)
-            // Never allow a transport socket to block forever.
             .withSoTimeout(ioTimeout.toLong(), TimeUnit.MILLISECONDS)
             .withSigningEnabled(true)
             .build()
@@ -59,7 +58,7 @@ class SmbRemoteFileSystemFactory : RemoteFileSystemFactory {
             transport = client.connect(connection.host, connection.port)
             val auth = when (connection.authenticationType) {
                 RemoteAuthenticationType.GUEST -> AuthenticationContext.guest()
-                RemoteAuthenticationType.ANONYMOUS -> AuthenticationContext.anonymous()
+                RemoteAuthenticationType.NONE -> AuthenticationContext.anonymous()
                 RemoteAuthenticationType.PASSWORD -> {
                     val username = connection.username?.takeIf { it.isNotBlank() }
                         ?: throw RemoteAccessException.AuthenticationRequired()
@@ -96,7 +95,6 @@ private class SmbRemoteFileSystem(
         rename = true,
         nativeMove = true,
         serverSideCopy = true,
-        // SMB rename with replace-if-exists is a single server-side commit request on one share.
         atomicReplace = true,
         seekRead = true,
         seekWrite = true,
@@ -116,29 +114,32 @@ private class SmbRemoteFileSystem(
         throw mapSmbError(error)
     }
 
-    override fun stat(path: String): RemoteNode? = try {
-        val normalized = RemotePath.normalize(path)
-        if (normalized == "/") {
-            return RemoteNode(
-                path = "/",
-                name = "/",
-                directory = true,
-                stableId = "smb-share-root",
-                revision = "smb-share-root",
-            )
+    override fun stat(path: String): RemoteNode? {
+        return try {
+            val normalized = RemotePath.normalize(path)
+            if (normalized == "/") {
+                RemoteNode(
+                    path = "/",
+                    name = "/",
+                    directory = true,
+                    stableId = "smb-share-root",
+                    revision = "smb-share-root",
+                )
+            } else {
+                val parent = RemotePath.parent(normalized) ?: "/"
+                val name = RemotePath.name(normalized)
+                share.list(toSmbPath(parent), name)
+                    .firstOrNull { it.fileName == name }
+                    ?.toNode(parent)
+                    ?: share.list(toSmbPath(parent), name)
+                        .firstOrNull { it.fileName.equals(name, ignoreCase = true) }
+                        ?.toNode(parent)
+            }
+        } catch (error: SMBApiException) {
+            if (isMissing(error)) null else throw mapSmbError(error)
+        } catch (error: Throwable) {
+            throw mapSmbError(error)
         }
-        val parent = RemotePath.parent(normalized) ?: "/"
-        val name = RemotePath.name(normalized)
-        share.list(toSmbPath(parent), name)
-            .firstOrNull { it.fileName == name }
-            ?.toNode(parent)
-            ?: share.list(toSmbPath(parent), name)
-                .firstOrNull { it.fileName.equals(name, ignoreCase = true) }
-                ?.toNode(parent)
-    } catch (error: SMBApiException) {
-        if (isMissing(error)) null else throw mapSmbError(error)
-    } catch (error: Throwable) {
-        throw mapSmbError(error)
     }
 
     override fun openInput(path: String, offset: Long): InputStream = try {
@@ -158,11 +159,7 @@ private class SmbRemoteFileSystem(
 
     override fun openOutput(path: String, offset: Long, truncate: Boolean): OutputStream = try {
         require(offset >= 0L)
-        val disposition = if (truncate && offset == 0L) {
-            SMB2CreateDisposition.FILE_OVERWRITE_IF
-        } else {
-            SMB2CreateDisposition.FILE_OPEN_IF
-        }
+        val disposition = if (truncate && offset == 0L) SMB2CreateDisposition.FILE_OVERWRITE_IF else SMB2CreateDisposition.FILE_OPEN_IF
         val file = share.openFile(
             toSmbPath(path),
             EnumSet.of(AccessMask.GENERIC_WRITE, AccessMask.FILE_READ_ATTRIBUTES),
@@ -224,11 +221,11 @@ private class SmbRemoteFileSystem(
             }
             true
         } catch (error: SMBApiException) {
-            if (error.statusCode == NtStatus.STATUS_NOT_SUPPORTED.value || error.statusCode == NtStatus.STATUS_INVALID_DEVICE_REQUEST.value) false
-            else throw mapSmbError(error)
+            if (error.statusCode == NtStatus.STATUS_NOT_SUPPORTED.value) false else throw mapSmbError(error)
         } catch (error: Throwable) {
-            // A server that does not implement FSCTL_SRV_COPYCHUNK must fall back to streamed copy.
-            if (error.message?.contains("not supported", ignoreCase = true) == true) false else throw mapSmbError(error)
+            if (error.message?.contains("not supported", ignoreCase = true) == true ||
+                error.message?.contains("invalid device request", ignoreCase = true) == true
+            ) false else throw mapSmbError(error)
         }
     }
 
@@ -249,10 +246,7 @@ private class SmbRemoteFileSystem(
     }
 }
 
-private class SmbOffsetInputStream(
-    private val file: SmbFile,
-    offset: Long,
-) : InputStream() {
+private class SmbOffsetInputStream(private val file: SmbFile, offset: Long) : InputStream() {
     private var position = offset
     private var closed = false
 
@@ -278,17 +272,11 @@ private class SmbOffsetInputStream(
     }
 }
 
-private class SmbOffsetOutputStream(
-    private val file: SmbFile,
-    offset: Long,
-) : OutputStream() {
+private class SmbOffsetOutputStream(private val file: SmbFile, offset: Long) : OutputStream() {
     private var position = offset
     private var closed = false
 
-    override fun write(value: Int) {
-        val single = byteArrayOf(value.toByte())
-        write(single, 0, 1)
-    }
+    override fun write(value: Int) = write(byteArrayOf(value.toByte()), 0, 1)
 
     override fun write(buffer: ByteArray, offset: Int, length: Int) {
         check(!closed) { "Stream is closed" }
@@ -343,9 +331,7 @@ private fun mapSmbError(error: Throwable): RemoteAccessException {
     if (error is RemoteAccessException) return error
     if (error is SMBApiException) {
         return when (error.statusCode) {
-            NtStatus.STATUS_LOGON_FAILURE.value,
-            NtStatus.STATUS_WRONG_PASSWORD.value,
-            NtStatus.STATUS_NO_SUCH_USER.value -> RemoteAccessException.AuthenticationFailed(error)
+            NtStatus.STATUS_LOGON_FAILURE.value -> RemoteAccessException.AuthenticationFailed(error)
             NtStatus.STATUS_ACCESS_DENIED.value -> RemoteAccessException.PermissionDenied(error)
             else -> RemoteAccessException.Protocol(error)
         }
