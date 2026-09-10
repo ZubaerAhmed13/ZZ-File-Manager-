@@ -4,6 +4,9 @@ import android.content.Context
 import com.zz.filemanager.core.analyzer.StorageAnalyzer
 import com.zz.filemanager.core.apk.ApkManager
 import com.zz.filemanager.core.archive.ArchiveManager
+import com.zz.filemanager.core.cloud.DirectCloudAccountManager
+import com.zz.filemanager.core.cloud.DirectCloudAdapterRegistry
+import com.zz.filemanager.core.cloud.DirectCloudOAuthDriverRegistry
 import com.zz.filemanager.core.library.OperationLibrarySynchronizer
 import com.zz.filemanager.core.library.UserLibraryManager
 import com.zz.filemanager.core.library.UserLibraryRepository
@@ -40,7 +43,6 @@ class AppContainer(context: Context) {
     private val appContext = context.applicationContext
     val preferences = PreferencesRepository(appContext)
 
-    // Step 5 connection metadata is intentionally separate from encrypted secret material.
     val networkConnections = NetworkConnectionRepository(appContext)
     val secureCredentials = AndroidKeystoreCredentialStore(appContext)
     val remoteFileSystems = RemoteFileSystemFactoryRegistry(
@@ -52,8 +54,26 @@ class AppContainer(context: Context) {
         ),
     )
 
+    // Repository-safe Step 5 ships no vendor OAuth credentials. Vendor adapters/drivers are
+    // registered here by a distribution that supplies its own OAuth client registration.
+    val directCloudAdapters = DirectCloudAdapterRegistry(emptyList())
+    val directCloudOAuthDrivers = DirectCloudOAuthDriverRegistry(emptyList())
+
     val storage = StorageRepository(appContext, preferences)
-    val remoteProviders = RemoteProviderCoordinator(storage, networkConnections, secureCredentials, remoteFileSystems)
+    val remoteProviders = RemoteProviderCoordinator(
+        storage,
+        networkConnections,
+        secureCredentials,
+        remoteFileSystems,
+        directCloudAdapters,
+    )
+    val directCloudAccounts = DirectCloudAccountManager(
+        networkConnections,
+        secureCredentials,
+        directCloudAdapters,
+        directCloudOAuthDrivers,
+        onAccountsChanged = remoteProviders::syncSavedConnections,
+    )
     val networkConnectionManager = NetworkConnectionManager(networkConnections, secureCredentials)
     val remoteConnectionService = RemoteConnectionService(
         networkConnections,
@@ -65,8 +85,6 @@ class AppContainer(context: Context) {
     val lanDiscovery = LanDiscoveryService(appContext)
 
     init {
-        // Rebuild runtime provider registrations synchronously from non-secret metadata. No network
-        // I/O or credential decryption occurs here, so application startup never auto-connects.
         remoteProviders.syncSavedConnections()
     }
 
@@ -97,9 +115,6 @@ class AppContainer(context: Context) {
         trashManager,
     )
 
-    // Step 4 shared staged-write safety is used by archive extraction, text saves and APK
-    // backup. It is separate from Step 2's operation journal because these are not queued
-    // FileOperation jobs, but it preserves the same no-data-loss invariants.
     val step4WriteJournal = Step4WriteJournal(appContext)
     val safeOutputWriter = SafeOutputWriter(storage, step4WriteJournal)
     val archiveManager = ArchiveManager(appContext, storage, safeOutputWriter)
