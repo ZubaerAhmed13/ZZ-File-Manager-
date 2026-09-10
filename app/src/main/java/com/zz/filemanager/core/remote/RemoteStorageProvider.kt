@@ -5,12 +5,14 @@ import com.zz.filemanager.core.model.BrowserLocation
 import com.zz.filemanager.core.model.FileEntry
 import com.zz.filemanager.core.model.FileReference
 import com.zz.filemanager.core.model.ScopedFileReference
+import com.zz.filemanager.core.storage.IncrementalStorageProvider
 import com.zz.filemanager.core.storage.ProviderCapabilities
 import com.zz.filemanager.core.storage.ResumableWritableStorageProvider
 import com.zz.filemanager.core.storage.StorageAccessException
 import com.zz.filemanager.core.storage.StorageCapability
 import com.zz.filemanager.core.util.FileClassifier
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.FilterInputStream
 import java.io.FilterOutputStream
@@ -27,13 +29,33 @@ class RemoteStorageProvider(
     private val connections: NetworkConnectionRepository,
     private val credentials: SecureCredentialStore,
     private val factories: RemoteFileSystemFactoryRegistry,
-) : ResumableWritableStorageProvider {
+) : ResumableWritableStorageProvider, IncrementalStorageProvider {
     private val initial = connections.get(connectionId) ?: throw StorageAccessException.Unavailable()
     override val id: String = initial.providerId
 
-    override suspend fun listChildren(location: BrowserLocation): List<FileEntry> = io {
+    override suspend fun listChildren(location: BrowserLocation): List<FileEntry> {
+        val all = ArrayList<FileEntry>()
+        listChildrenIncrementally(location) { page -> all.addAll(page) }
+        return all
+    }
+
+    override suspend fun listChildrenIncrementally(
+        location: BrowserLocation,
+        pageSize: Int,
+        onPage: suspend (List<FileEntry>) -> Unit,
+    ) = io {
         validateLocation(location)
-        withFileSystem { _, fs -> fs.list(scopedPath(location.reference, location.rootReference)).map { it.toEntry(location.storageId) } }
+        val settings = connections.settings()
+        withFileSystem { connection, fs ->
+            val path = scopedPath(location.reference, location.rootReference)
+            fs.listPages(path, pageSize) { nodes ->
+                val page = nodes.asSequence()
+                    .filter { settings.showHiddenRemoteFiles || !it.hidden }
+                    .map { it.toEntry(connection.storageId) }
+                    .toList()
+                if (page.isNotEmpty()) onPage(page)
+            }
+        }
     }
 
     override suspend fun getMetadata(item: FileReference): FileEntry? = io {
@@ -313,24 +335,40 @@ class RemoteStorageProvider(
         oauthRefreshToken = connection.oauthAccountId?.let { credentials.getChars(AndroidKeystoreCredentialStore.oauthRefreshReference(it)) },
     )
 
-    private fun openFileSystem(): Pair<NetworkConnection, RemoteFileSystem> {
+    /**
+     * retryCount is enforced here for transient session-establishment failures. Byte streams are
+     * never replayed blindly: once a stream is handed to the transactional operation engine, any
+     * later retry must go through its verified staged-object resume proof.
+     */
+    private suspend fun openFileSystem(): Pair<NetworkConnection, RemoteFileSystem> {
         val connection = currentConnection()
-        val secrets = loadSecrets(connection)
-        return try {
-            val fs = factories.factoryFor(connection.protocol).open(connection, secrets, connections.settings())
-            connections.updateState(connection.id, RemoteConnectionState.CONNECTED, endpoint = "${connection.host}:${connection.port}")
-            connection to fs
-        } catch (error: Throwable) {
-            connections.updateState(connection.id, stateFor(error))
-            throw mapped(error)
-        } finally {
-            secrets.clear()
+        val settings = connections.settings()
+        var attempt = 0
+        while (true) {
+            val secrets = loadSecrets(connection)
+            try {
+                val fs = factories.factoryFor(connection.protocol).open(connection, secrets, settings)
+                connections.updateState(connection.id, RemoteConnectionState.CONNECTED, endpoint = "${connection.host}:${connection.port}")
+                return connection to fs
+            } catch (error: Throwable) {
+                connections.updateState(connection.id, stateFor(error))
+                if (!isRetryableConnectionFailure(error) || attempt >= settings.retryCount) throw mapped(error)
+                attempt += 1
+                delay((150L shl (attempt - 1)).coerceAtMost(1_200L))
+            } finally {
+                secrets.clear()
+            }
         }
     }
 
-    private inline fun <T> withFileSystem(block: (NetworkConnection, RemoteFileSystem) -> T): T {
+    private suspend inline fun <T> withFileSystem(crossinline block: suspend (NetworkConnection, RemoteFileSystem) -> T): T {
         val (connection, fs) = openFileSystem()
         return try { block(connection, fs) } catch (error: Throwable) { throw mapped(error) } finally { runCatching { fs.close() } }
+    }
+
+    private fun isRetryableConnectionFailure(error: Throwable): Boolean = when (error) {
+        is RemoteAccessException.Timeout, is RemoteAccessException.HostUnreachable -> true
+        else -> false
     }
 
     private fun stateFor(error: Throwable): RemoteConnectionState = when (error) {
