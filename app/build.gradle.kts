@@ -75,6 +75,7 @@ dependencies {
     implementation("com.hierynomus:smbj:0.15.0")
     implementation("commons-net:commons-net:3.13.0")
     implementation("com.hierynomus:sshj:0.40.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     // Keep the supporting Bouncy Castle modules on a Maven-published release. SSHJ may
     // resolve a newer bcprov patch transitively; Android packaging handles duplicate legal
