@@ -22,6 +22,7 @@ import com.zz.filemanager.core.remote.NetworkConnectionRepository
 import com.zz.filemanager.core.remote.RemoteFileSystemFactoryRegistry
 import com.zz.filemanager.core.remote.RemoteProviderCoordinator
 import com.zz.filemanager.core.remote.SftpRemoteFileSystemFactory
+import com.zz.filemanager.core.remote.SmbRemoteFileSystemFactory
 import com.zz.filemanager.core.remote.WebDavRemoteFileSystemFactory
 import com.zz.filemanager.core.search.SearchCoordinator
 import com.zz.filemanager.core.search.SearchRepository
@@ -42,6 +43,7 @@ class AppContainer(context: Context) {
     val secureCredentials = AndroidKeystoreCredentialStore(appContext)
     val remoteFileSystems = RemoteFileSystemFactoryRegistry(
         listOf(
+            SmbRemoteFileSystemFactory(),
             FtpRemoteFileSystemFactory(),
             SftpRemoteFileSystemFactory(),
             WebDavRemoteFileSystemFactory(),
