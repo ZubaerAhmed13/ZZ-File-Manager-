@@ -104,14 +104,49 @@ private class SmbRemoteFileSystem(
     )
 
     override fun list(path: String): List<RemoteNode> = try {
-        val normalized = RemotePath.normalize(path)
-        share.list(toSmbPath(normalized))
-            .asSequence()
-            .filterNot { it.fileName == "." || it.fileName == ".." }
-            .map { it.toNode(normalized) }
-            .toList()
+        val output = ArrayList<RemoteNode>()
+        kotlinx.coroutines.runBlocking {
+            listPages(path, RemoteFileSystem.MAX_REMOTE_DIRECTORY_PAGE_SIZE) { output.addAll(it) }
+        }
+        output
     } catch (error: Throwable) {
         throw mapSmbError(error)
+    }
+
+    /** SMBJ Directory.iterator() fetches SMB2 QUERY_DIRECTORY buffers lazily instead of collecting DiskShare.list(). */
+    override suspend fun listPages(path: String, pageSize: Int, onPage: suspend (List<RemoteNode>) -> Unit) {
+        require(pageSize in 1..RemoteFileSystem.MAX_REMOTE_DIRECTORY_PAGE_SIZE)
+        val normalized = RemotePath.normalize(path)
+        val directory = try {
+            share.openDirectory(
+                toSmbPath(normalized),
+                EnumSet.of(AccessMask.FILE_LIST_DIRECTORY, AccessMask.FILE_READ_ATTRIBUTES),
+                null,
+                allShareAccess(),
+                SMB2CreateDisposition.FILE_OPEN,
+                null,
+            )
+        } catch (error: Throwable) {
+            throw mapSmbError(error)
+        }
+        try {
+            val page = ArrayList<RemoteNode>(pageSize)
+            val iterator = directory.iterator()
+            while (iterator.hasNext()) {
+                val info = iterator.next()
+                if (info.fileName == "." || info.fileName == "..") continue
+                page += info.toNode(normalized)
+                if (page.size == pageSize) {
+                    onPage(page.toList())
+                    page.clear()
+                }
+            }
+            if (page.isNotEmpty()) onPage(page.toList())
+        } catch (error: Throwable) {
+            throw mapSmbError(error)
+        } finally {
+            runCatching { directory.close() }
+        }
     }
 
     override fun stat(path: String): RemoteNode? {
@@ -313,6 +348,7 @@ private fun FileIdBothDirectoryInformation.toNode(parent: String): RemoteNode {
         directory = directory,
         sizeBytes = if (directory) null else endOfFile,
         modifiedAtMillis = modified,
+        hidden = hidden,
         stableId = id,
         revision = "$id:size=$endOfFile;mtime=${modified ?: -1};hidden=$hidden",
     )
