@@ -221,6 +221,205 @@ class Step4CoreBehaviorInstrumentationTest {
         assertTrue(result.exportedNames.all { File(backupDir, it).isFile && File(backupDir, it).length() > 0L })
     }
 
+
+    @Test
+    fun freshGeneratedWriteUsesHiddenJournaledStageUntilCommit() = runBlocking {
+        val parent = localLocation(root)
+        val journal = com.zz.filemanager.core.step4.Step4WriteJournal(context)
+        journal.list().forEach { journal.remove(it.id) }
+        var finalVisibleDuringProducer = true
+        var stageVisibleDuringProducer = false
+        var stagingJournalVisible = false
+        val payload = "fresh-transaction".toByteArray(StandardCharsets.UTF_8)
+
+        val result = container.safeOutputWriter.writeGenerated(
+            parent = parent,
+            requestedName = "fresh.bin",
+            mimeType = "application/octet-stream",
+            expectedBytes = payload.size.toLong(),
+            collisionPolicy = CollisionPolicy.KEEP_BOTH,
+        ) { output ->
+            finalVisibleDuringProducer = File(root, "fresh.bin").exists()
+            stageVisibleDuringProducer = root.listFiles().orEmpty().any { it.name.startsWith(".zzstage-") }
+            stagingJournalVisible = journal.list().any {
+                it.finalName == "fresh.bin" && it.phase == com.zz.filemanager.core.step4.Step4WritePhase.STAGING
+            }
+            output.write(payload)
+        }
+
+        assertFalse(finalVisibleDuringProducer)
+        assertTrue(stageVisibleDuringProducer)
+        assertTrue(stagingJournalVisible)
+        assertTrue(result is SafeWriteResult.Written)
+        assertEquals("fresh-transaction", File(root, "fresh.bin").readText())
+        assertTrue(root.listFiles().orEmpty().none { it.name.startsWith(".zzstage-") })
+        assertTrue(journal.list().none { it.finalName == "fresh.bin" })
+    }
+
+    @Test
+    fun startupReconcileRemovesProcessKilledFreshStageWithoutCreatingFinal() = runBlocking {
+        val parent = localLocation(root)
+        val journal = com.zz.filemanager.core.step4.Step4WriteJournal(context)
+        journal.list().forEach { journal.remove(it.id) }
+        val id = "fresh-process-death"
+        val staged = File(root, ".zzstage-$id").apply { writeText("partial-visible-only-as-hidden-stage") }
+        journal.put(
+            com.zz.filemanager.core.step4.Step4WriteTransaction(
+                id = id,
+                parent = parent,
+                finalName = "movie.mkv",
+                stagedName = staged.name,
+                backupName = null,
+                expectedBytes = 20L * 1024L * 1024L * 1024L,
+                phase = com.zz.filemanager.core.step4.Step4WritePhase.STAGING,
+                replacesExisting = false,
+            ),
+        )
+
+        val unresolved = container.safeOutputWriter.reconcile()
+
+        assertTrue(unresolved.isEmpty())
+        assertFalse(staged.exists())
+        assertFalse(File(root, "movie.mkv").exists())
+        assertTrue(journal.list().none { it.id == id })
+    }
+
+    @Test
+    fun recoveryRejectsSameSizedUnrelatedFinalAndPreservesBackup() = runBlocking {
+        val parent = localLocation(root)
+        val journal = com.zz.filemanager.core.step4.Step4WriteJournal(context)
+        journal.list().forEach { journal.remove(it.id) }
+        val id = "same-size-proof"
+        val final = File(root, "document.bin").apply { writeBytes("BBBB".toByteArray()) }
+        val backup = File(root, ".zzbackup-$id").apply { writeBytes("GOOD".toByteArray()) }
+        val expectedDigest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest("AAAA".toByteArray())
+            .joinToString("") { "%02X".format(it) }
+
+        journal.put(
+            com.zz.filemanager.core.step4.Step4WriteTransaction(
+                id = id,
+                parent = parent,
+                finalName = final.name,
+                stagedName = ".zzstage-gone",
+                backupName = backup.name,
+                expectedBytes = 4L,
+                phase = com.zz.filemanager.core.step4.Step4WritePhase.COMMITTING,
+                replacesExisting = true,
+                stagedMutationIdentity = null,
+                contentSha256 = expectedDigest,
+            ),
+        )
+
+        val unresolved = container.safeOutputWriter.reconcile()
+
+        assertTrue(id in unresolved)
+        assertTrue(backup.exists())
+        assertEquals("GOOD", backup.readText())
+        assertEquals("BBBB", final.readText())
+        assertTrue(journal.list().any { it.id == id })
+        journal.remove(id)
+    }
+
+    @Test
+    fun generatedOutputFailureNeverExposesRequestedFinalName() = runBlocking {
+        val parent = localLocation(root)
+        var failed = false
+        try {
+            container.safeOutputWriter.writeGenerated(
+                parent = parent,
+                requestedName = "Backup.zip",
+                mimeType = "application/zip",
+                collisionPolicy = CollisionPolicy.KEEP_BOTH,
+            ) { output ->
+                output.write("partial archive".toByteArray())
+                throw IOException("simulated archive producer failure")
+            }
+        } catch (_: IOException) {
+            failed = true
+        }
+
+        assertTrue(failed)
+        assertFalse(File(root, "Backup.zip").exists())
+        assertTrue(root.listFiles().orEmpty().none { it.name.startsWith(".zzstage-") })
+        assertTrue(com.zz.filemanager.core.step4.Step4WriteJournal(context).list().none { it.finalName == "Backup.zip" })
+    }
+
+    @Test
+    fun interruptedCompleteSplitBackupLeavesNoVisiblePartialBackupFolder() = runBlocking {
+        val destinationDir = File(root, "split-interrupted").apply { mkdirs() }
+        val base = File(root, "source-base.apk").apply { writeBytes(ByteArray(4096) { 7 }) }
+        val missingSplit = File(root, "missing-split.apk")
+        val app = com.zz.filemanager.core.apk.InstalledAppInfo(
+            label = "Interrupted Set",
+            packageName = "test.interrupted",
+            versionName = "1",
+            versionCode = 42L,
+            firstInstallTime = null,
+            lastUpdateTime = null,
+            baseApkPath = base.absolutePath,
+            splitApkPaths = listOf(missingSplit.absolutePath),
+            baseApkSizeBytes = base.length(),
+            isSystemApp = false,
+            icon = null,
+        )
+
+        var failed = false
+        try {
+            container.apkManager.backup(
+                app,
+                localLocation(destinationDir, root),
+                ApkBackupMode.COMPLETE_SPLITS,
+            )
+        } catch (_: Throwable) {
+            failed = true
+        }
+
+        assertTrue(failed)
+        assertFalse(File(destinationDir, "Interrupted Set-42-apks").exists())
+        assertTrue(destinationDir.listFiles().orEmpty().none { it.name.startsWith(".zzapkbackup-") })
+        assertTrue(com.zz.filemanager.core.step4.Step4WriteJournal(context).list().none {
+            it.finalName == "Interrupted Set-42-apks"
+        })
+    }
+
+    @Test
+    fun completeSplitBackupFinalizesWholeSetWithVerifiedManifest() = runBlocking {
+        val destinationDir = File(root, "split-complete").apply { mkdirs() }
+        val base = File(root, "complete-base.apk").apply { writeBytes(ByteArray(4096) { 1 }) }
+        val split = File(root, "split_config.en.apk").apply { writeBytes(ByteArray(2048) { 2 }) }
+        val app = com.zz.filemanager.core.apk.InstalledAppInfo(
+            label = "CompleteSet",
+            packageName = "test.complete",
+            versionName = "7",
+            versionCode = 7L,
+            firstInstallTime = null,
+            lastUpdateTime = null,
+            baseApkPath = base.absolutePath,
+            splitApkPaths = listOf(split.absolutePath),
+            baseApkSizeBytes = base.length(),
+            isSystemApp = false,
+            icon = null,
+        )
+
+        val result = container.apkManager.backup(
+            app,
+            localLocation(destinationDir, root),
+            ApkBackupMode.COMPLETE_SPLITS,
+        )
+
+        val folder = File(destinationDir, "CompleteSet-7-apks")
+        assertTrue(folder.isDirectory)
+        assertEquals(ApkBackupMode.COMPLETE_SPLITS, result.mode)
+        assertTrue(result.reinstallableSetPreserved)
+        assertTrue(File(folder, "base.apk").isFile)
+        assertTrue(File(folder, "split_config.en.apk").isFile)
+        val manifest = File(folder, "zz-apk-backup-manifest.json")
+        assertTrue(manifest.isFile)
+        assertTrue(manifest.readText().contains("\"complete\":true"))
+        assertTrue(destinationDir.listFiles().orEmpty().none { it.name.startsWith(".zzapkbackup-") })
+    }
+
     @Test
     fun malformedMediaMetadataFailsGracefullyWithoutThrowing() = runBlocking {
         val video = File(root, "bad.mp4").apply { writeBytes(byteArrayOf(9, 8, 7, 6)) }
