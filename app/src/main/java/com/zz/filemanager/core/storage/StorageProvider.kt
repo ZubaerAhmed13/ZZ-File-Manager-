@@ -13,9 +13,37 @@ sealed class StorageAccessException(message: String? = null, cause: Throwable? =
     class Unavailable(cause: Throwable? = null) : StorageAccessException(cause = cause)
     class ReadOnly(cause: Throwable? = null) : StorageAccessException(cause = cause)
     class Io(cause: Throwable? = null) : StorageAccessException(cause = cause)
+    class AuthenticationRequired(cause: Throwable? = null) : StorageAccessException(cause = cause)
+    class AuthenticationFailed(cause: Throwable? = null) : StorageAccessException(cause = cause)
+    class Timeout(cause: Throwable? = null) : StorageAccessException(cause = cause)
+    class Tls(cause: Throwable? = null) : StorageAccessException(cause = cause)
+    class Certificate(cause: Throwable? = null) : StorageAccessException(cause = cause)
+    class ServerIdentityChanged(cause: Throwable? = null) : StorageAccessException(cause = cause)
+    class Protocol(cause: Throwable? = null) : StorageAccessException(cause = cause)
 }
 
-enum class StorageCapability { READ, WRITE, CREATE_FILE, CREATE_DIRECTORY, DELETE, RENAME, MOVE_NATIVE, RANDOM_ACCESS, ATOMIC_RENAME, SET_MODIFIED_TIME }
+enum class StorageCapability {
+    READ,
+    WRITE,
+    CREATE_FILE,
+    CREATE_DIRECTORY,
+    DELETE,
+    RENAME,
+    MOVE_NATIVE,
+    RANDOM_ACCESS,
+    ATOMIC_RENAME,
+    SET_MODIFIED_TIME,
+    COPY_SERVER_SIDE,
+    RESUME_READ,
+    RESUME_WRITE,
+    QUERY_FREE_SPACE,
+    QUERY_TOTAL_SPACE,
+    HASH_SERVER_SIDE,
+    SEARCH_SERVER_SIDE,
+    TRASH,
+    WATCH_CHANGES,
+    STABLE_IDENTITY,
+}
 
 data class ProviderCapabilities(val values: Set<StorageCapability>) {
     operator fun contains(capability: StorageCapability): Boolean = capability in values
@@ -23,6 +51,7 @@ data class ProviderCapabilities(val values: Set<StorageCapability>) {
     companion object { val ReadOnly = ProviderCapabilities(setOf(StorageCapability.READ)) }
 }
 
+/** Provider-neutral file access contract. Provider ids are stable logical identities, not paths. */
 interface StorageProvider {
     val id: String
     suspend fun listChildren(location: BrowserLocation): List<FileEntry>
@@ -32,12 +61,11 @@ interface StorageProvider {
     suspend fun resolveParent(location: BrowserLocation): BrowserLocation?
     suspend fun breadcrumbs(location: BrowserLocation): List<Breadcrumb>
 
-    /**
-     * Optional provider-stable identity for proving that the same underlying object survived a
-     * rename/atomic move even when its path/URI reference changes. This is deliberately not a
-     * display identity and must return null when the provider cannot make that guarantee.
-     */
+    /** Stable identity for mutation proof. Return null when the provider cannot prove identity. */
     suspend fun mutationIdentity(item: FileReference): String? = null
+
+    /** Revision/ETag/file-key proof used by Step 5 safe resume. Null means resume must not assume sameness. */
+    suspend fun revisionIdentity(item: FileReference): String? = null
 }
 
 interface WritableStorageProvider : StorageProvider {
@@ -49,28 +77,38 @@ interface WritableStorageProvider : StorageProvider {
     suspend fun openOutputStream(item: ScopedFileReference, truncate: Boolean = true): OutputStream
     suspend fun findChild(parent: BrowserLocation, name: String): FileEntry?
     suspend fun freeBytes(location: BrowserLocation): Long?
+    suspend fun totalBytes(location: BrowserLocation): Long? = null
     suspend fun isSameOrDescendant(source: ScopedFileReference, destination: BrowserLocation): Boolean
 
-    /**
-     * Non-mutating feasibility check used only for planning/free-space decisions. Returning false
-     * must never prevent a later safe copy fallback. Returning true means [moveNative] is expected
-     * to move this item into [destination] without allocating another full copy of its payload.
-     */
     suspend fun canMoveNative(item: ScopedFileReference, destination: BrowserLocation, newName: String): Boolean = false
-
     suspend fun moveNative(item: ScopedFileReference, destination: BrowserLocation, newName: String): FileEntry? = null
+
+    /** Optional same-provider server-side copy. Null means use the existing streamed copy engine. */
+    suspend fun copyServerSide(item: ScopedFileReference, destination: BrowserLocation, newName: String): FileEntry? = null
 
     /**
      * Optional atomic staged-file replacement. Implementations must either replace [existing] with
-     * [staged] atomically and return the committed entry, return null without mutating either item
-     * when atomic replacement is unavailable, or throw while preserving the pre-call destination.
-     * The engine falls back to a reversible backup/commit transaction when this returns null.
+     * [staged] atomically and return the committed entry, return null without mutating either item,
+     * or throw while preserving the pre-call destination.
      */
     suspend fun replaceAtomically(
         staged: ScopedFileReference,
         existing: ScopedFileReference,
         finalName: String,
     ): FileEntry? = null
+}
+
+/**
+ * Implement only when a provider can seek to an exact byte offset and validate object identity.
+ * The operation engine must never use these methods unless the persisted resume proof still matches.
+ */
+interface ResumableStorageProvider : StorageProvider {
+    suspend fun openInputStreamAt(item: FileReference, offset: Long): InputStream
+    suspend fun resumeIdentity(item: FileReference): String?
+}
+
+interface ResumableWritableStorageProvider : WritableStorageProvider, ResumableStorageProvider {
+    suspend fun openOutputStreamAt(item: ScopedFileReference, offset: Long): OutputStream
 }
 
 interface StorageProviderRegistry {

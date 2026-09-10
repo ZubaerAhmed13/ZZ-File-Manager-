@@ -1,24 +1,22 @@
-name: Android Step 4 CI
+name: Android Step 5 CI
 
 on:
   push:
-    branches: [ main, 'step1/**', 'step2/**', 'step3/**', 'step4/**' ]
+    branches: [ main, 'step1/**', 'step2/**', 'step3/**', 'step4/**', 'step5/**' ]
   pull_request:
     branches: [ main ]
 
 permissions:
   contents: read
 
-# Only the newest commit on the same branch/ref needs certification. Rapid fixes cancel obsolete
-# emulator runs, while the exact current Step 4 head still has to pass the complete gate.
 concurrency:
-  group: android-step4-${{ github.workflow }}-${{ github.ref }}
+  group: android-step5-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  certify-step4-api35:
+  certify-step5-api35:
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4

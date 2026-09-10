@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
@@ -9,10 +13,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    <!-- Required only so an explicit user-selected APK can be handed to Android Package Installer. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
-    <!-- Narrow package discovery for launchable applications. QUERY_ALL_PACKAGES is deliberately absent. -->
     <queries>
         <intent>
             <action android:name="android.intent.action.MAIN" />
@@ -37,14 +39,8 @@
             </intent-filter>
         </activity>
 
-        <activity
-            android:name=".Step4ToolsActivity"
-            android:exported="false" />
-
-        <!-- Internal-only viewer route. It is always launched explicitly with a zzfm data URI. -->
-        <activity
-            android:name=".Step4FileActivity"
-            android:exported="false" />
+        <activity android:name=".Step4ToolsActivity" android:exported="false" />
+        <activity android:name=".Step4FileActivity" android:exported="false" />
 
         <service
             android:name=".core.operation.android.OperationForegroundService"

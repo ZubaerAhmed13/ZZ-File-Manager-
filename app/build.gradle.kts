@@ -12,8 +12,8 @@ android {
         applicationId = "com.zz.filemanager"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.4.0-step4"
+        versionCode = 5
+        versionName = "0.5.0-step5"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
     }
@@ -55,9 +55,7 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
 
-    // Step 4: professional offline media and archive support. Media3 1.9.4's
-    // official release tag sets compileSdkVersion=35 and publishes minCompileSdk from that value,
-    // matching this Step 4 API-35 certification boundary without reducing playback features.
+    // Step 4 professional offline media/archive support (regression protected in Step 5).
     implementation("androidx.media3:media3-exoplayer:1.9.4")
     implementation("androidx.media3:media3-ui:1.9.4")
     implementation("net.lingala.zip4j:zip4j:2.11.5")
@@ -65,11 +63,13 @@ dependencies {
     implementation("org.tukaani:xz:1.10")
     implementation("com.github.junrar:junrar:8.0.0")
 
+    // Step 5 maintained protocol clients. SMBJ negotiates SMB2/SMB3; SMB1 is not enabled.
+    implementation("com.hierynomus:smbj:0.15.0")
+    implementation("commons-net:commons-net:3.13.0")
+    implementation("com.hierynomus:sshj:0.40.0")
+
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
-    // The Android framework org.json implementation is stubbed in local JVM
-    // tests. Use the compatible JVM implementation so operation-journal JSON
-    // tests execute real serialization logic, including 64-bit counters.
     testImplementation("org.json:json:20240303")
 
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
