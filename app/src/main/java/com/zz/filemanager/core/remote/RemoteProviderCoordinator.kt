@@ -22,7 +22,7 @@ class RemoteProviderCoordinator(
             if (connection.protocol == RemoteProtocol.DIRECT_CLOUD) return@forEach
             val hasFactory = runCatching { factories.factoryFor(connection.protocol) }.isSuccess
             if (!hasFactory) return@forEach
-            val provider = RemoteStorageProvider(connection, connections, credentials, factories)
+            val provider = RemoteStorageProvider(connection.id, connections, credentials, factories)
             retained += provider.id
             storage.registerExternalProvider(
                 provider = provider,
