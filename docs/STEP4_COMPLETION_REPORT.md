@@ -2,9 +2,9 @@
 
 ## Deliverable
 
-**Step 4 — Archive, Media, Text, APK and Storage Analyzer** has been implemented on branch `step4/archive-media-text-apk-analyzer` as an additive extension of the Step 1–3 clean-room file-manager architecture.
+**Step 4 — Archive, Media, Text, APK and Storage Analyzer** is implemented on branch `step4/archive-media-text-apk-analyzer` as an additive extension of the Step 1–3 clean-room file-manager architecture.
 
-This report describes the implementation state. The authoritative certification state is the GitHub Actions result for the **exact branch head**. Step 4 must not be called certified if that final head is red, cancelled, skipped or has not executed API-35 instrumentation.
+This report describes the implementation state. The authoritative certification state is the GitHub Actions result for the **exact branch head**. Any older green run predating the transactional-output hardening does not certify the current implementation.
 
 ## Implemented product areas
 
@@ -17,6 +17,7 @@ This report describes the implementation state. The authoritative certification 
 - Path traversal / unsafe path / duplicate normalized-path defenses.
 - Expansion-ratio, entry-count and destination-space protection without an arbitrary normal archive-size ceiling.
 - Provider-aware random-access staging only where required.
+- Archive creation writes through the same hidden transactional staged-output path as other Step 4 file creation; the user-requested archive name is not exposed while compression is incomplete.
 
 ### Media viewing/playback
 
@@ -34,6 +35,7 @@ This report describes the implementation state. The authoritative certification 
 - Streamed read-only window mode for very large text files.
 - Safe Save and Save As.
 - External-change detection with explicit Reload / Save As / Overwrite choice.
+- Fresh Save As uses hidden journaled staging and therefore cannot leave a process-killed partial under the requested visible filename.
 
 ### APK / installed-app tools
 
@@ -42,7 +44,8 @@ This report describes the implementation state. The authoritative certification 
 - Installed-app list/search within Android package-visibility rules.
 - Launch and App Info actions.
 - Android-confirmed uninstall handoff.
-- Base APK backup and complete split-APK backup.
+- Base APK backup through the staged file-output transaction.
+- Complete split-APK backup through a hidden directory-level transaction containing every base/split component plus a verified manifest; the whole set is renamed into visibility only after completion/proof.
 - No `QUERY_ALL_PACKAGES` permission.
 
 ### Storage analyzer
@@ -53,18 +56,33 @@ This report describes the implementation state. The authoritative certification 
 - No automatic duplicate deletion.
 - Cancellation-aware execution.
 
-### Safe output / recovery
+## Safe output / recovery hardening
 
-- Staged writes with metadata/byte verification.
-- Provider atomic replace when available.
-- Journaled backup/rename fallback when atomic replace is unavailable.
-- Durable write phases across process death.
-- Startup/work recovery reconciliation.
-- No destructive guessing on ambiguous state.
+Step 4 no longer has a separate direct fresh-write path. Fresh and replacement file outputs share one transaction model:
+
+- a `Step4WriteTransaction` is durably recorded in `STAGING` before the hidden output file is created;
+- bytes are streamed only into `.zzstage-*`, never into the requested final filename;
+- byte count, provider metadata and a streaming SHA-256 are captured before commit;
+- provider `mutationIdentity` is also persisted when the provider can supply a stable mutation identity;
+- fresh output becomes visible only by renaming the fully staged object;
+- replacement prefers `replaceAtomically` where available and otherwise preserves the old destination as `.zzbackup-*` during commit;
+- recovery accepts a final object only when it can prove that it is the staged object: provider identity when available, otherwise streamed SHA-256;
+- filename plus expected size is not accepted as proof;
+- a replacement backup is never discarded merely because a same-name/same-size final exists;
+- ambiguous state keeps the journal and recoverable data rather than guessing;
+- providers that cannot safely create/rename/delete hidden staged output are rejected for the operation instead of receiving a weaker direct-to-final implementation.
+
+This aligns Step 4's recovery rule with the Step 3 principle that uncertainty must preserve authoritative data.
+
+## Complete split-APK transactional guarantee
+
+`COMPLETE_SPLITS` does not create the final `<App>-<version>-apks` directory first. It creates a hidden `.zzapkbackup-*` transaction directory, streams and verifies the base APK and every split, writes a manifest containing package/version/component count and per-component sizes/SHA-256 digests, re-reads that manifest, and lets the transactional writer independently prove the complete direct-file membership before renaming the directory into its visible final name.
+
+A handled pre-commit failure/cancellation removes only the hidden stage. Process-death state remains journaled for startup reconciliation. A provider without the directory/file create plus rename/delete semantics required to finalize this safely is reported unsupported for complete-set backup.
 
 ## Large-file position
 
-Step 4 does not introduce a public hard maximum such as 2 GiB or 4 GiB. Sizes and counters use `Long`; streaming/bounded algorithms are used where practical; random-access formats may use capacity-checked temporary staging. Tests include logical 3 GiB, 10 GiB and 30 GiB values and a 100,000-entry analyzer workload to catch regression toward `Int`-bounded assumptions.
+Step 4 does not introduce a public hard maximum such as 2 GiB or 4 GiB. Sizes and counters use `Long`; streaming/bounded algorithms are used where practical; random-access formats may use capacity-checked temporary staging. Tests include logical 3 GiB, 10 GiB, 20 GiB and 30 GiB values and a 100,000-entry analyzer workload to catch regression toward `Int`-bounded assumptions.
 
 ## Certification assets
 
@@ -73,6 +91,7 @@ The branch contains:
 - Step 4 JVM safety/algorithm tests;
 - `Step4CertificationInstrumentationTest` for real Step 4 screens and generated fixtures;
 - `Step4CoreBehaviorInstrumentationTest` for actual file-engine/archive/APK/media/safe-write behavior;
+- transactional blocker regressions that prove hidden fresh staging, process-death cleanup for a logical 20 GiB fresh output, rejection of a same-size wrong-content final during recovery, generated/archive failure visibility safety, interrupted complete-split cleanup, and successful complete-split finalization with a manifest;
 - CI that builds debug and release variants, runs JVM tests, lint, instrumentation compilation and API-35 connected instrumentation;
 - zero-skipped-test enforcement for JVM and Android test XML.
 
@@ -80,13 +99,19 @@ See `STEP4_TEST_MATRIX.md` for the exact coverage contract.
 
 ## Dependency compatibility correction
 
-Media3 1.11.0 and 1.10.1 publish AAR metadata requiring compileSdk 36, so neither can be used by this Step 4 build while it is intentionally certified on API 35 / compileSdk 35 with Android Gradle Plugin 8.7.3. Playback is therefore pinned to **Media3 1.9.4**. Its official release tag sets `compileSdkVersion = 35`, and the same release's library configuration publishes `aarMetadata.minCompileSdk` from that compile-SDK value. This preserves ExoPlayer playback and UI functionality without silently moving the requested certification boundary to API 36.
+Media3 1.11.0 and 1.10.1 publish AAR metadata requiring compileSdk 36, so neither can be used by this Step 4 build while it is intentionally certified on API 35 / compileSdk 35 with Android Gradle Plugin 8.7.3. Playback is therefore pinned to **Media3 1.9.4**. This preserves ExoPlayer playback and UI functionality without silently moving the requested certification boundary to API 36.
 
 ## Non-goals / deferred verification
 
 - Step 5+ functionality is not pulled forward into Step 4.
 - Physical-device certification is not claimed here. Per the project plan, physical phone testing remains deferred until the final overall project step.
 - A successful compile alone is not certification; API-35 instrumentation must actually execute on the exact final head.
+
+## Certification status
+
+**Current state: implementation complete, certification pending until the final clean exact-head GitHub Actions run succeeds.**
+
+The previously green Step 4 run cannot be used as acceptance evidence because it predates the transactional-output fixes described above. This report must be updated to `CERTIFIED` only after the branch is clean of temporary patch helpers and a new permanent `Android Step 4 CI` run succeeds for the exact branch head.
 
 ## Final acceptance rule
 
@@ -97,8 +122,9 @@ Step 4 is accepted only when all of the following are true on one exact head SHA
 3. `lintDebug` passes;
 4. `assembleRelease` passes;
 5. `assembleDebugAndroidTest` passes;
-6. API-35 `connectedDebugAndroidTest` executes and passes;
+6. API-35 `connectedDebugAndroidTest` actually executes and passes;
 7. instrumentation results contain zero skipped tests;
-8. the passing run's `head_sha` equals the current `step4/archive-media-text-apk-analyzer` branch head.
+8. the passing run's `head_sha` equals the current `step4/archive-media-text-apk-analyzer` branch head;
+9. no temporary hardening/patch workflow remains in the branch.
 
 Until that condition is met, any remaining CI failure is a Step 4 blocker and must be fixed rather than documented away.
