@@ -113,7 +113,32 @@ sealed class RemoteAccessException(message: String? = null, cause: Throwable? = 
 
 interface RemoteFileSystem : Closeable {
     val capabilities: RemoteFsCapabilities
+
+    /** Legacy/all-at-once API retained for non-browser callers and compatibility tests. */
     fun list(path: String): List<RemoteNode>
+
+    /**
+     * Incremental directory enumeration. Implementations should override this when their protocol
+     * library exposes a cursor/iterator/stream. The default preserves compatibility but is not used
+     * as proof of large-directory streaming capability in Step 5 certification.
+     */
+    suspend fun listPages(
+        path: String,
+        pageSize: Int = DEFAULT_REMOTE_DIRECTORY_PAGE_SIZE,
+        onPage: suspend (List<RemoteNode>) -> Unit,
+    ) {
+        require(pageSize in 1..MAX_REMOTE_DIRECTORY_PAGE_SIZE)
+        val page = ArrayList<RemoteNode>(pageSize)
+        list(path).forEach { node ->
+            page += node
+            if (page.size == pageSize) {
+                onPage(page.toList())
+                page.clear()
+            }
+        }
+        if (page.isNotEmpty()) onPage(page.toList())
+    }
+
     fun stat(path: String): RemoteNode?
     fun openInput(path: String, offset: Long = 0L): InputStream
     fun openOutput(path: String, offset: Long = 0L, truncate: Boolean = true): OutputStream
@@ -123,6 +148,11 @@ interface RemoteFileSystem : Closeable {
     fun copyServerSide(sourcePath: String, destinationPath: String): Boolean = false
     fun freeBytes(path: String): Long? = null
     fun totalBytes(path: String): Long? = null
+
+    companion object {
+        const val DEFAULT_REMOTE_DIRECTORY_PAGE_SIZE = 256
+        const val MAX_REMOTE_DIRECTORY_PAGE_SIZE = 2_048
+    }
 }
 
 interface RemoteFileSystemFactory {
