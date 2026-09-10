@@ -1,45 +1,45 @@
 # Step 5 Protocol Capability Matrix
 
-Capability entries describe the current implementation, not an ideal protocol feature list. **Conditional** means the provider/server must advertise or prove the capability at runtime. **No** means the app deliberately does not promise that behavior.
+Capability entries describe the implemented contract. **Conditional** means the provider/server must advertise or prove the capability at runtime. **No** means the app deliberately does not promise it.
 
 | Provider / protocol | Browse / metadata | Stream read | Stream write | Create dir | Delete | Rename / move | Server-side copy | Safe Replace | Nonzero resume | Identity / revision proof | Security state |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| Local filesystem | Yes | Yes | Yes | Yes | Yes | Yes | Provider-dependent | Yes where provider contract permits | Existing local behavior; not a Step 5 remote claim | Local metadata/reference | Existing Steps 1–4 model |
-| SAF generic | Yes | Yes | Conditional write grant | Conditional provider flags | Conditional provider flags | Conditional `DocumentsContract` flags | No generic promise | Only when generic engine can stage/finalize safely | No Step 5 nonzero seek contract | URI/document metadata | Android persisted URI grant |
-| SD card via SAF | Yes | Yes | Conditional write grant | Conditional | Conditional | Conditional | No generic promise | Same safe-staging rules | No nonzero resume claim | Persisted tree + removable storage token where available | Explicit platform grant; reconnect must match saved volume identity |
-| USB via SAF | Yes | Yes | Conditional write grant | Conditional | Conditional | Conditional | No generic promise | Same safe-staging rules | No nonzero resume claim | Persisted tree + removable storage token where available | Explicit platform grant; removed/permission-lost/read-only states surfaced |
-| SMB 2/3 | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes; atomic provider path advertised | Yes when live source/stage identity and exact staged length validate | Stable SMB identity + revision proof | SMB1 excluded; signing enabled; password/guest/anonymous per saved config |
-| FTP | Yes | Yes | Yes | Yes | Yes | Yes within server namespace | No | Reversible generic rename/delete path when supported | REST byte I/O may exist, but nonzero resume is disabled unless full staged identity proof is available | Size/mtime revision; no stable staged identity promised | **Unencrypted** warning always visible |
-| FTPS | Yes | Yes | Yes | Yes | Yes | Yes within server namespace | No | Reversible generic rename/delete path when supported | Same conservative rule as FTP | Size/mtime revision; no stable staged identity promised | TLS, endpoint checking, optional explicit leaf SHA-256 pin |
-| SFTP | Yes | Yes | Yes | Yes | Yes | Yes | No | Reversible generic rename/delete path when supported | Seek I/O exists, but nonzero resume requires complete identity proof; current provider does not promise stable staged identity | File revision proof; stable staged identity not promised | SHA-256 SSH host key must be explicitly trusted; changed key blocks |
-| WebDAV HTTP/HTTPS | Conditional DAV support discovered by OPTIONS/PROPFIND | Yes | Conditional PUT | Conditional MKCOL | Conditional DELETE | Conditional MOVE | Conditional COPY | Generic safe replacement only if runtime capabilities support safe path; no atomic replace promise | No global nonzero resume promise; ranged GET alone is not treated as sufficient | ETag/size/mtime revision where server reports it; no stable stage ID promise | HTTPS uses system TLS; optional pin; HTTP always labelled unencrypted; redirects rejected |
-| Cloud through Android DocumentsProvider | Yes through SAF provider | Yes | Conditional provider grant | Conditional provider flags | Conditional | Conditional | No generic promise | Same engine staging/finalization rules | No generic nonzero resume promise | Provider-native content URI/document ID | Trust delegated to Android provider app + explicit URI grant |
-| Direct cloud adapter boundary | Interface supports paging/stat/streaming and upload sessions | Yes | Yes through upload session | Yes | Yes | Rename/move | Provider implementation dependent | Explicit upload commit required | Architecture supports persisted session ID + Long offset + source/destination revision proof | Native file ID + revisions | OAuth secret belongs behind Keystore boundary; production vendor registration not embedded |
+| Local filesystem | Yes | Yes | Yes | Yes | Yes | Yes | Provider-dependent | Yes where provider contract permits | Existing local behavior | Local metadata/reference | Existing Steps 1–4 model |
+| SAF generic | Yes | Yes | Conditional | Conditional | Conditional | Conditional | No generic promise | Safe engine path only | No Step 5 generic nonzero seek promise | URI/document metadata | Persisted Android URI grant |
+| SD card via SAF | Yes | Yes | Conditional | Conditional | Conditional | Conditional | No generic promise | Safe engine path only | No generic nonzero claim | Persisted tree + removable token where available | Explicit grant; reconnect checks saved identity |
+| USB via SAF | Yes | Yes | Conditional | Conditional | Conditional | Conditional | No generic promise | Safe engine path only | No generic nonzero claim | Persisted tree + removable token where available | Removed/read-only/permission-lost states surfaced |
+| SMB 2/3 | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes; provider replace path | Yes only after full live resume proof | Stable SMB identity + revision | SMB1 excluded; signing enabled |
+| FTP | Yes | Yes | Yes | Yes | Yes | Yes in server namespace | No | Generic reversible path when supported | REST offset alone is insufficient; generic nonzero resume not promised without stage identity | Size/mtime revision | **Unencrypted** warning always visible |
+| FTPS | Yes | Yes | Yes | Yes | Yes | Yes in server namespace | No | Generic reversible path when supported | Same conservative rule as FTP | Size/mtime revision | TLS endpoint verification + optional explicit leaf SHA-256 pin |
+| SFTP | Yes | Yes | Yes | Yes | Yes | Yes | No | Generic reversible path when supported | Offset I/O exists, but nonzero resume requires full stage proof | File revision; no generic stable stage ID promise | Explicit SHA-256 host-key trust; changed key blocks |
+| WebDAV HTTP/HTTPS | Conditional DAV support | Yes | Conditional PUT | Conditional MKCOL | Conditional DELETE | Conditional MOVE | Conditional COPY | Safe generic path only when capabilities permit | Ranged GET alone is insufficient | ETag/size/mtime where reported | HTTPS system TLS + optional pin; HTTP always unencrypted; redirects rejected |
+| Cloud through Android DocumentsProvider | Yes through SAF | Yes | Conditional | Conditional | Conditional | Conditional | No generic promise | Safe engine path only | No generic nonzero promise | Provider-native URI/document ID | Android provider app + explicit URI grant |
+| Direct cloud adapter/provider | Yes, paged | Yes | Yes through upload session | Yes | Yes | Native rename/move | Adapter-dependent | Explicit upload commit; provider contract | Supported only with persisted session/offset/revision proof | Native file ID + revisions | OAuth secret behind secure credential boundary; adapter must be registered |
 
 ## SMB dialect policy
 
-The SMBJ client explicitly offers only:
+The SMBJ client offers SMB 3.1.1, 3.0.2, 3.0, 2.1 and 2.0.2 only. SMB1 is not enabled.
 
-- SMB 3.1.1
-- SMB 3.0.2
-- SMB 3.0
-- SMB 2.1
-- SMB 2.0.2
+## FTP/FTPS resume rule
 
-SMB1 is not enabled.
+Apache Commons Net REST support permits offset I/O on compatible servers, but REST support is not treated as process-death resume proof. The hidden staged object must also have stable identity and exact recorded length. Without that proof the transfer restarts rather than blindly appending.
 
-## FTP/FTPS resume note
+## SFTP resume rule
 
-Apache Commons Net REST support allows offset I/O on compatible servers. Step 5 deliberately does **not** equate REST support with safe process-death resume. A hidden staged object must also have a stable live identity and exact recorded length. Because the FTP provider does not promise stable staged identity, it safely restarts rather than blindly appending.
+SSHJ supports offset reads/writes. Byte seeking is necessary but insufficient. Nonzero process-death resume is not advertised unless the same staged object can be proven after recovery.
 
-## SFTP resume note
+## WebDAV capability rule
 
-SSHJ supports offset reads/writes. The same rule applies: byte seeking is necessary but insufficient. Until a server/provider can prove the same staged object across recovery, nonzero process-death resume is not advertised by the generic engine.
+Capabilities are discovered from OPTIONS/DAV/Allow and server behavior. Ranged GET is supported where applicable, but the provider does not globally advertise resume because portable offset-write semantics are not guaranteed by standard WebDAV PUT.
 
-## WebDAV capability note
+## Direct-cloud registration rule
 
-WebDAV capabilities are discovered from the server's OPTIONS/DAV/Allow response. The client can issue a ranged GET for a caller that explicitly requests an offset, but the provider does not globally advertise resume because standard WebDAV PUT has no portable offset-write guarantee.
+`DirectCloudStorageProvider` is a real runtime storage provider over `DirectCloudAdapter`. `DirectCloudAccountManager` manages connect/refresh/disconnect/revoke/remove lifecycle. `RemoteProviderCoordinator` registers saved direct-cloud accounts only when a matching adapter exists and the account is not `AUTH_REQUIRED`.
 
-## Physical interoperability status
+The repository-safe `AppContainer` intentionally has empty vendor adapter/OAuth-driver registries. A distribution with legitimate provider registration supplies concrete vendor adapters/drivers; Step 5 does not embed placeholder Google/Microsoft client credentials.
 
-Protocol code, deterministic safety tests and a disposable local WebDAV integration server are included in Step 5 CI. Hardware/vendor interoperability is not represented as completed here; it is a Step 7 certification task.
+## Repository interoperability status
+
+Step 5 CI now starts disposable real servers for SMB2/3, FTP, FTPS and SFTP and runs the production protocol clients against them. FTPS uses a generated self-signed certificate with an exact connection-scoped pin. The existing local WebDAV integration exercises the production OkHttp/WebDAV client.
+
+This repository coverage is distinct from external/hardware certification. Real NAS models, routers, removable devices, external server deployments and real vendor cloud accounts remain Step 7 items.

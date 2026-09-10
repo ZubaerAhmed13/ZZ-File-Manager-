@@ -1,94 +1,92 @@
 # Step 5 Test Matrix
 
-This matrix maps Step 5 acceptance risks to executable repository tests and the API 35 CI gate. A test is not considered certified merely because it exists; the completion report may mark Step 5 READY only after **Android Step 5 CI** is green on the final reviewed head with zero skipped JVM and instrumentation tests.
+Step 5 is certified only by a green **Android Step 5 CI** run on the exact reviewed head, with zero JVM/instrumentation failures, errors or skips and with all mandatory named tests present in produced XML.
 
-## Mandatory hard-safety tests
+## Mandatory JVM safety and behavior gate
 
-| Required test | Layer | Safety assertion |
-|---|---|---|
-| `remoteMoveNeverDeletesSourceBeforeDestinationProven` | JVM / operation engine | Failed destination write cannot delete the authoritative MOVE source or expose a completed destination. |
-| `downloadProcessDeathNeverExposesPartialFinal` | JVM / operation engine | Process death during stream leaves only hidden staged data; final download name is absent. |
-| `uploadProcessDeathNeverExposesPartialRemoteFinal` | JVM / operation engine | Process death during upload does not expose the final remote name. |
-| `remoteReplacePreservesKnownGoodDestinationUntilCommitProof` | JVM / replace engine | A failed replacement stream leaves the old known-good destination intact. |
-| `resumeRejectsChangedRemoteRevision` | JVM / resume coordinator | A persisted offset is rejected when live source revision differs from the journaled revision. |
-| `sftpHostKeyChangeBlocksConnection` | JVM / SSH trust verifier | A different returning SSH public key fails the saved SHA-256 trust decision and reports server identity change. |
-| `ftpsCertificateChangeBlocksConnection` | JVM / certificate pin policy | A different leaf-certificate byte identity fails the configured SHA-256 pin. |
-| `usbRemovalDuringMovePreservesSource` | JVM / operation engine | Provider disappearance while streaming a MOVE keeps the source and never exposes the final USB destination. |
-| `networkTimeoutDoesNotDeadlockOperationQueue` | JVM / operation queue | A timeout terminates the affected operation without preventing the next queued operation from completing. |
+The workflow requires these test cases by exact name:
 
-## Large-file / encoding tests
+1. `remoteMoveNeverDeletesSourceBeforeDestinationProven`
+2. `downloadProcessDeathNeverExposesPartialFinal`
+3. `uploadProcessDeathNeverExposesPartialRemoteFinal`
+4. `remoteReplacePreservesKnownGoodDestinationUntilCommitProof`
+5. `resumeRejectsChangedRemoteRevision`
+6. `sftpHostKeyChangeBlocksConnection`
+7. `ftpsCertificateChangeBlocksConnection`
+8. `usbRemovalDuringMovePreservesSource`
+9. `networkTimeoutDoesNotDeadlockOperationQueue`
+10. `smbClientPerformsNegotiationOffsetIoRemoteCopyAndAtomicReplaceAgainstDisposableServer`
+11. `ftpClientPerformsRealSessionAgainstDisposableServer`
+12. `ftpsClientPerformsRealTlsSessionAgainstDisposableServer`
+13. `sftpClientPerformsRealSessionAgainstDisposableServer`
+14. `privateKeyImportReadStopsAtConfiguredSentinelLimit`
+15. `wifiOnlyBackgroundTransfersBlockRemoteExecutionOffWifi`
+16. `warnOnMeteredNetworksProducesVisibleWarningWithoutFalseBlock`
+17. `autoResumeInterruptedTransfersHonorsSettingAndDoesNotReplayDelete`
+18. `hundredThousandEntryRemoteDirectoryRendersFirstPageBeforeEnumerationCompletes`
+19. `directCloudProviderRegistersNativeIdsPagesAndCommittedWrites`
+20. `nativeIdsSurviveRenameAndMove`
+21. `pagingAndMultipleAccountsAreNamespaced`
+22. `resumeTokenUsesLongBeyondThirtyGiBWithoutOverflow`
 
-`Step5LargeFileAndPathCertificationTest` executes logical 3 GiB, 10 GiB and 30 GiB cases using `Long` offsets. It does not allocate files of those sizes. The assertions cross the signed 32-bit boundary, verify remaining/progress arithmetic and retain a bounded transfer-buffer assumption.
+The gate fails if any name is absent even if the overall test command exits successfully.
 
-Filename/path coverage includes:
+## Transfer safety
 
-- spaces,
-- emoji,
-- Bangla,
-- German `äöüß`,
-- combining Unicode,
-- `#`, `%`, `?`,
-- brackets and parentheses,
-- a long single-component name,
-- attempted `..` root escape rejection.
+Operation-engine regression tests cover remote MOVE source preservation, hidden staging across process death, safe Replace behavior, changed-source resume rejection, USB/provider disappearance, timeout queue progress and exact staged-identity/length requirements.
 
-## Protocol integration
+Auto-resume coverage proves only interrupted COPY/MOVE work is considered and destructive metadata operations such as DELETE are not silently replayed.
 
-`Step5ProtocolIntegrationTest` verifies that production factories are registered for SMB, FTP, FTPS, SFTP and WebDAV.
+## Executable settings and bounded input
 
-It also starts a disposable local HTTP WebDAV server and exercises the **real OkHttp/WebDAV production client** through capability discovery, MKCOL, streaming PUT, PROPFIND/stat/list, GET, MOVE, COPY and DELETE. This prevents all Step 5 protocol coverage from being mock-only.
+`RemoteTransferExecutionPolicyTest` proves Wi-Fi-only background transfer blocks remote execution off Wi-Fi and metered-network warning remains a visible advisory instead of a false block.
 
-SMB/FTP/FTPS/SFTP hardware/server interoperability remains a Step 7 physical/external certification concern. Their deterministic parsing, capability, trust and operation-safety behavior remains covered in Step 5 repository tests.
+`BoundedInputStreamTest` proves private-key import stops at the configured sentinel limit rather than reading an unbounded source into memory.
 
-## Android API 35 instrumentation
+## Large files and paths
 
-`Step5CertificationInstrumentationTest` runs on the API 35 emulator and covers:
+`Step5LargeFileAndPathCertificationTest` exercises logical 3 GiB, 10 GiB and 30 GiB positions with `Long` arithmetic without allocating giant files. Path coverage includes spaces, emoji, Bangla, German characters, combining Unicode, URL-sensitive characters, long names and root-escape rejection.
 
-- Android Keystore credential round trip,
-- ciphertext-at-rest assertion that the plaintext secret is absent from the app-private credential preference value,
-- persistence of Step 5 transfer/discovery warning settings,
-- URI-native SAF/cloud location serialization without path conversion.
+## 100,001-entry browser certification
 
-All existing Steps 1–4 instrumentation remains in the same `connectedDebugAndroidTest` run and therefore forms the regression gate.
+`Step5LargeRemoteDirectoryTest.hundredThousandEntryRemoteDirectoryRendersFirstPageBeforeEnumerationCompletes` forces the incremental `BrowserStorage` path. It emits 256 entries, blocks the remaining enumeration, verifies those 256 are already rendered, then releases the rest and verifies the final 100,001-entry result. This prevents regression to full-directory buffering before first render.
 
-## Existing regression suites retained
+## Disposable protocol interoperability
 
-Step 5 retains and runs the existing suites for:
+Step 5 CI starts real disposable services and requires production-client tests:
 
-- browser/navigation and SAF grants,
-- copy/move/delete/rename/batch rename,
-- collision and replace transaction recovery,
-- user library/search/favorites/recent/recycle-bin flows,
-- archive/media/text/APK/storage analyzer Step 4 behavior,
-- Step 4 recovery and large-file arithmetic,
-- URI/path safety and browser model utilities.
+- SMB2/3: negotiation/authentication, offset I/O, remote/server-side copy and provider replace;
+- FTP: authenticated real control/data session and file operations;
+- FTPS: authenticated TLS control/data session with generated certificate pin;
+- SFTP: real SSH/SFTP session including first-contact fingerprint acquisition and pinned reconnect;
+- WebDAV: the existing local HTTP integration exercises OPTIONS, MKCOL, PUT, PROPFIND/stat/list, GET, MOVE, COPY and DELETE through the production OkHttp client.
 
-## Build and CI gates
+The environment variable `STEP5_PROTOCOL_INTEROP_REQUIRED=1` makes unavailable disposable fixtures a CI failure instead of a skip.
 
-The CI job runs:
+## Direct-cloud certification
+
+JVM coverage proves stable native IDs across rename/move, account namespacing, provider paging, committed writes, and `Long` resume offsets beyond 30 GiB.
+
+API-35 instrumentation requires `directCloudOAuthLifecycleConnectRefreshDisconnectAndRevokeIsComplete`, proving connect, secure refresh-token persistence, refresh, local disconnect, provider revoke, local removal and caller secret-array clearing through the Android-side account lifecycle.
+
+## API 35 instrumentation gate
+
+The workflow runs `connectedDebugAndroidTest` on an API-35 emulator after debug/release builds, JVM tests, lint and instrumentation compilation. The instrumentation XML gate requires the direct-cloud lifecycle test by name and rejects any skipped test in the complete instrumentation suite. Existing Steps 1–4 instrumentation remains part of the same regression run.
+
+## Build commands
+
+JVM/build/lint/release gate:
 
 ```text
 ./gradlew clean assembleDebug testDebugUnitTest lintDebug assembleRelease assembleDebugAndroidTest --stacktrace
 ```
 
-Then, on an Android API 35 emulator:
+API-35 device gate:
 
 ```text
 ./gradlew connectedDebugAndroidTest --stacktrace
 ```
 
-Certification fails if JVM or instrumentation test XML reports any skipped tests. The final completion report additionally records the exact workflow run, head SHA, total tests, failures/errors/skips and final result.
-
 ## Deferred external matrix
 
-The following are intentionally **not** claimed as physically executed by repository CI and are carried to Step 7:
-
-- real SD card insertion/removal/reinsertion,
-- real USB drive insertion/removal/reinsertion,
-- NAS SMB2/SMB3 dialect interoperability,
-- external FTP/FTPS servers and certificate deployment variants,
-- external SFTP host-key lifecycle,
-- router-specific DNS-SD/mDNS behavior,
-- external WebDAV services,
-- real cloud-account OAuth/provider interoperability,
-- sustained multi-gigabyte transfer performance on physical devices.
+Repository CI does not claim physical SD/USB insertion/removal timing, vendor-specific NAS/router behavior, external certificate deployments, real vendor OAuth accounts, or sustained multi-gigabyte physical-device performance. Those remain Step 7 external certification items.

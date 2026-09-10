@@ -2,81 +2,86 @@
 
 ## Scope
 
-Step 5 extends the provider-neutral browser and file-operation engine from Steps 1–4 to removable SAF roots and saved remote locations. It does not begin Step 6. Physical SD-card, USB-device, NAS/LAN and real cloud-account certification remains a Step 7 activity.
+Step 5 extends the provider-neutral browser and transactional file-operation engine from Steps 1–4 to removable SAF roots, saved network locations, and a production-facing direct-cloud provider boundary. It does not begin Step 6. External hardware/vendor certification remains a Step 7 activity, while repository CI now performs real disposable SMB, FTP, FTPS, SFTP and WebDAV interoperability where feasible.
 
 Approved Step 4 base: `01dab47f3c02e4667c80587fe1a17d06e1f65677`.
 
 ## Provider graph
 
-`StorageRepository` remains the application registry and browser boundary. Built-in providers are Local, SAF and MediaStore. Step 5 adds runtime registrations through `RemoteProviderCoordinator`; saved remote metadata is read at startup and provider objects are registered without opening a network session or decrypting credentials.
+`StorageRepository` remains the single browser/storage registry. Built-in providers are Local, SAF and MediaStore. Step 5 adds runtime external providers through `RemoteProviderCoordinator`.
 
-A `FileReference` carries a stable logical `providerId` plus a provider-native opaque identifier. A `ScopedFileReference` also carries the authorized logical root and storage identity. Remote paths are normalized POSIX-style identifiers inside their provider. They are never converted into local `java.io.File` paths.
+Saved network and cloud account metadata can be reconstructed at startup without opening network sessions or decrypting secrets. Credentials are resolved only when a provider operation actually needs them.
 
-`StorageCapability`/`ProviderCapabilities` is the single feature-advertising contract. The browser and operation engine must ask the provider what is actually supported instead of assuming Local-filesystem semantics.
+A `FileReference` carries a stable logical `providerId` plus provider-native opaque identity. A `ScopedFileReference` also carries the authorized logical root and storage identity. Remote paths are normalized provider identifiers and are never converted to local `java.io.File` paths.
+
+`StorageCapability` / `ProviderCapabilities` is the authoritative feature contract. UI and operation code must ask providers what they can truthfully support.
 
 ## Removable storage
 
-SD cards and USB storage use Android Storage Access Framework tree URIs. The user explicitly grants a tree using the platform picker. `StorageRepository.registerSafLocation` persists the tree grant and labels its durable kind as SD card, USB, cloud or generic SAF.
+SD cards and USB media use Android Storage Access Framework tree URIs. The user grants access through the platform picker and the app persists the URI grant. `StorageRepository.registerSafLocation` records the durable location kind as SD card, USB, cloud or generic SAF.
 
-For removable media, a stable storage token derived from the authorized volume identity is retained. `reconnectSafLocation` refuses to silently map a saved SD/USB location to a different observed removable-volume token. `removableStatus` distinguishes available, read-only, removed, permission-lost and unsupported states.
+For removable media, a stable storage token derived from authorized volume identity is retained where Android exposes one. Reconnect refuses to silently map a saved SD/USB location to a different observed token. Availability distinguishes available, read-only, removed, permission-lost and unsupported states.
 
-The SAF provider continues to use URI-native `DocumentsContract`/`DocumentFile` operations. It does not manufacture filesystem paths for content URIs.
+SAF operations stay URI-native through `DocumentsContract` / `DocumentFile`.
 
 ## Saved remote locations
 
-`NetworkConnectionRepository` stores non-secret connection metadata. `AndroidKeystoreCredentialStore` stores encrypted credential payloads separately. `RemoteConnectionService` owns save/test/remove/disconnect/trust actions. `RemoteProviderCoordinator` translates saved connections into provider registrations.
+`NetworkConnectionRepository` stores non-secret connection/account metadata. `AndroidKeystoreCredentialStore` stores encrypted secret payloads separately. `RemoteConnectionService` owns save/test/remove/disconnect and trust actions. `RemoteProviderCoordinator` turns saved entries into runtime providers.
 
-Protocols implemented by production factories:
+Production network factories are:
 
-- SMB through SMBJ, restricted to SMB 2.0.2 through SMB 3.1.1 dialects.
-- FTP/FTPS through Apache Commons Net.
-- SFTP through SSHJ.
+- SMB through SMBJ with SMB 2.0.2–3.1.1 only;
+- FTP/FTPS through Apache Commons Net;
+- SFTP through SSHJ;
 - WebDAV over HTTP/HTTPS through OkHttp.
 
-Every returned remote stream owns its protocol session and closes that session when the stream closes. Blocking protocol work is kept off the main thread by the remote provider adapter.
+Every remote stream owns its protocol session and closes it when the stream closes. Blocking protocol work is kept off the main thread.
+
+## Incremental remote browsing
+
+`BrowserStorage.listChildrenIncrementally` is the large-directory boundary. Remote providers emit bounded pages instead of requiring a complete directory result before the browser can render.
+
+The browser consumes each page as it arrives. The certification suite includes a synthetic 100,001-entry remote directory that emits 256 entries, deliberately blocks further enumeration, verifies those 256 are already visible, and only then releases the remaining pages. This proves first-page rendering does not wait for full enumeration.
 
 ## LAN discovery
 
-`LanDiscoveryService` uses Android `NsdManager` DNS-SD/mDNS discovery for known SMB, FTP, FTPS, SSH/SFTP and WebDAV service types. Discovery is explicit and can be disabled in Settings.
+`LanDiscoveryService` uses Android `NsdManager` DNS-SD/mDNS discovery for known SMB, FTP, FTPS, SSH/SFTP and WebDAV service types. Discovery is explicit, can be disabled, retains at most 100 candidates, and never scans arbitrary address ranges, tries credentials, saves automatically or connects automatically.
 
-Discovery does not enumerate IP ranges, scan arbitrary ports, try credentials, or automatically save/connect a result. At most 100 candidates are retained. A candidate exposes service name, hostname, optional resolved IP address, protocol and port. The user must choose **Add / Connect**, after which the normal editable connection form is shown.
+## Direct cloud architecture
 
-## Cloud architecture
+Two cloud paths exist:
 
-Two cloud paths exist by design:
+1. **SAF/DocumentsProvider cloud** — cloud apps exposing Android DocumentsProvider are used through persisted SAF grants.
+2. **Direct cloud provider boundary** — `DirectCloudAdapter`, `DirectCloudSession`, `CloudUploadSession` and `DirectCloudStorageProvider` support stable account identity, provider-native file IDs, paged listing, streaming reads/writes, native rename/move, upload-session identity, resume state and explicit commit/abort behavior.
 
-1. **SAF/DocumentsProvider cloud** — cloud apps that expose Android DocumentsProvider are used through persisted tree URIs and the normal SAF provider.
-2. **Direct provider boundary** — `DirectCloudAdapter`, `DirectCloudSession` and `CloudUploadSession` define stable account identity, native file IDs, paging, streaming reads, resumable upload-session identity and explicit commit/abort semantics.
+`DirectCloudAccountManager` owns the local OAuth lifecycle: connect, refresh, local disconnect, provider-side revoke, and local account removal. Refresh tokens are stored only through the secure credential boundary and caller-owned token arrays are cleared after use where applicable.
 
-`InMemoryDirectCloudAdapter` is the repository-safe reference implementation used to validate the boundary. A production vendor SDK/OAuth adapter is intentionally not hard-coded without provider registration credentials; real-account certification is deferred to Step 7.
+`RemoteProviderCoordinator` registers a `DirectCloudStorageProvider` only when saved account metadata is valid, the account is not `AUTH_REQUIRED`, and a matching adapter is present in `DirectCloudAdapterRegistry`. `AppContainer` intentionally starts with empty vendor adapter/OAuth-driver registries; a product distribution that owns valid provider registration supplies its adapters/drivers. This repository therefore does not embed fake Google/Microsoft credentials or claim unconfigured vendor OAuth interoperability.
+
+`InMemoryDirectCloudAdapter` is the deterministic repository implementation used to certify native IDs, paging, committed writes and large `Long` resume offsets.
 
 ## Transfer architecture
 
-The existing `FileOperationEngine` remains authoritative for copy/move/replace. It streams with a bounded fixed buffer and persists `Long` byte counters.
+`FileOperationEngine` remains authoritative for copy/move/replace across local, SAF and remote/cloud providers. It uses bounded buffers and `Long` byte counters.
 
-For streamed destinations the engine writes to a hidden `.zzpart-*` object. A final visible filename is not created until streaming succeeds and the provider can safely rename/finalize it. Replace keeps the known-good destination until staged output is complete; providers without a safe replace path do not receive a destructive Replace option.
-
-A MOVE deletes its source only after destination finalization and destination proof. If copy/finalization/proof fails, the source remains authoritative.
+Streamed destinations use hidden `.zzpart-*` staging. The final visible name is not exposed until streaming and finalization succeed. Replace preserves the known-good destination until staged output is complete. MOVE removes its source only after finalization and destination proof.
 
 ## Verified resume
 
-Resume is capability- and identity-gated through `TransferResumeCoordinator`. A nonzero restart offset is accepted only when all of these still match live provider state:
+`TransferResumeCoordinator` accepts a nonzero restart offset only when persisted source revision, staged-object identity and `Long` offset can be revalidated against live provider state. The stage must still exist and its live length must exactly equal the recorded offset. Changed source revision rejects resume; invalid stage identity/length is cleaned/restarted when safe. Seek/range support alone is never treated as proof.
 
-- persisted source revision identity,
-- persisted staged-object identity,
-- persisted `Long` resume offset,
-- live staged object exists,
-- live staged byte length exactly equals the persisted offset,
-- both source and destination implement the resumable provider contract.
+## Transfer policy execution
 
-If the source revision changed, resume is rejected. If staged identity/length is invalid, the hidden stage is discarded and the transfer restarts from zero when cleanup is possible. Providers that cannot prove these conditions simply do not resume at a nonzero offset.
+Step 5 settings are behavioral, not decorative:
+
+- retry count controls retry execution;
+- hidden-remote-file preference filters remote browser results;
+- Wi-Fi-only background transfer is a hard execution gate when enabled;
+- metered-network warning produces a visible warning without falsely blocking allowed transfers;
+- auto-resume only requeues interrupted resumable COPY/MOVE work and never automatically replays destructive metadata operations such as DELETE.
 
 ## Lifecycle and recovery
 
-Operation journals survive host/process interruption. `markHostExecutionInterrupted` retains a partial-transfer checkpoint only when the complete proof tuple was persisted. Otherwise byte progress is reset rather than guessed. Replace has its own reversible transaction ledger and remains separate from disposable partial output.
+Operation journals survive host/process interruption. Resume checkpoints are retained only when the complete proof tuple was persisted; otherwise progress is reset rather than guessed. Replace uses its reversible transaction ledger independently from disposable partial output.
 
-Opening Home, Search or Network & Remote does not auto-connect every saved server. Global search excludes network/cloud roots unless explicitly opted into a scoped external search, preventing unexpected connection storms.
-
-## Step 5 settings
-
-Persisted network/transfer settings include connection timeout, retry count, Wi-Fi-only background transfers, metered-network warning, safe auto-resume preference, hidden-remote-file visibility, LAN discovery enable/disable, and additional insecure-protocol warnings. FTP and HTTP WebDAV remain visibly marked unencrypted regardless of the warning preference.
+Opening Home, Search or Network & Remote does not auto-connect every saved server. Global search excludes network/cloud roots unless explicitly scoped, preventing unexpected connection storms.
