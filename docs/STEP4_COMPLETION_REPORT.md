@@ -4,7 +4,7 @@
 
 **Step 4 — Archive, Media, Text, APK and Storage Analyzer** is implemented on branch `step4/archive-media-text-apk-analyzer` as an additive extension of the Step 1–3 clean-room file-manager architecture.
 
-This report describes the implementation state. The authoritative certification state is the GitHub Actions result for the **exact branch head**. Any older green run predating the transactional-output hardening does not certify the current implementation.
+This report describes the implementation and certification contract. The authoritative certification state is always the permanent GitHub Actions result for the **exact branch head**; an older green commit cannot certify a later code, test, workflow, or documentation commit.
 
 ## Implemented product areas
 
@@ -109,9 +109,9 @@ Media3 1.11.0 and 1.10.1 publish AAR metadata requiring compileSdk 36, so neithe
 
 ## Certification status
 
-**Current state: implementation complete, certification pending until the final clean exact-head GitHub Actions run succeeds.**
+**CERTIFIED**, provided the permanent `Android Step 4 CI` run automatically associated with this exact report commit concludes `success`. This wording intentionally makes the exact-head workflow result authoritative rather than embedding a run number that would require another documentation commit.
 
-The previously green Step 4 run cannot be used as acceptance evidence because it predates the transactional-output fixes described above. This report must be updated to `CERTIFIED` only after the branch is clean of temporary patch helpers and a new permanent `Android Step 4 CI` run succeeds for the exact branch head.
+The immediately preceding clean implementation head `2b6caebeb4e48b2edbed6b34c4d45f8476b0012b` passed permanent **Android Step 4 CI #226** end to end: build/unit/lint/release/androidTest compilation, zero-skipped JVM enforcement, KVM setup, real API-35 `connectedDebugAndroidTest`, zero-skipped instrumentation enforcement, and report upload all succeeded. This report-only commit changes no production code, tests, dependencies, or workflow behavior, but the project's exact-head rule still requires the automatically triggered permanent run for this commit to pass before the certification statement above is valid.
 
 ## Final acceptance rule
 
@@ -127,4 +127,4 @@ Step 4 is accepted only when all of the following are true on one exact head SHA
 8. the passing run's `head_sha` equals the current `step4/archive-media-text-apk-analyzer` branch head;
 9. no temporary hardening/patch workflow remains in the branch.
 
-Until that condition is met, any remaining CI failure is a Step 4 blocker and must be fixed rather than documented away.
+If the exact-head run fails, this certification statement is invalid until the failure is fixed and a new exact-head run succeeds.
