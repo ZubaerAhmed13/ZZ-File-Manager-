@@ -30,20 +30,55 @@ jobs:
         run: |
           chmod +x ./gradlew
           ./gradlew clean assembleDebug testDebugUnitTest lintDebug assembleRelease assembleDebugAndroidTest --stacktrace
-      - name: Enforce zero skipped JVM tests
+      - name: Enforce Step 5 JVM certification tests and zero skips
         if: always()
         shell: bash
         run: |
-          if find app/build/test-results -name '*.xml' -type f -print0 2>/dev/null | xargs -0 grep -E '<testsuite[^>]*skipped="[1-9][0-9]*"' ; then
-            echo 'Skipped JVM certification tests detected.' >&2
-            exit 1
-          fi
-      - name: Upload lint report
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          reports = list(Path('app/build/test-results').rglob('*.xml'))
+          if not reports:
+              raise SystemExit('No JVM test XML reports were produced.')
+          totals = dict(tests=0, failures=0, errors=0, skipped=0)
+          seen = set()
+          for report in reports:
+              root = ET.parse(report).getroot()
+              suites = [root] if root.tag == 'testsuite' else list(root.iter('testsuite'))
+              for suite in suites:
+                  for key in totals:
+                      totals[key] += int(suite.attrib.get(key, 0))
+              for case in root.iter('testcase'):
+                  name = case.attrib.get('name')
+                  if name:
+                      seen.add(name)
+          required = {
+              'remoteMoveNeverDeletesSourceBeforeDestinationProven',
+              'downloadProcessDeathNeverExposesPartialFinal',
+              'uploadProcessDeathNeverExposesPartialRemoteFinal',
+              'remoteReplacePreservesKnownGoodDestinationUntilCommitProof',
+              'resumeRejectsChangedRemoteRevision',
+              'sftpHostKeyChangeBlocksConnection',
+              'ftpsCertificateChangeBlocksConnection',
+              'usbRemovalDuringMovePreservesSource',
+              'networkTimeoutDoesNotDeadlockOperationQueue',
+          }
+          missing = sorted(required - seen)
+          print('STEP5_JVM_TOTALS ' + ' '.join(f'{k}={v}' for k, v in totals.items()))
+          if missing:
+              raise SystemExit('Missing mandatory Step 5 JVM tests: ' + ', '.join(missing))
+          if totals['skipped']:
+              raise SystemExit(f"Skipped JVM certification tests detected: {totals['skipped']}")
+          PY
+      - name: Upload JVM and lint reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: lint-report
-          path: app/build/reports/lint-results-debug.html
+          name: jvm-lint-reports
+          path: |
+            app/build/test-results/testDebugUnitTest/
+            app/build/reports/tests/testDebugUnitTest/
+            app/build/reports/lint-results-debug.html
           if-no-files-found: ignore
       - name: Enable KVM access
         run: |
@@ -62,14 +97,27 @@ jobs:
           script: |
             chmod +x ./gradlew
             ./gradlew connectedDebugAndroidTest --stacktrace
-      - name: Enforce zero skipped instrumentation tests
+      - name: Enforce zero skipped instrumentation tests and print totals
         if: always()
         shell: bash
         run: |
-          if find app/build/outputs/androidTest-results -name '*.xml' -type f -print0 2>/dev/null | xargs -0 grep -E '<testsuite[^>]*skipped="[1-9][0-9]*"' ; then
-            echo 'Skipped instrumentation certification tests detected.' >&2
-            exit 1
-          fi
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          reports = list(Path('app/build/outputs/androidTest-results').rglob('*.xml'))
+          if not reports:
+              raise SystemExit('No instrumentation test XML reports were produced.')
+          totals = dict(tests=0, failures=0, errors=0, skipped=0)
+          for report in reports:
+              root = ET.parse(report).getroot()
+              suites = [root] if root.tag == 'testsuite' else list(root.iter('testsuite'))
+              for suite in suites:
+                  for key in totals:
+                      totals[key] += int(suite.attrib.get(key, 0))
+          print('STEP5_INSTRUMENTATION_TOTALS ' + ' '.join(f'{k}={v}' for k, v in totals.items()))
+          if totals['skipped']:
+              raise SystemExit(f"Skipped instrumentation certification tests detected: {totals['skipped']}")
+          PY
       - name: Upload instrumentation reports
         if: always()
         uses: actions/upload-artifact@v4
