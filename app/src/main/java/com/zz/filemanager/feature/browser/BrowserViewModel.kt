@@ -18,6 +18,7 @@ import com.zz.filemanager.core.search.SearchCoordinator
 import com.zz.filemanager.core.step4.Step4OpenCodec
 import com.zz.filemanager.core.storage.BrowserHistory
 import com.zz.filemanager.core.storage.BrowserStorage
+import com.zz.filemanager.core.storage.IncrementalStorageProvider
 import com.zz.filemanager.core.storage.StorageAccessException
 import com.zz.filemanager.core.storage.StorageRepository
 import com.zz.filemanager.core.util.FileSorter
@@ -154,21 +155,48 @@ class BrowserViewModel(
                 val sort = preferences.sortConfiguration.first()
                 val parent = storage.resolveParent(location)
                 val crumbs = storage.breadcrumbs(location)
-                val raw = storage.listChildren(location)
-                val entries = withContext(sortDispatcher) {
-                    val safe = raw.filterNot {
+                val accumulated = ArrayList<FileEntry>()
+                var emittedAnyPage = false
+
+                storage.listChildrenIncrementally(
+                    location = location,
+                    pageSize = IncrementalStorageProvider.DEFAULT_DIRECTORY_PAGE_SIZE,
+                ) { rawPage ->
+                    if (requestGeneration != navigationGeneration || currentLocation?.identity != location.identity) return@listChildrenIncrementally
+                    val safePage = rawPage.filterNot {
                         it.name.equals(SearchCoordinator.RESERVED_RECYCLE_DIRECTORY, ignoreCase = true) ||
-                            it.name.startsWith(".zztrash-", ignoreCase = true)
+                            it.name.startsWith(".zztrash-", ignoreCase = true) ||
+                            (!showHidden && it.isHidden)
                     }
-                    FileSorter.sort(if (showHidden) safe else safe.filterNot { it.isHidden }, sort)
+                    if (safePage.isNotEmpty()) {
+                        val page = withContext(sortDispatcher) { FileSorter.sort(safePage, sort) }
+                        accumulated.addAll(page)
+                        emittedAnyPage = true
+                        _state.value = BrowserUiState.Content(
+                            location,
+                            accumulated.toList(),
+                            crumbs,
+                            viewMode,
+                            sort,
+                            showHidden,
+                            history.canGoBack,
+                            history.canGoForward,
+                            parent != null,
+                        )
+                    }
                 }
+
                 if (requestGeneration != navigationGeneration || currentLocation?.identity != location.identity) return@launch
                 storage.remember(location)
                 if (requestGeneration != navigationGeneration || currentLocation?.identity != location.identity) return@launch
-                _state.value = if (entries.isEmpty()) {
-                    BrowserUiState.Empty(location, crumbs, viewMode, sort, showHidden, history.canGoBack, history.canGoForward, parent != null)
+
+                if (!emittedAnyPage) {
+                    _state.value = BrowserUiState.Empty(location, crumbs, viewMode, sort, showHidden, history.canGoBack, history.canGoForward, parent != null)
                 } else {
-                    BrowserUiState.Content(location, entries, crumbs, viewMode, sort, showHidden, history.canGoBack, history.canGoForward, parent != null)
+                    // Page-local sorting keeps incremental updates bounded. Once enumeration ends,
+                    // perform one global sort so final ordering is identical to non-paged providers.
+                    val finalEntries = withContext(sortDispatcher) { FileSorter.sort(accumulated, sort) }
+                    _state.value = BrowserUiState.Content(location, finalEntries, crumbs, viewMode, sort, showHidden, history.canGoBack, history.canGoForward, parent != null)
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
