@@ -58,6 +58,7 @@ class NetworkConnectionRepository(context: Context) {
                 autoResumeInterruptedTransfers = json.optBoolean("autoResumeInterruptedTransfers", true),
                 showHiddenRemoteFiles = json.optBoolean("showHiddenRemoteFiles", false),
                 lanDiscoveryEnabled = json.optBoolean("lanDiscoveryEnabled", true),
+                warnOnInsecureProtocols = json.optBoolean("warnOnInsecureProtocols", true),
             )
         }.getOrDefault(RemoteTransferSettings())
     }
@@ -74,6 +75,7 @@ class NetworkConnectionRepository(context: Context) {
             put("autoResumeInterruptedTransfers", value.autoResumeInterruptedTransfers)
             put("showHiddenRemoteFiles", value.showHiddenRemoteFiles)
             put("lanDiscoveryEnabled", value.lanDiscoveryEnabled)
+            put("warnOnInsecureProtocols", value.warnOnInsecureProtocols)
         }
         preferences.edit().putString(KEY_SETTINGS, json.toString()).commit()
     }
