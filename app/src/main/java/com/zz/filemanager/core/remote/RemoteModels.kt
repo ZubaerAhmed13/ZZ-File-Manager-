@@ -85,6 +85,9 @@ data class RemoteTransferSettings(
     val autoResumeInterruptedTransfers: Boolean = true,
     val showHiddenRemoteFiles: Boolean = false,
     val lanDiscoveryEnabled: Boolean = true,
+    // Disabling this preference may suppress additional prompts only. Plain FTP/HTTP state remains
+    // permanently visible in the connection UI and is never represented as encrypted.
+    val warnOnInsecureProtocols: Boolean = true,
 ) {
     init {
         require(connectTimeoutMillis in 1_000..120_000)
