@@ -36,6 +36,10 @@ All fixtures must pass readiness before the build/test phase. `STEP5_PROTOCOL_IN
 
 The repository also retains the disposable local WebDAV integration test through the production OkHttp client.
 
+## Instrumentation determinism hardening
+
+API-35 UI certification explicitly isolates persisted Home launch state before `MainActivity` is created and waits for Home's asynchronous storage discovery before interacting with navigation controls. The generated-image viewer certification also restores its owned `ActivityScenario` to `RESUMED` after emulator/system foreground interruptions and still requires the actual image node to become visibly displayed before the visual assertions pass. These changes harden the test environment without weakening production behavior or replacing visual assertions with node-existence-only checks.
+
 ## Exact-head rule
 
 Step 5 is READY only when the final reviewed SHA receives a completed successful canonical workflow run. Any later production, test, workflow or documentation commit creates a new head that requires its own certification.
