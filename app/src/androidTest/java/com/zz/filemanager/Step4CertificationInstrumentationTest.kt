@@ -101,9 +101,20 @@ class Step4CertificationInstrumentationTest {
         } finally {
             bitmap.recycle()
         }
-        launchFile(file, FileEntryType.IMAGE, "image/png").use {
+        launchFile(file, FileEntryType.IMAGE, "image/png").use { scenario ->
             composeRule.waitUntil(10_000) {
                 runCatching { composeRule.onNodeWithText("16 × 12", substring = true).fetchSemanticsNode() }.isSuccess
+            }
+            // Emulator launcher/system work can briefly steal foreground focus even after the
+            // image has decoded. Restore the owned scenario, then require the actual image node
+            // to become visibly rendered; this keeps the test visual rather than weakening it to
+            // semantics-node existence.
+            scenario.moveToState(androidx.lifecycle.Lifecycle.State.RESUMED)
+            composeRule.waitUntil(10_000) {
+                runCatching {
+                    composeRule.onNodeWithContentDescription("fixture.png").assertIsDisplayed()
+                    true
+                }.getOrDefault(false)
             }
             composeRule.onNodeWithContentDescription("fixture.png").assertIsDisplayed()
             composeRule.onNodeWithText("Previous").assertIsDisplayed()
