@@ -38,7 +38,18 @@ class HomeViewModel(
                 recentLocations = recent,
                 safLocations = saf,
                 broadStorageAccess = storage.broadStorageAccess(),
+                categoryMetrics = _state.value.categoryMetrics,
             )
+            MediaCategory.entries.forEach(::refreshMetric)
+        }
+    }
+
+    private fun refreshMetric(category: MediaCategory) {
+        val current = _state.value.categoryMetrics[category] ?: com.zz.filemanager.core.model.CategoryMetric()
+        _state.value = _state.value.copy(categoryMetrics = _state.value.categoryMetrics + (category to current.copy(refreshing = true)))
+        viewModelScope.launch {
+            val metric = runCatching { storage.categoryMetric(category) }.getOrDefault(com.zz.filemanager.core.model.CategoryMetric())
+            _state.value = _state.value.copy(categoryMetrics = _state.value.categoryMetrics + (category to metric))
         }
     }
 

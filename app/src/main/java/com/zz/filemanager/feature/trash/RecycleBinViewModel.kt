@@ -13,6 +13,7 @@ import com.zz.filemanager.core.library.TrashBackendType
 import android.app.PendingIntent
 import android.net.Uri
 import com.zz.filemanager.core.storage.StorageRepository
+import com.zz.filemanager.core.security.SafeErrorMessage
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -93,7 +94,7 @@ class RecycleBinViewModel(
     fun chooseDestination(recordId: String) { _events.tryEmit(RecycleEvent.ChooseDestination(recordId)) }
     fun restoreToTree(recordId: String, uri: Uri) = act {
         val destination = runCatching { storage.registerSafLocation(uri) }.getOrElse {
-            _events.emit(RecycleEvent.Message(it.message ?: "The chosen destination is unavailable."))
+            _events.emit(RecycleEvent.Message(SafeErrorMessage.from(it, "The chosen destination is unavailable.")))
             return@act
         }
         when (val result = manager.restoreTo(recordId, destination)) {

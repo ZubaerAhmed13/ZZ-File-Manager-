@@ -4,16 +4,21 @@ import com.zz.filemanager.core.model.SortConfiguration
 import com.zz.filemanager.core.model.SortDirection
 import com.zz.filemanager.core.model.SortField
 import com.zz.filemanager.core.model.ViewMode
+import com.zz.filemanager.core.model.ThumbnailMode
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 
 /** Browser-only preference surface used by BrowserViewModel and its JVM tests. */
 interface BrowserPreferences {
     val viewMode: Flow<ViewMode>
     val showHidden: Flow<Boolean>
     val sortConfiguration: Flow<SortConfiguration>
+    val thumbnailMode: Flow<ThumbnailMode> get() = flowOf(ThumbnailMode.SHOW)
 
     suspend fun setViewMode(value: ViewMode)
     suspend fun setShowHidden(value: Boolean)
     suspend fun setSortField(value: SortField)
     suspend fun setSortDirection(value: SortDirection)
+    suspend fun setThumbnailMode(value: ThumbnailMode) = Unit
+    suspend fun setFoldersFirst(value: Boolean) = Unit
 }

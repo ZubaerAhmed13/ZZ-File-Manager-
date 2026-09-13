@@ -11,51 +11,24 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Android
-import androidx.compose.material.icons.filled.Archive
-import androidx.compose.material.icons.filled.AudioFile
-import androidx.compose.material.icons.filled.Description
-import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.FolderOpen
-import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.DeleteOutline
-import androidx.compose.material.icons.filled.Storage
-import androidx.compose.material.icons.filled.VideoFile
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
@@ -64,12 +37,10 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.zz.filemanager.R
 import com.zz.filemanager.Step4ToolsActivity
-import com.zz.filemanager.core.model.BrowserLocation
-import com.zz.filemanager.core.model.MediaCategory
-import com.zz.filemanager.core.model.StorageLocation
-import com.zz.filemanager.core.model.StorageType
+import com.zz.filemanager.core.model.*
 import com.zz.filemanager.core.storage.SafLocationKind
 import com.zz.filemanager.core.util.Formatters
+import kotlinx.coroutines.launch
 
 @Composable
 fun HomeScreen(
@@ -85,6 +56,8 @@ fun HomeScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
     var pendingCategory by remember { mutableStateOf<MediaCategory?>(null) }
     var pendingSafKind by remember { mutableStateOf(SafLocationKind.GENERIC) }
     var reconnectTarget by remember { mutableStateOf<BrowserLocation?>(null) }
@@ -105,21 +78,12 @@ fun HomeScreen(
     }
     val legacyStorageLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
         viewModel.refresh()
-        val category = pendingCategory
-        if (category != null && viewModel.hasBroadStorageAccess()) {
-            pendingCategory = null
-            onOpenLocation(viewModel.mediaLocation(category))
-        }
+        pendingCategory?.takeIf { viewModel.hasBroadStorageAccess() }?.let { pendingCategory = null; onOpenLocation(viewModel.mediaLocation(it)) }
     }
     val broadSettingsLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         viewModel.refresh()
-        val category = pendingCategory
-        if (category != null && viewModel.hasBroadStorageAccess()) {
-            pendingCategory = null
-            onOpenLocation(viewModel.mediaLocation(category))
-        }
+        pendingCategory?.takeIf { viewModel.hasBroadStorageAccess() }?.let { pendingCategory = null; onOpenLocation(viewModel.mediaLocation(it)) }
     }
-
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME) viewModel.refresh() }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -127,236 +91,162 @@ fun HomeScreen(
     }
 
     fun requestBroadAccess() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            broadSettingsLauncher.launch(
-                Intent(
-                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                    Uri.parse("package:${context.packageName}"),
-                ),
-            )
-        } else {
-            legacyStorageLauncher.launch(Manifest.permission.READ_EXTERNAL_STORAGE)
-        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) broadSettingsLauncher.launch(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:${context.packageName}")))
+        else legacyStorageLauncher.launch(Manifest.permission.READ_EXTERNAL_STORAGE)
     }
-
     fun openCategory(category: MediaCategory) {
-        if (category == MediaCategory.DOCUMENTS || category == MediaCategory.DOWNLOADS || category == MediaCategory.APKS) {
-            if (viewModel.hasBroadStorageAccess()) {
-                onOpenLocation(viewModel.mediaLocation(category))
-            } else {
-                pendingCategory = category
-                requestBroadAccess()
-            }
+        if (category in setOf(MediaCategory.DOCUMENTS, MediaCategory.DOWNLOADS, MediaCategory.APKS)) {
+            if (viewModel.hasBroadStorageAccess()) onOpenLocation(viewModel.mediaLocation(category)) else { pendingCategory = category; requestBroadAccess() }
             return
         }
-
         val permission = when {
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && category == MediaCategory.IMAGES -> Manifest.permission.READ_MEDIA_IMAGES
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && category == MediaCategory.VIDEOS -> Manifest.permission.READ_MEDIA_VIDEO
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> Manifest.permission.READ_MEDIA_AUDIO
+            Build.VERSION.SDK_INT >= 33 && category == MediaCategory.IMAGES -> Manifest.permission.READ_MEDIA_IMAGES
+            Build.VERSION.SDK_INT >= 33 && category == MediaCategory.VIDEOS -> Manifest.permission.READ_MEDIA_VIDEO
+            Build.VERSION.SDK_INT >= 33 -> Manifest.permission.READ_MEDIA_AUDIO
             else -> Manifest.permission.READ_EXTERNAL_STORAGE
         }
-        if (ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED) {
-            onOpenLocation(viewModel.mediaLocation(category))
-        } else {
-            pendingCategory = category
-            mediaPermissionLauncher.launch(permission)
-        }
+        if (ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED) onOpenLocation(viewModel.mediaLocation(category))
+        else { pendingCategory = category; mediaPermissionLauncher.launch(permission) }
     }
+    fun addSaf(kind: SafLocationKind) { pendingSafKind = kind; reconnectTarget = null; treeLauncher.launch(null) }
+    fun closeDrawerThen(action: () -> Unit) { scope.launch { drawerState.close(); action() } }
 
-    fun addSaf(kind: SafLocationKind) {
-        pendingSafKind = kind
-        reconnectTarget = null
-        treeLauncher.launch(null)
-    }
-
-    val localLocations = state.storageLocations.filter { it.type !in setOf(StorageType.NETWORK, StorageType.CLOUD) }
-    val remoteLocations = state.storageLocations.filter { it.type in setOf(StorageType.NETWORK, StorageType.CLOUD) }
-
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text(stringResource(R.string.app_name)) },
-                actions = {
-                    IconButton(onClick = onOpenSettings) {
-                        Icon(Icons.Default.Settings, contentDescription = stringResource(R.string.settings))
-                    }
-                },
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            HomeDrawer(
+                state,
+                { scope.launch { drawerState.close() } },
+                { closeDrawerThen { onOpenLocation(it) } },
+                { closeDrawerThen { openCategory(it) } },
+                { closeDrawerThen(onOpenFavorites) },
+                { closeDrawerThen(onOpenRecent) },
+                { closeDrawerThen(onOpenTrash) },
+                { closeDrawerThen(onOpenRemote) },
+                { closeDrawerThen { context.startActivity(Step4ToolsActivity.intent(context, Step4ToolsActivity.MODE_ANALYZER)) } },
+                { closeDrawerThen { context.startActivity(Step4ToolsActivity.intent(context, Step4ToolsActivity.MODE_APPS)) } },
             )
         },
-    ) { padding ->
-        if (state.loading) {
-            Column(Modifier.padding(padding).fillMaxWidth()) {
-                CircularProgressIndicator(Modifier.padding(32.dp))
-            }
-        } else {
-            LazyColumn(Modifier.padding(padding)) {
-                item {
-                    Card(onClick = onOpenSearch, modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-                        Row(Modifier.padding(16.dp)) { Icon(Icons.Default.Search, null); Spacer(Modifier.padding(4.dp)); Text(stringResource(R.string.search_files_folders)) }
-                    }
-                }
-                item { SectionTitle(stringResource(R.string.quick_access)) }
-                item {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                        TextButton(onClick = onOpenFavorites) { Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.Star, null); Text(stringResource(R.string.favorites)) } }
-                        TextButton(onClick = onOpenRecent) { Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.History, null); Text(stringResource(R.string.recent)) } }
-                        TextButton(onClick = onOpenTrash) { Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.DeleteOutline, null); Text(stringResource(R.string.recycle_bin)) } }
-                    }
-                }
-                item { SectionTitle("Tools") }
-                item {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                        TextButton(onClick = { context.startActivity(Step4ToolsActivity.intent(context, Step4ToolsActivity.MODE_APPS)) }) {
-                            Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.Android, contentDescription = "Apps"); Text("Apps") }
-                        }
-                        TextButton(onClick = { context.startActivity(Step4ToolsActivity.intent(context, Step4ToolsActivity.MODE_ANALYZER)) }) {
-                            Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.Storage, contentDescription = "Analyze Storage"); Text("Analyze") }
-                        }
-                        TextButton(onClick = { context.startActivity(Step4ToolsActivity.intent(context, Step4ToolsActivity.MODE_ARCHIVE_CREATE)) }) {
-                            Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.Archive, contentDescription = "Create Archive"); Text("Archive") }
-                        }
-                    }
-                }
-                if (!state.broadStorageAccess) item { PermissionCard(::requestBroadAccess) }
-
-                item { SectionTitle("Local & Removable") }
-                items(localLocations, key = { it.id }) { StorageCard(it, onOpenLocation) }
-                item {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                        TextButton(onClick = { addSaf(SafLocationKind.SD_CARD) }) { Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.Storage, null); Text("Add SD") } }
-                        TextButton(onClick = { addSaf(SafLocationKind.USB) }) { Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.Storage, null); Text("Add USB") } }
-                        TextButton(onClick = { addSaf(SafLocationKind.GENERIC) }) { Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.FolderOpen, null); Text("Add folder") } }
-                    }
-                }
-                state.safLocations.filterNot { it.readable }.forEach { missing ->
-                    item(key = "reconnect:${missing.storageId}") {
-                        Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
-                            Column(Modifier.padding(16.dp)) {
-                                Text(missing.displayName, style = MaterialTheme.typography.titleMedium)
-                                Text("Unavailable or permission lost", color = MaterialTheme.colorScheme.error)
-                                TextButton(onClick = { reconnectTarget = missing; treeLauncher.launch(null) }) { Text("Locate / Reconnect") }
-                            }
-                        }
-                    }
-                }
-
-                item { SectionTitle("Remote") }
-                item {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                        TextButton(onClick = onOpenRemote) { Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.Storage, null); Text("Network") } }
-                        TextButton(onClick = { addSaf(SafLocationKind.CLOUD) }) { Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) { Icon(Icons.Default.FolderOpen, null); Text("Cloud") } }
-                    }
-                }
-                items(remoteLocations, key = { it.id }) { StorageCard(it, onOpenLocation) }
-
-                item { SectionTitle(stringResource(R.string.categories)) }
-                item {
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-                        horizontalArrangement = Arrangement.SpaceEvenly,
-                    ) {
-                        CategoryButton(MediaCategory.IMAGES, R.string.images, Icons.Default.Image, ::openCategory)
-                        CategoryButton(MediaCategory.VIDEOS, R.string.videos, Icons.Default.VideoFile, ::openCategory)
-                        CategoryButton(MediaCategory.AUDIO, R.string.audio, Icons.Default.AudioFile, ::openCategory)
-                    }
-                }
-                item {
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-                        horizontalArrangement = Arrangement.SpaceEvenly,
-                    ) {
-                        CategoryButton(MediaCategory.DOCUMENTS, R.string.documents, Icons.Default.Description, ::openCategory)
-                        CategoryButton(MediaCategory.DOWNLOADS, R.string.downloads, Icons.Default.Download, ::openCategory)
-                        CategoryButton(MediaCategory.APKS, R.string.apks, Icons.Default.Android, ::openCategory)
-                    }
-                }
-                if (state.recentLocations.isNotEmpty()) {
-                    item { SectionTitle(stringResource(R.string.recent_locations)) }
-                    items(state.recentLocations, key = { it.identity }) { location ->
-                        ListItem(
-                            headlineContent = { Text(location.displayName, maxLines = 1) },
-                            supportingContent = { Text(location.providerId) },
-                            leadingContent = { Icon(Icons.Default.FolderOpen, null) },
-                            modifier = Modifier.fillMaxWidth().clickable { onOpenLocation(location) },
-                        )
-                    }
-                }
-                item { Spacer(Modifier.height(24.dp)) }
-            }
-        }
-    }
-}
-
-@Composable
-private fun PermissionCard(onGrant: () -> Unit) {
-    Card(Modifier.fillMaxWidth().padding(16.dp)) {
-        Column(Modifier.padding(16.dp)) {
-            Row {
-                Icon(Icons.Default.Storage, null)
-                Spacer(Modifier.padding(4.dp))
-                Text(stringResource(R.string.full_storage_access), style = MaterialTheme.typography.titleMedium)
-            }
-            Text(stringResource(R.string.full_storage_access_explanation), modifier = Modifier.padding(vertical = 8.dp))
-            Button(onClick = onGrant) { Text(stringResource(R.string.grant_access)) }
-        }
-    }
-}
-
-@Composable
-private fun StorageCard(storage: StorageLocation, onOpen: (BrowserLocation) -> Unit) {
-    Card(
-        onClick = { onOpen(storage.root) },
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
     ) {
-        Column(Modifier.padding(16.dp)) {
-            Row {
-                Icon(Icons.Default.Storage, null)
-                Spacer(Modifier.padding(4.dp))
-                Text(storage.displayName, style = MaterialTheme.typography.titleMedium)
-            }
-            if (!storage.available || !storage.readable) {
-                Text("Unavailable", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-            }
-            val total = storage.totalBytes
-            val used = storage.usedBytes
-            val free = storage.freeBytes
-            if (total != null && used != null && total > 0L) {
-                Text(
-                    stringResource(R.string.used_of_total, Formatters.bytes(used), Formatters.bytes(total)),
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(top = 8.dp),
-                )
-                LinearProgressIndicator(
-                    progress = { (used.toDouble() / total.toDouble()).toFloat().coerceIn(0f, 1f) },
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                )
-                if (free != null) Text(stringResource(R.string.available_space, Formatters.bytes(free)), style = MaterialTheme.typography.bodySmall)
-            }
+        Scaffold(topBar = {
+            TopAppBar(
+                title = { Text(stringResource(R.string.app_name), fontWeight = FontWeight.SemiBold) },
+                navigationIcon = { IconButton({ scope.launch { drawerState.open() } }) { Icon(Icons.Default.Menu, stringResource(R.string.navigation_drawer)) } },
+                actions = {
+                    IconButton(onOpenSearch) { Icon(Icons.Default.Search, stringResource(R.string.search)) }
+                    IconButton(onOpenSettings) { Icon(Icons.Default.Settings, stringResource(R.string.settings)) }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF202522), titleContentColor = Color.White, navigationIconContentColor = Color.White, actionIconContentColor = Color.White),
+            )
+        }) { padding ->
+            HomeContent(
+                state, Modifier.fillMaxSize().padding(padding), onOpenLocation, ::openCategory,
+                onOpenFavorites, onOpenRecent, onOpenTrash, onOpenRemote, ::addSaf,
+                { reconnectTarget = it; treeLauncher.launch(null) }, ::requestBroadAccess,
+                { context.startActivity(Step4ToolsActivity.intent(context, Step4ToolsActivity.MODE_APPS)) },
+                { context.startActivity(Step4ToolsActivity.intent(context, Step4ToolsActivity.MODE_ANALYZER)) },
+            )
         }
     }
 }
 
 @Composable
-private fun SectionTitle(text: String) {
-    Text(
-        text,
-        style = MaterialTheme.typography.titleLarge,
-        modifier = Modifier.padding(start = 16.dp, top = 20.dp, end = 16.dp, bottom = 8.dp),
-    )
-}
-
-@Composable
-private fun CategoryButton(
-    category: MediaCategory,
-    labelRes: Int,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    onClick: (MediaCategory) -> Unit,
+private fun HomeContent(
+    state: HomeUiState,
+    modifier: Modifier,
+    onOpenLocation: (BrowserLocation) -> Unit,
+    onOpenCategory: (MediaCategory) -> Unit,
+    onOpenFavorites: () -> Unit,
+    onOpenRecent: () -> Unit,
+    onOpenTrash: () -> Unit,
+    onOpenRemote: () -> Unit,
+    onAddSaf: (SafLocationKind) -> Unit,
+    onReconnect: (BrowserLocation) -> Unit,
+    onRequestBroadAccess: () -> Unit,
+    onOpenApps: () -> Unit,
+    onOpenAnalyzer: () -> Unit,
 ) {
-    TextButton(onClick = { onClick(category) }) {
-        Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
-            Icon(icon, null)
-            Text(stringResource(labelRes))
+    val local = state.storageLocations.filter { it.type !in setOf(StorageType.NETWORK, StorageType.CLOUD) }
+    val remote = state.storageLocations.filter { it.type in setOf(StorageType.NETWORK, StorageType.CLOUD) }
+    val primary = local.firstOrNull { it.type == StorageType.INTERNAL } ?: local.firstOrNull()
+    val tiles = listOf(
+        QuickTile(stringResource(R.string.main_storage), Icons.Default.Storage, storageMetric(primary), { primary?.root?.let(onOpenLocation) }, primary != null),
+        QuickTile(stringResource(R.string.downloads), Icons.Default.Download, metricText(state.categoryMetrics[MediaCategory.DOWNLOADS]), { onOpenCategory(MediaCategory.DOWNLOADS) }),
+        QuickTile(stringResource(R.string.storage_analysis), Icons.Default.Analytics, primary?.usedPercentLabel(), onOpenAnalyzer),
+        QuickTile(stringResource(R.string.images), Icons.Default.Image, metricText(state.categoryMetrics[MediaCategory.IMAGES]), { onOpenCategory(MediaCategory.IMAGES) }),
+        QuickTile(stringResource(R.string.audio), Icons.Default.AudioFile, metricText(state.categoryMetrics[MediaCategory.AUDIO]), { onOpenCategory(MediaCategory.AUDIO) }),
+        QuickTile(stringResource(R.string.videos), Icons.Default.VideoFile, metricText(state.categoryMetrics[MediaCategory.VIDEOS]), { onOpenCategory(MediaCategory.VIDEOS) }),
+        QuickTile(stringResource(R.string.documents), Icons.Default.Description, metricText(state.categoryMetrics[MediaCategory.DOCUMENTS]), { onOpenCategory(MediaCategory.DOCUMENTS) }),
+        QuickTile(stringResource(R.string.apps), Icons.Default.Android, null, onOpenApps),
+        QuickTile(stringResource(R.string.new_files), Icons.Default.Schedule, stringResource(R.string.recently_added), onOpenRecent),
+        QuickTile(stringResource(R.string.cloud), Icons.Default.Cloud, remote.count { it.type == StorageType.CLOUD }.takeIf { it > 0 }?.let { stringResource(R.string.saved_count, it) }, { onAddSaf(SafLocationKind.CLOUD) }),
+        QuickTile(stringResource(R.string.remote), Icons.Default.Storage, remote.count { it.type == StorageType.NETWORK }.takeIf { it > 0 }?.let { stringResource(R.string.saved_count, it) }, onOpenRemote),
+        QuickTile(stringResource(R.string.access_from), Icons.Default.FolderOpen, stringResource(R.string.add_location), { onAddSaf(SafLocationKind.GENERIC) }),
+        QuickTile(stringResource(R.string.recycle_bin), Icons.Default.DeleteOutline, null, onOpenTrash),
+        QuickTile(stringResource(R.string.favorites), Icons.Default.Star, null, onOpenFavorites),
+        QuickTile(stringResource(R.string.activity_history), Icons.Default.History, null, onOpenRecent),
+    )
+    LazyColumn(modifier) {
+        if (state.loading) item("loading") { LinearProgressIndicator(Modifier.fillMaxWidth()) }
+        item("quick-title") { SectionTitle(stringResource(R.string.quick_access)) }
+        tiles.chunked(3).forEachIndexed { index, row -> item("row-$index") {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                row.forEach { QuickAccessTile(it, Modifier.weight(1f)) }
+                repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
+            }
+        } }
+        if (!state.broadStorageAccess) item("permission") { PermissionStrip(onRequestBroadAccess) }
+        if (local.size > 1 || state.safLocations.isNotEmpty()) {
+            item("storage-title") { SectionTitle(stringResource(R.string.storage)) }
+            items(local.drop(1), key = { it.id }) { StorageRow(it, onOpenLocation) }
+            state.safLocations.filterNot { it.readable }.forEach { location -> item("reconnect:${location.storageId}") { UnavailableStorageRow(location, onReconnect) } }
+            item("add") { Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                TextButton({ onAddSaf(SafLocationKind.SD_CARD) }) { Text(stringResource(R.string.add_sd)) }
+                TextButton({ onAddSaf(SafLocationKind.USB) }) { Text(stringResource(R.string.add_usb)) }
+                TextButton({ onAddSaf(SafLocationKind.GENERIC) }) { Text(stringResource(R.string.add_location)) }
+            } }
+        }
+        if (state.recentLocations.isNotEmpty()) {
+            item("recent-title") { SectionTitle(stringResource(R.string.recent_locations)) }
+            items(state.recentLocations.take(6), key = { it.identity }) { CompactLocationRow(it, onOpenLocation) }
+        }
+        item("end") { Spacer(Modifier.height(18.dp)) }
+    }
+}
+
+private data class QuickTile(val label: String, val icon: ImageVector, val metric: String?, val onClick: () -> Unit, val enabled: Boolean = true)
+
+@Composable private fun QuickAccessTile(tile: QuickTile, modifier: Modifier = Modifier) {
+    Surface(modifier.padding(vertical = 3.dp).height(82.dp), color = MaterialTheme.colorScheme.surfaceContainerLow, shape = MaterialTheme.shapes.small) {
+        Column(Modifier.fillMaxSize().clickable(enabled = tile.enabled, role = Role.Button, onClick = tile.onClick).padding(8.dp, 9.dp), verticalArrangement = Arrangement.SpaceBetween) {
+            Icon(tile.icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(25.dp))
+            Column { Text(tile.label, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis); Text(tile.metric ?: stringResource(R.string.metric_unavailable), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1) }
         }
     }
 }
+
+@Composable private fun HomeDrawer(state: HomeUiState, onHome: () -> Unit, onOpenLocation: (BrowserLocation) -> Unit, onOpenCategory: (MediaCategory) -> Unit, onFavorites: () -> Unit, onRecent: () -> Unit, onRecycle: () -> Unit, onRemote: () -> Unit, onAnalyzer: () -> Unit, onApps: () -> Unit) {
+    val categories = listOf(Triple(MediaCategory.IMAGES, stringResource(R.string.images), Icons.Default.Image), Triple(MediaCategory.VIDEOS, stringResource(R.string.videos), Icons.Default.VideoFile), Triple(MediaCategory.AUDIO, stringResource(R.string.audio), Icons.Default.AudioFile), Triple(MediaCategory.DOCUMENTS, stringResource(R.string.documents), Icons.Default.Description), Triple(MediaCategory.APKS, stringResource(R.string.apks), Icons.Default.Android))
+    ModalDrawerSheet {
+        Text(stringResource(R.string.app_name), style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(18.dp)); HorizontalDivider()
+        LazyColumn(Modifier.fillMaxSize()) {
+            item { DrawerSection(stringResource(R.string.storage)) }; item { DrawerItem(stringResource(R.string.home), Icons.Default.Storage, true, onHome) }
+            items(state.storageLocations, key = { it.id }) { DrawerItem(it.displayName, if (it.type == StorageType.CLOUD) Icons.Default.Cloud else Icons.Default.Storage, false, { onOpenLocation(it.root) }, if (!it.available) stringResource(R.string.offline) else it.usedPercentLabel()) }
+            item { DrawerItem(stringResource(R.string.recycle_bin), Icons.Default.DeleteOutline, false, onRecycle) }
+            item { DrawerSection(stringResource(R.string.categories)) }; items(categories, key = { it.first.name }) { (category, label, icon) -> DrawerItem(label, icon, false, { onOpenCategory(category) }) }
+            item { DrawerSection(stringResource(R.string.accounts_remote)) }; item { DrawerItem(stringResource(R.string.remote), Icons.Default.Cloud, false, onRemote) }
+            item { DrawerSection(stringResource(R.string.tools)) }; item { DrawerItem(stringResource(R.string.storage_analysis), Icons.Default.Analytics, false, onAnalyzer) }; item { DrawerItem(stringResource(R.string.apps), Icons.Default.Android, false, onApps) }; item { DrawerItem(stringResource(R.string.favorites), Icons.Default.Star, false, onFavorites) }; item { DrawerItem(stringResource(R.string.recent), Icons.Default.History, false, onRecent) }
+        }
+    }
+}
+
+@Composable private fun DrawerSection(text: String) { Text(text.uppercase(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(start = 28.dp, top = 16.dp, bottom = 4.dp).semantics { heading() }) }
+@Composable private fun DrawerItem(label: String, icon: ImageVector, selected: Boolean, onClick: () -> Unit, supporting: String? = null) { NavigationDrawerItem(label = { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)); supporting?.let { Text(it, style = MaterialTheme.typography.labelSmall) } } }, icon = { Icon(icon, null) }, selected = selected, onClick = onClick, modifier = Modifier.padding(horizontal = 10.dp)) }
+@Composable private fun PermissionStrip(onGrant: () -> Unit) { Surface(color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.fillMaxWidth().padding(8.dp)) { Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Storage, null); Column(Modifier.weight(1f).padding(horizontal = 10.dp)) { Text(stringResource(R.string.full_storage_access), style = MaterialTheme.typography.titleSmall); Text(stringResource(R.string.full_storage_access_explanation), style = MaterialTheme.typography.bodySmall, maxLines = 2) }; Button(onGrant) { Text(stringResource(R.string.grant_access)) } } } }
+@Composable private fun StorageRow(storage: StorageLocation, onOpen: (BrowserLocation) -> Unit) { Column(Modifier.fillMaxWidth().clickable(enabled = storage.available && storage.readable) { onOpen(storage.root) }.padding(horizontal = 14.dp, vertical = 9.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Storage, null, tint = MaterialTheme.colorScheme.primary); Column(Modifier.weight(1f).padding(start = 12.dp)) { Text(storage.displayName); Text(storageMetric(storage) ?: stringResource(R.string.metric_unavailable), style = MaterialTheme.typography.bodySmall) }; storage.usedPercentLabel()?.let { Text(it) } }; val total = storage.totalBytes; val used = storage.usedBytes; if (total != null && used != null && total > 0) LinearProgressIndicator(progress = { (used.toDouble() / total).toFloat() }, modifier = Modifier.fillMaxWidth().padding(start = 40.dp, top = 5.dp)) }; HorizontalDivider(Modifier.padding(start = 54.dp)) }
+@Composable private fun UnavailableStorageRow(location: BrowserLocation, reconnect: (BrowserLocation) -> Unit) { Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Storage, null, tint = MaterialTheme.colorScheme.error); Column(Modifier.weight(1f).padding(horizontal = 12.dp)) { Text(location.displayName); Text(stringResource(R.string.storage_unavailable), color = MaterialTheme.colorScheme.error) }; TextButton({ reconnect(location) }) { Text(stringResource(R.string.reconnect)) } } }
+@Composable private fun CompactLocationRow(location: BrowserLocation, open: (BrowserLocation) -> Unit) { Row(Modifier.fillMaxWidth().clickable { open(location) }.padding(horizontal = 14.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.FolderOpen, null); Column(Modifier.weight(1f).padding(start = 12.dp)) { Text(location.displayName); Text(location.providerId, style = MaterialTheme.typography.bodySmall) } } }
+@Composable private fun SectionTitle(text: String) { Text(text, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(start = 12.dp, top = 14.dp, bottom = 5.dp).semantics { heading() }) }
+private fun storageMetric(storage: StorageLocation?): String? = storage?.let { value -> value.usedBytes?.let { used -> value.totalBytes?.let { total -> "${Formatters.bytes(used)} / ${Formatters.bytes(total)}" } } }
+private fun StorageLocation.usedPercentLabel(): String? { val used = usedBytes ?: return null; val total = totalBytes?.takeIf { it > 0 } ?: return null; return "${((used.toDouble() / total) * 100).toInt().coerceIn(0, 100)}% USED" }
+private fun metricText(metric: CategoryMetric?): String? = when { metric == null || metric.refreshing -> null; metric.totalBytes != null && metric.itemCount != null -> "${Formatters.bytes(metric.totalBytes)} · ${metric.itemCount}"; metric.itemCount != null -> metric.itemCount.toString(); else -> null }

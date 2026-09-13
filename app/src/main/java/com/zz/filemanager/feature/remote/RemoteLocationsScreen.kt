@@ -2,7 +2,9 @@
 
 package com.zz.filemanager.feature.remote
 
+import android.app.Activity
 import android.net.Uri
+import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -37,6 +39,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -49,6 +52,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.zz.filemanager.core.model.BrowserLocation
+import com.zz.filemanager.core.security.SafeErrorMessage
 import com.zz.filemanager.core.remote.ConnectionTestResult
 import com.zz.filemanager.core.remote.NetworkConnection
 import com.zz.filemanager.core.remote.RemoteAuthenticationType
@@ -339,6 +343,11 @@ private fun ConnectionEditorDialog(
     onDismiss: () -> Unit,
     onSave: (NetworkConnection, CharArray?, ByteArray?, CharArray?) -> Unit,
 ) {
+    val activity = LocalContext.current as? Activity
+    DisposableEffect(activity) {
+        activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        onDispose { activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE) }
+    }
     var protocol by remember(existing?.id) { mutableStateOf(existing?.protocol ?: RemoteProtocol.SMB) }
     var displayName by remember(existing?.id) { mutableStateOf(existing?.displayName.orEmpty()) }
     var host by remember(existing?.id) { mutableStateOf(existing?.host.orEmpty()) }
@@ -539,7 +548,7 @@ private fun ConnectionEditorDialog(
                     val passphraseChars = keyPassphrase.takeIf { it.isNotEmpty() }?.toCharArray()
                     onSave(connection, passwordChars, importedPrivateKey, passphraseChars)
                 } catch (t: Throwable) {
-                    error = t.message ?: "Invalid connection settings."
+                    error = SafeErrorMessage.from(t, "Invalid connection settings.")
                 }
             }) { Text("Save") }
         },

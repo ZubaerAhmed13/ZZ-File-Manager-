@@ -9,6 +9,9 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.captureToImage
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.graphics.toPixelMap
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.zz.filemanager.core.model.Breadcrumb
@@ -47,6 +50,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -96,6 +100,24 @@ class Step2BrowserUiTest {
         composeRule.onNodeWithText("1 items ready to copy").assertExists()
         composeRule.onNodeWithText("Paste").assertExists()
         composeRule.onNodeWithText("Cancel").assertExists()
+    }
+
+    @Test
+    fun step6ViewSortSheetSupportsAllProfessionalModes() {
+        val fixture = fixture(); fixture.render()
+        composeRule.onNodeWithContentDescription("View and sort").performClick()
+        listOf("List", "Compact list", "Grid", "Thumbnail grid", "Detailed list").forEach {
+            composeRule.onNodeWithText(it).assertExists()
+        }
+    }
+
+    @Test
+    fun step6BrowserGoldenStateIsNonBlank() {
+        val fixture = fixture(); fixture.render()
+        val pixels = composeRule.onRoot().captureToImage().toPixelMap()
+        val colors = linkedSetOf<Long>()
+        for (x in 0 until pixels.width step (pixels.width / 10).coerceAtLeast(1)) for (y in 0 until pixels.height step (pixels.height / 16).coerceAtLeast(1)) colors += pixels[x, y].value.toLong()
+        assertTrue(colors.size > 3)
     }
 
     @Test

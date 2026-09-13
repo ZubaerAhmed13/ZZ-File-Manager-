@@ -22,6 +22,7 @@ import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -92,10 +93,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowInsetsCompat
@@ -103,6 +106,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
@@ -129,6 +133,7 @@ import com.zz.filemanager.core.text.TextSearchMatch
 import com.zz.filemanager.core.text.TextSource
 import com.zz.filemanager.core.text.TextUndoRedoBuffer
 import com.zz.filemanager.core.util.Formatters
+import com.zz.filemanager.core.security.SafeErrorMessage
 import com.zz.filemanager.ui.theme.ZZFileManagerTheme
 import java.util.Locale
 import kotlinx.coroutines.CancellationException
@@ -142,6 +147,7 @@ class Step4FileActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         val decoded = intent.data?.let(Step4OpenCodec::decode)
         if (decoded == null) {
             finish()
@@ -149,7 +155,8 @@ class Step4FileActivity : ComponentActivity() {
         }
         val (entry, parent) = decoded
         setContent {
-            ZZFileManagerTheme(com.zz.filemanager.core.model.ThemeMode.SYSTEM) {
+            val theme by container.preferences.theme.collectAsStateWithLifecycle(initialValue = com.zz.filemanager.core.model.ThemeMode.SYSTEM)
+            ZZFileManagerTheme(theme) {
                 Step4FileScreen(container, entry, parent, onBack = ::finish)
             }
         }
@@ -275,6 +282,7 @@ private fun ImageViewer(
     var scale by remember(entry.id) { mutableFloatStateOf(1f) }
     var offset by remember(entry.id) { mutableStateOf(Offset.Zero) }
     var showMetadata by remember { mutableStateOf(false) }
+    var rotation by remember(entry.id) { mutableIntStateOf(0) }
     val transform = rememberTransformableState { zoomChange, panChange, _ ->
         scale = (scale * zoomChange).coerceIn(1f, 8f)
         offset = if (scale <= 1.01f) Offset.Zero else offset + panChange
@@ -293,13 +301,13 @@ private fun ImageViewer(
         runCatching {
             metadata = container.mediaInspector.image(entry)
             bitmap = withContext(Dispatchers.IO) { decodeSampled(container, entry, 4096, 4096) }
-        }.onFailure { error = it.message ?: "Image could not be decoded" }
+        }.onFailure { error = SafeErrorMessage.from(it, "Image could not be decoded") }
     }
 
     val index = siblings.indexOfFirst { it.id == entry.id }
     Column(Modifier.fillMaxSize()) {
         Box(
-            Modifier.weight(1f).fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant)
+            Modifier.weight(1f).fillMaxWidth().background(Color.Black)
                 .pointerInput(entry.id) {
                     detectTapGestures(onDoubleTap = {
                         if (scale > 1f) { scale = 1f; offset = Offset.Zero } else scale = 2f
@@ -318,6 +326,7 @@ private fun ImageViewer(
                         scaleY = scale,
                         translationX = offset.x,
                         translationY = offset.y,
+                        rotationZ = rotation.toFloat(),
                     ),
                 )
                 error != null -> Text(error!!, modifier = Modifier.padding(24.dp))
@@ -330,7 +339,11 @@ private fun ImageViewer(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             OutlinedButton(enabled = index > 0, onClick = { onEntryChanged(siblings[index - 1]) }) { Text("Previous") }
-            Text(entry.name, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(horizontal = 10.dp))
+            Column(Modifier.weight(1f).padding(horizontal = 10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(entry.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(if (index >= 0) "${index + 1} of ${siblings.size}" else "1 of 1", style = MaterialTheme.typography.labelSmall)
+            }
+            TextButton(onClick = { rotation = (rotation + 90) % 360 }) { Text("Rotate") }
             OutlinedButton(enabled = index >= 0 && index < siblings.lastIndex, onClick = { onEntryChanged(siblings[index + 1]) }) { Text("Next") }
         }
         metadata?.let { meta ->
@@ -805,7 +818,7 @@ private fun ArchiveViewer(container: AppContainer, entry: FileEntry, parent: Bro
 
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(password, { password = it }, label = { Text("Password (if required)") }, singleLine = true, modifier = Modifier.weight(1f))
+            OutlinedTextField(password, { password = it }, label = { Text("Password (if required)") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.weight(1f))
             Button(onClick = { scope.launch { load() } }) { Text("Open") }
         }
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {

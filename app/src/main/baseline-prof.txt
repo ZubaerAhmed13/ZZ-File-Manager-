@@ -1,0 +1,10 @@
+HSPLcom/zz/filemanager/MainActivity;-><init>()V
+HSPLcom/zz/filemanager/ZZFileManagerApplication;->onCreate()V
+Lcom/zz/filemanager/feature/home/HomeScreenKt;
+Lcom/zz/filemanager/feature/home/HomeViewModel;
+Lcom/zz/filemanager/feature/browser/BrowserScreenKt;
+Lcom/zz/filemanager/feature/browser/BrowserViewModel;
+Lcom/zz/filemanager/core/storage/StorageRepository;
+Lcom/zz/filemanager/core/storage/LocalStorageProvider;
+Lcom/zz/filemanager/core/storage/MediaStoreProvider;
+Lcom/zz/filemanager/core/util/ThumbnailRepository;

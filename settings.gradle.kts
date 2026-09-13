@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "ZZFileManager"
 include(":app")
+include(":benchmark")

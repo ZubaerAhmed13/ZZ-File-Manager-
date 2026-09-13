@@ -248,7 +248,7 @@ fun ZZFileManagerApp(container: AppContainer) {
             }
             composable("settings") {
                 val vm: SettingsViewModel = viewModel(factory = SettingsViewModel.Factory(container.storage, container.preferences, container.remoteConnectionService))
-                SettingsScreen(vm, onBack = { nav.popBackStack() })
+                SettingsScreen(vm, onBack = { nav.popBackStack() }, onClearThumbnailCache = container.thumbnails::clearMemoryCache)
             }
         }
     }

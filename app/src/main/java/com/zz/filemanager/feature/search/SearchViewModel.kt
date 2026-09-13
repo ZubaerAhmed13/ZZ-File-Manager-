@@ -15,6 +15,7 @@ import com.zz.filemanager.core.search.SearchSort
 import com.zz.filemanager.core.search.SearchTypeFilter
 import com.zz.filemanager.core.search.SearchUiState
 import com.zz.filemanager.core.search.SearchUpdate
+import com.zz.filemanager.core.security.SafeErrorMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -105,7 +106,7 @@ class SearchViewModel(
                 if (requestGeneration == generation) _state.value = SearchUiState.Cancelled
                 throw cancelled
             } catch (error: Throwable) {
-                if (requestGeneration == generation) _state.value = SearchUiState.Error(error.message ?: "Search failed")
+                if (requestGeneration == generation) _state.value = SearchUiState.Error(SafeErrorMessage.from(error, "Search failed"))
             }
         }
     }

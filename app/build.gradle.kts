@@ -12,15 +12,16 @@ android {
         applicationId = "com.zz.filemanager"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.5.0-step5"
+        versionCode = 6
+        versionName = "0.6.0-step6"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
@@ -61,6 +62,7 @@ dependencies {
     implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("androidx.exifinterface:exifinterface:1.4.2")
     implementation("androidx.work:work-runtime-ktx:2.10.0")
+    implementation("androidx.profileinstaller:profileinstaller:1.4.1")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")

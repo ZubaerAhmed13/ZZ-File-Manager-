@@ -6,8 +6,9 @@ enum class FileEntryType {
 }
 
 enum class StorageType { INTERNAL, EXTERNAL_VOLUME, SD_CARD, SAF_TREE, USB, NETWORK, CLOUD }
-enum class ViewMode { LIST, GRID }
-enum class SortField { NAME, DATE_MODIFIED, SIZE, TYPE }
+enum class ViewMode { LIST, COMPACT_LIST, GRID, THUMBNAIL_GRID, DETAILED_LIST }
+enum class ThumbnailMode { SHOW, ICON_ONLY }
+enum class SortField { NAME, DATE_MODIFIED, SIZE, TYPE, EXTENSION }
 enum class SortDirection { ASCENDING, DESCENDING }
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
 enum class MediaCategory { IMAGES, VIDEOS, AUDIO, DOCUMENTS, DOWNLOADS, APKS }
@@ -102,6 +103,7 @@ sealed interface BrowserUiState {
         val canGoBack: Boolean,
         val canGoForward: Boolean,
         val canGoUp: Boolean,
+        val thumbnailMode: ThumbnailMode = ThumbnailMode.SHOW,
     ) : BrowserUiState
     data class Empty(
         val location: BrowserLocation,
@@ -112,6 +114,7 @@ sealed interface BrowserUiState {
         val canGoBack: Boolean,
         val canGoForward: Boolean,
         val canGoUp: Boolean,
+        val thumbnailMode: ThumbnailMode = ThumbnailMode.SHOW,
     ) : BrowserUiState
     data class Problem(val location: BrowserLocation, val problem: BrowserProblem) : BrowserUiState
 }
@@ -122,6 +125,7 @@ data class HomeUiState(
     val recentLocations: List<BrowserLocation> = emptyList(),
     val safLocations: List<BrowserLocation> = emptyList(),
     val broadStorageAccess: Boolean = false,
+    val categoryMetrics: Map<MediaCategory, CategoryMetric> = emptyMap(),
     val mediaCategories: List<MediaCategory> = listOf(
         MediaCategory.IMAGES,
         MediaCategory.VIDEOS,
@@ -130,4 +134,10 @@ data class HomeUiState(
         MediaCategory.DOWNLOADS,
         MediaCategory.APKS,
     ),
+)
+
+data class CategoryMetric(
+    val itemCount: Long? = null,
+    val totalBytes: Long? = null,
+    val refreshing: Boolean = false,
 )

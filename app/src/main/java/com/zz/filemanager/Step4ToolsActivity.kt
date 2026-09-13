@@ -8,10 +8,12 @@ import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import android.widget.ImageView
+import android.graphics.drawable.Drawable
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -38,6 +40,7 @@ import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -59,6 +62,8 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -70,6 +75,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.zz.filemanager.app.AppContainer
@@ -90,7 +96,9 @@ import com.zz.filemanager.core.model.StorageLocation
 import com.zz.filemanager.core.step4.Step4OpenCodec
 import com.zz.filemanager.core.trash.TrashResult
 import com.zz.filemanager.core.util.Formatters
+import com.zz.filemanager.core.security.SafeErrorMessage
 import com.zz.filemanager.ui.theme.ZZFileManagerTheme
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.CancellationException
@@ -102,9 +110,11 @@ class Step4ToolsActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         val mode = intent.getStringExtra(EXTRA_MODE) ?: MODE_APPS
         setContent {
-            ZZFileManagerTheme(com.zz.filemanager.core.model.ThemeMode.SYSTEM) {
+            val theme by container.preferences.theme.collectAsStateWithLifecycle(initialValue = com.zz.filemanager.core.model.ThemeMode.SYSTEM)
+            ZZFileManagerTheme(theme) {
                 when (mode) {
                     MODE_ANALYZER -> AnalyzerTool(container, ::finish)
                     MODE_ARCHIVE_CREATE -> ArchiveCreatorTool(container, ::finish)
@@ -134,6 +144,9 @@ private fun AppsTool(container: AppContainer, onBack: () -> Unit) {
     var loading by remember { mutableStateOf(true) }
     var selected by remember { mutableStateOf<InstalledAppInfo?>(null) }
     var pendingBackup by remember { mutableStateOf<Pair<InstalledAppInfo, ApkBackupMode>?>(null) }
+    var tab by remember { mutableStateOf(AppTab.DOWNLOADED) }
+    var sort by remember { mutableStateOf(AppSort.NAME) }
+    var sortMenu by remember { mutableStateOf(false) }
     val destinationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         val pending = pendingBackup
         pendingBackup = null
@@ -145,7 +158,7 @@ private fun AppsTool(container: AppContainer, onBack: () -> Unit) {
                     if (result.reinstallableSetPreserved) "APK backup completed" else "Base APK exported. This app uses splits, so base-only backup is not a complete reinstallable package.",
                 )
             } catch (failure: Throwable) {
-                snackbar.showSnackbar(failure.message ?: "APK backup failed")
+                snackbar.showSnackbar(SafeErrorMessage.from(failure, "APK backup failed"))
             }
         }
     }
@@ -163,7 +176,11 @@ private fun AppsTool(container: AppContainer, onBack: () -> Unit) {
             TopAppBar(
                 title = { Text("Installed Apps") },
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
-                actions = { IconButton(onClick = { scope.launch { refresh() } }) { Icon(Icons.Default.Refresh, "Refresh") } },
+                actions = {
+                    IconButton(onClick = { sortMenu = true }) { Icon(Icons.Default.Sort, "Sort apps") }
+                    DropdownMenu(sortMenu, { sortMenu = false }) { AppSort.entries.forEach { option -> DropdownMenuItem(text = { Text(option.label) }, onClick = { sort = option; sortMenu = false }) } }
+                    IconButton(onClick = { scope.launch { refresh() } }) { Icon(Icons.Default.Refresh, "Refresh") }
+                },
             )
         },
     ) { padding ->
@@ -181,21 +198,17 @@ private fun AppsTool(container: AppContainer, onBack: () -> Unit) {
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
             )
+            TabRow(selectedTabIndex = tab.ordinal) { AppTab.entries.forEach { option -> Tab(selected = tab == option, onClick = { tab = option }, text = { Text(option.label) }) } }
             if (loading) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
             else LazyColumn(Modifier.fillMaxSize()) {
-                items(apps, key = { it.packageName }) { app ->
+                val visibleApps = apps.filter { tab == AppTab.ALL || !it.isSystemApp }.let { list ->
+                    when (sort) { AppSort.NAME -> list.sortedBy { it.label.lowercase() }; AppSort.SIZE -> list.sortedByDescending { it.totalApkSizeBytes ?: -1L }; AppSort.INSTALL_DATE -> list.sortedByDescending { it.firstInstallTime ?: 0L }; AppSort.UPDATE_DATE -> list.sortedByDescending { it.lastUpdateTime ?: 0L } }
+                }
+                items(visibleApps, key = { it.packageName }) { app ->
                     ListItem(
                         headlineContent = { Text(app.label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        supportingContent = { Text("${app.packageName} • ${app.versionName.orEmpty()}${if (app.isSystemApp) " • System" else " • User"}") },
-                        leadingContent = {
-                            app.icon?.let { drawable ->
-                                AndroidView(
-                                    factory = { ctx -> ImageView(ctx).apply { setImageDrawable(drawable); contentDescription = app.label } },
-                                    update = { it.setImageDrawable(drawable) },
-                                    modifier = Modifier.size(42.dp),
-                                )
-                            } ?: Icon(Icons.Default.Android, null)
-                        },
+                        supportingContent = { Text("${app.packageName} • ${app.versionName.orEmpty()} • ${app.totalApkSizeBytes?.let(Formatters::bytes) ?: "Unknown"}${if (app.isSystemApp) " • System" else " • Downloaded"}") },
+                        leadingContent = { InstalledAppIcon(container, app) },
                         modifier = Modifier.clickable { selected = app },
                     )
                     HorizontalDivider()
@@ -247,6 +260,18 @@ private fun AppsTool(container: AppContainer, onBack: () -> Unit) {
             confirmButton = { TextButton(onClick = { selected = null }) { Text("Close") } },
         )
     }
+}
+
+private enum class AppTab(val label: String) { DOWNLOADED("Downloaded"), ALL("All") }
+private enum class AppSort(val label: String) { NAME("Name"), SIZE("Size"), INSTALL_DATE("Install date"), UPDATE_DATE("Update date") }
+
+@Composable
+private fun InstalledAppIcon(container: AppContainer, app: InstalledAppInfo) {
+    var drawable by remember(app.packageName) { mutableStateOf<Drawable?>(null) }
+    LaunchedEffect(app.packageName) { drawable = container.apkManager.installedAppIcon(app.packageName) }
+    drawable?.let { icon ->
+        AndroidView(factory = { ctx -> ImageView(ctx).apply { contentDescription = app.label } }, update = { it.setImageDrawable(icon) }, modifier = Modifier.size(42.dp))
+    } ?: Icon(Icons.Default.Android, null, modifier = Modifier.size(42.dp))
 }
 
 @Composable
@@ -461,6 +486,14 @@ private fun AnalyzerOverview(result: AnalyzerSnapshot) {
             ResultRow("Folders", result.progress.directoriesScanned.toString())
             result.accessibleCapacityBytes?.let { ResultRow("Accessible capacity", Formatters.bytes(it)) }
             result.freeBytes?.let { ResultRow("Free space", Formatters.bytes(it)) }
+            val total = result.accessibleCapacityBytes
+            val free = result.freeBytes
+            if (total != null && free != null && total > 0L) {
+                val used = (total - free).coerceAtLeast(0L)
+                ResultRow("Used", Formatters.bytes(used))
+                Text("${((used.toDouble() / total) * 100).toInt().coerceIn(0, 100)}% used", style = MaterialTheme.typography.labelMedium)
+                LinearProgressIndicator(progress = { (used.toDouble() / total).toFloat().coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
+            }
         }
     }
 }
@@ -557,7 +590,7 @@ private fun ArchiveCreatorTool(container: AppContainer, onBack: () -> Unit) {
                             ZipCompressionLevel.entries.forEach { level -> DropdownMenuItem(text = { Text(level.name) }, onClick = { compression = level; compressionMenu = false }) }
                         }
                     }
-                    OutlinedTextField(password, { password = it }, label = { Text("AES password (optional)") }, singleLine = true, modifier = Modifier.weight(1f))
+                    OutlinedTextField(password, { password = it }, label = { Text("AES password (optional)") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.weight(1f))
                 }
             }
             Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {

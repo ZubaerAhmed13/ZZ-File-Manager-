@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.zz.filemanager.core.model.BrowserLocation
 import com.zz.filemanager.core.model.ThemeMode
 import com.zz.filemanager.core.model.ViewMode
+import com.zz.filemanager.core.model.ThumbnailMode
 import com.zz.filemanager.core.preferences.PreferencesRepository
 import com.zz.filemanager.core.remote.RemoteConnectionService
 import com.zz.filemanager.core.remote.RemoteTransferSettings
@@ -20,6 +21,7 @@ import kotlinx.coroutines.launch
 data class SettingsUiState(
     val theme: ThemeMode = ThemeMode.SYSTEM,
     val viewMode: ViewMode = ViewMode.LIST,
+    val thumbnailMode: ThumbnailMode = ThumbnailMode.SHOW,
     val showHidden: Boolean = false,
     val foldersFirst: Boolean = true,
     val broadStorageAccess: Boolean = false,
@@ -38,18 +40,18 @@ class SettingsViewModel(
 
     init {
         viewModelScope.launch {
-            combine(preferences.theme, preferences.viewMode, preferences.showHidden, preferences.foldersFirst, preferences.trashRetentionDays) { theme, view, hidden, folders, retention ->
+            combine(preferences.theme, preferences.viewMode, preferences.thumbnailMode, preferences.showHidden, preferences.foldersFirst) { theme, view, thumbnails, hidden, folders ->
                 SettingsUiState(
                     theme = theme,
                     viewMode = view,
+                    thumbnailMode = thumbnails,
                     showHidden = hidden,
                     foldersFirst = folders,
                     broadStorageAccess = storage.broadStorageAccess(),
                     safLocations = emptyList(),
-                    trashRetentionDays = retention,
                     remote = remoteConnections.settings(),
                 )
-            }.collect { base ->
+            }.combine(preferences.trashRetentionDays) { base, retention -> base.copy(trashRetentionDays = retention) }.collect { base ->
                 _state.value = base.copy(safLocations = storage.validSafLocations())
             }
         }
@@ -65,6 +67,7 @@ class SettingsViewModel(
 
     fun setTheme(theme: ThemeMode) = viewModelScope.launch { preferences.setTheme(theme) }
     fun setViewMode(mode: ViewMode) = viewModelScope.launch { preferences.setViewMode(mode) }
+    fun setThumbnailMode(mode: ThumbnailMode) = viewModelScope.launch { preferences.setThumbnailMode(mode) }
     fun setShowHidden(value: Boolean) = viewModelScope.launch { preferences.setShowHidden(value) }
     fun setFoldersFirst(value: Boolean) = viewModelScope.launch { preferences.setFoldersFirst(value) }
     fun setTrashRetentionDays(value: Int) = viewModelScope.launch { preferences.setTrashRetentionDays(value) }

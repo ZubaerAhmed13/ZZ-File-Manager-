@@ -12,6 +12,7 @@ import com.zz.filemanager.core.model.SortDirection
 import com.zz.filemanager.core.model.SortField
 import com.zz.filemanager.core.model.ThemeMode
 import com.zz.filemanager.core.model.ViewMode
+import com.zz.filemanager.core.model.ThumbnailMode
 import com.zz.filemanager.core.util.BrowserLocationCodec
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -30,11 +31,13 @@ class PreferencesRepository(private val context: Context) : BrowserPreferences {
         val safLocations = stringPreferencesKey("saf_locations")
         val lastLocation = stringPreferencesKey("last_location")
         val trashRetentionDays = intPreferencesKey("trash_retention_days")
+        val thumbnailMode = stringPreferencesKey("thumbnail_mode")
     }
 
     val theme: Flow<ThemeMode> = context.zzPreferences.data.map { prefs -> prefs[Keys.theme]?.let { enumOrNull<ThemeMode>(it) } ?: ThemeMode.SYSTEM }
     override val viewMode: Flow<ViewMode> = context.zzPreferences.data.map { prefs -> prefs[Keys.viewMode]?.let { enumOrNull<ViewMode>(it) } ?: ViewMode.LIST }
     override val showHidden: Flow<Boolean> = context.zzPreferences.data.map { it[Keys.showHidden] ?: false }
+    override val thumbnailMode: Flow<ThumbnailMode> = context.zzPreferences.data.map { prefs -> prefs[Keys.thumbnailMode]?.let { enumOrNull<ThumbnailMode>(it) } ?: ThumbnailMode.SHOW }
     val foldersFirst: Flow<Boolean> = context.zzPreferences.data.map { it[Keys.foldersFirst] ?: true }
     override val sortConfiguration: Flow<SortConfiguration> = context.zzPreferences.data.map { prefs ->
         SortConfiguration(
@@ -51,7 +54,8 @@ class PreferencesRepository(private val context: Context) : BrowserPreferences {
     suspend fun setTheme(value: ThemeMode) { context.zzPreferences.edit { it[Keys.theme] = value.name } }
     override suspend fun setViewMode(value: ViewMode) { context.zzPreferences.edit { it[Keys.viewMode] = value.name } }
     override suspend fun setShowHidden(value: Boolean) { context.zzPreferences.edit { it[Keys.showHidden] = value } }
-    suspend fun setFoldersFirst(value: Boolean) { context.zzPreferences.edit { it[Keys.foldersFirst] = value } }
+    override suspend fun setFoldersFirst(value: Boolean) { context.zzPreferences.edit { it[Keys.foldersFirst] = value } }
+    override suspend fun setThumbnailMode(value: ThumbnailMode) { context.zzPreferences.edit { it[Keys.thumbnailMode] = value.name } }
     override suspend fun setSortField(value: SortField) { context.zzPreferences.edit { it[Keys.sortField] = value.name } }
     override suspend fun setSortDirection(value: SortDirection) { context.zzPreferences.edit { it[Keys.sortDirection] = value.name } }
     suspend fun setLastLocation(value: BrowserLocation) { context.zzPreferences.edit { it[Keys.lastLocation] = BrowserLocationCodec.encode(value) } }

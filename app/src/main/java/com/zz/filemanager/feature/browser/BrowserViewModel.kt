@@ -12,6 +12,8 @@ import com.zz.filemanager.core.model.OpenFileRequest
 import com.zz.filemanager.core.model.SortDirection
 import com.zz.filemanager.core.model.SortField
 import com.zz.filemanager.core.model.ViewMode
+import com.zz.filemanager.core.model.ThumbnailMode
+import com.zz.filemanager.core.performance.LargeDirectoryEmissionPolicy
 import com.zz.filemanager.core.preferences.BrowserPreferences
 import com.zz.filemanager.core.preferences.PreferencesRepository
 import com.zz.filemanager.core.search.SearchCoordinator
@@ -125,6 +127,16 @@ class BrowserViewModel(
         refresh()
     }
 
+    fun setThumbnailMode(mode: ThumbnailMode) = viewModelScope.launch {
+        preferences.setThumbnailMode(mode)
+        refresh()
+    }
+
+    fun setFoldersFirst(value: Boolean) = viewModelScope.launch {
+        preferences.setFoldersFirst(value)
+        refresh()
+    }
+
     fun setSortField(field: SortField) = viewModelScope.launch {
         preferences.setSortField(field)
         refresh()
@@ -153,10 +165,12 @@ class BrowserViewModel(
                 val showHidden = preferences.showHidden.first()
                 val viewMode = preferences.viewMode.first()
                 val sort = preferences.sortConfiguration.first()
+                val thumbnailMode = preferences.thumbnailMode.first()
                 val parent = storage.resolveParent(location)
                 val crumbs = storage.breadcrumbs(location)
                 val accumulated = ArrayList<FileEntry>()
                 var emittedAnyPage = false
+                val emissionPolicy = LargeDirectoryEmissionPolicy(IncrementalStorageProvider.DEFAULT_DIRECTORY_PAGE_SIZE)
 
                 storage.listChildrenIncrementally(
                     location = location,
@@ -172,17 +186,21 @@ class BrowserViewModel(
                         val page = withContext(sortDispatcher) { FileSorter.sort(safePage, sort) }
                         accumulated.addAll(page)
                         emittedAnyPage = true
-                        _state.value = BrowserUiState.Content(
-                            location,
-                            accumulated.toList(),
-                            crumbs,
-                            viewMode,
-                            sort,
-                            showHidden,
-                            history.canGoBack,
-                            history.canGoForward,
-                            parent != null,
-                        )
+                        if (emissionPolicy.shouldEmit(accumulated.size)) {
+                            _state.value = BrowserUiState.Content(
+                                location,
+                                accumulated.toList(),
+                                crumbs,
+                                viewMode,
+                                sort,
+                                showHidden,
+                                history.canGoBack,
+                                history.canGoForward,
+                                parent != null,
+                                thumbnailMode,
+                            )
+                            emissionPolicy.onEmitted(accumulated.size)
+                        }
                     }
                 }
 
@@ -191,12 +209,12 @@ class BrowserViewModel(
                 if (requestGeneration != navigationGeneration || currentLocation?.identity != location.identity) return@launch
 
                 if (!emittedAnyPage) {
-                    _state.value = BrowserUiState.Empty(location, crumbs, viewMode, sort, showHidden, history.canGoBack, history.canGoForward, parent != null)
+                    _state.value = BrowserUiState.Empty(location, crumbs, viewMode, sort, showHidden, history.canGoBack, history.canGoForward, parent != null, thumbnailMode)
                 } else {
                     // Page-local sorting keeps incremental updates bounded. Once enumeration ends,
                     // perform one global sort so final ordering is identical to non-paged providers.
                     val finalEntries = withContext(sortDispatcher) { FileSorter.sort(accumulated, sort) }
-                    _state.value = BrowserUiState.Content(location, finalEntries, crumbs, viewMode, sort, showHidden, history.canGoBack, history.canGoForward, parent != null)
+                    _state.value = BrowserUiState.Content(location, finalEntries, crumbs, viewMode, sort, showHidden, history.canGoBack, history.canGoForward, parent != null, thumbnailMode)
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled

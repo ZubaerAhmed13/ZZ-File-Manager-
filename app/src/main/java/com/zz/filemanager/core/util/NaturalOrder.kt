@@ -57,6 +57,10 @@ object FileSorter {
                         val type = a.type.name.lowercase(Locale.ROOT).compareTo(b.type.name.lowercase(Locale.ROOT))
                         if (type != 0) type else NaturalOrder.compare(a.name, b.name)
                     }
+                    SortField.EXTENSION -> {
+                        val extension = compareNullable(a.extension?.lowercase(Locale.ROOT), b.extension?.lowercase(Locale.ROOT))
+                        if (extension != 0) extension else NaturalOrder.compare(a.name, b.name)
+                    }
                 }
                 val directed = base * direction
                 if (directed != 0) directed else NaturalOrder.compare(a.name, b.name) * direction

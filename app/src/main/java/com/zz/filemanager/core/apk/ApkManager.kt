@@ -82,12 +82,18 @@ class ApkManager(
                     baseApkPath = base,
                     splitApkPaths = app.splitSourceDirs?.toList().orEmpty(),
                     baseApkSizeBytes = File(base).length().takeIf { it >= 0L },
+                    totalApkSizeBytes = (listOf(base) + app.splitSourceDirs.orEmpty()).map(::File).filter(File::isFile).sumOf(File::length),
                     isSystemApp = app.flags and ApplicationInfo.FLAG_SYSTEM != 0,
-                    icon = runCatching { app.loadIcon(packageManager) }.getOrNull(),
+                    icon = null,
                 )
             }
             .sortedBy { it.label.lowercase() }
             .toList()
+    }
+
+    @Suppress("DEPRECATION")
+    suspend fun installedAppIcon(packageName: String) = withContext(Dispatchers.IO) {
+        runCatching { packageManager.getApplicationInfo(packageName, 0).loadIcon(packageManager) }.getOrNull()
     }
 
     suspend fun backup(app: InstalledAppInfo, destination: BrowserLocation, mode: ApkBackupMode): ApkBackupResult = withContext(Dispatchers.IO) {

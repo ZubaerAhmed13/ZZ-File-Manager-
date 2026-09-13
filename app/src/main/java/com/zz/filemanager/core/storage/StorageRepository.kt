@@ -22,6 +22,7 @@ import com.zz.filemanager.core.model.MediaCategory
 import com.zz.filemanager.core.model.OpenFileRequest
 import com.zz.filemanager.core.model.StorageLocation
 import com.zz.filemanager.core.model.StorageType
+import com.zz.filemanager.core.model.CategoryMetric
 import com.zz.filemanager.core.preferences.PreferencesRepository
 import com.zz.filemanager.core.search.SearchRootSource
 import kotlinx.coroutines.Dispatchers
@@ -35,8 +36,9 @@ class StorageRepository(
     private val context: Context,
     private val preferences: PreferencesRepository,
 ) : BrowserStorage, StorageProviderRegistry, SearchRootSource {
+    private val mediaStoreProvider = MediaStoreProvider(context)
     private val builtInProviders: Map<String, StorageProvider> = listOf(
-        LocalStorageProvider(context), SafStorageProvider(context), MediaStoreProvider(context)
+        LocalStorageProvider(context), SafStorageProvider(context), mediaStoreProvider
     ).associateBy { it.id }
 
     private data class RegisteredLocation(
@@ -216,6 +218,8 @@ class StorageRepository(
         )
     }
 
+    suspend fun categoryMetric(category: MediaCategory): CategoryMetric = mediaStoreProvider.categoryMetric(category)
+
     override suspend fun listChildren(location: BrowserLocation): List<FileEntry> = providerFor(location.providerId).listChildren(location)
 
     override suspend fun listChildrenIncrementally(
@@ -269,7 +273,7 @@ class StorageRepository(
                     location.copy(readable = true, writable = grant.writable).takeIf { providerFor(SafStorageProvider.ID).exists(item) }
                 }
             }
-            MediaStoreProvider.ID -> location.takeIf { runCatching { MediaCategory.valueOf(location.reference) }.isSuccess }
+            MediaStoreProvider.ID -> location.takeIf { runCatching { MediaCategory.valueOf(location.reference.substringBefore("::")) }.isSuccess }
             else -> location.takeIf { providerForOrNull(location.providerId) != null }
         }
     }

@@ -17,6 +17,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -71,6 +72,7 @@ import androidx.compose.material.icons.filled.Slideshow
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.TableChart
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.VideoFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -83,14 +85,17 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -123,6 +128,8 @@ import com.zz.filemanager.core.model.FileEntry
 import com.zz.filemanager.core.model.FileEntryType
 import com.zz.filemanager.core.model.OpenFileRequest
 import com.zz.filemanager.core.model.SortField
+import com.zz.filemanager.core.model.SortDirection
+import com.zz.filemanager.core.model.ThumbnailMode
 import com.zz.filemanager.core.model.ViewMode
 import com.zz.filemanager.core.operation.BatchRenameRule
 import com.zz.filemanager.core.operation.ClipboardMode
@@ -164,18 +171,22 @@ fun BrowserScreen(
     var propertiesRequested by remember { mutableStateOf(false) }
     var createKind by remember { mutableStateOf<CreateKind?>(null) }
     var showOperations by remember { mutableStateOf(false) }
+    var showViewSort by remember { mutableStateOf(false) }
     var lastTerminalRefresh by remember { mutableLongStateOf(0L) }
 
     val content = state as? BrowserUiState.Content
     val empty = state as? BrowserUiState.Empty
     val currentLocation = content?.location ?: empty?.location
     val entries = content?.entries.orEmpty()
-    val selectedEntries = operationsViewModel.selectedEntries(entries)
+    val selectedEntries = remember(entries, selectedIds) { operationsViewModel.selectedEntries(entries) }
     val selectionActive = selectedIds.isNotEmpty()
     val canBack = content?.canGoBack ?: empty?.canGoBack ?: false
     val canUp = content?.canGoUp ?: empty?.canGoUp ?: false
     val canForward = content?.canGoForward ?: empty?.canGoForward ?: false
     val viewMode = content?.viewMode ?: empty?.viewMode ?: ViewMode.LIST
+    val thumbnailMode = content?.thumbnailMode ?: empty?.thumbnailMode ?: ThumbnailMode.SHOW
+    val sort = content?.sort ?: empty?.sort ?: com.zz.filemanager.core.model.SortConfiguration()
+    val showHidden = content?.showHidden ?: empty?.showHidden ?: false
     val cutIds = clipboard?.takeIf { it.mode == ClipboardMode.CUT }?.sources?.mapTo(hashSetOf()) { it.reference.opaqueId }.orEmpty()
     val pendingCollisionOperation = operations.firstOrNull {
         it.state == FileOperationState.WAITING_FOR_USER && it.pendingCollision != null
@@ -186,7 +197,7 @@ fun BrowserScreen(
     }
 
     LaunchedEffect(initialLocation.identity) { viewModel.start(initialLocation) }
-    LaunchedEffect(entries.map { it.id }) { operationsViewModel.reconcileSelection(entries) }
+    LaunchedEffect(entries, selectionActive) { if (selectionActive) operationsViewModel.reconcileSelection(entries) }
 
     LaunchedEffect(viewModel) {
         viewModel.events.collect { event ->
@@ -239,32 +250,22 @@ fun BrowserScreen(
                     canUp = canUp,
                     canBack = canBack,
                     canForward = canForward,
-                    viewMode = viewMode,
                     operationCount = operations.count { !it.state.isTerminal },
                     onExit = onExitBrowser,
                     onBack = viewModel::goBack,
                     onForward = viewModel::goForward,
                     onUp = viewModel::goUp,
                     onRefresh = viewModel::refresh,
-                    onToggleView = { mode -> viewModel.setViewMode(if (mode == ViewMode.LIST) ViewMode.GRID else ViewMode.LIST) },
+                    onOpenViewSort = { showViewSort = true },
                     onOpenOperations = { showOperations = true },
                     onOpenSearch = { currentLocation?.let(onOpenSearch) },
                     onMenu = { menuExpanded = true },
                 )
                 DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
-                    SortField.entries.forEach { field ->
-                        DropdownMenuItem(
-                            text = { Text(sortLabel(field)) },
-                            onClick = { viewModel.setSortField(field); menuExpanded = false },
-                        )
-                    }
                     DropdownMenuItem(
-                        text = { Text(stringResource(R.string.ascending) + " / " + stringResource(R.string.descending)) },
-                        onClick = { viewModel.toggleSortDirection(); menuExpanded = false },
-                    )
-                    DropdownMenuItem(
-                        text = { Text(stringResource(R.string.show_hidden)) },
-                        onClick = { viewModel.toggleHidden(); menuExpanded = false },
+                        text = { Text(stringResource(R.string.view_and_sort)) },
+                        leadingIcon = { Icon(Icons.Default.Tune, null) },
+                        onClick = { showViewSort = true; menuExpanded = false },
                     )
                     if (currentLocation != null) DropdownMenuItem(
                         text = { Text(stringResource(R.string.add_to_favorites)) },
@@ -314,10 +315,12 @@ fun BrowserScreen(
                     BrowserUiState.Loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                     is BrowserUiState.Content -> {
                         BreadcrumbBar(current.breadcrumbs, viewModel::navigateTo)
-                        if (current.viewMode == ViewMode.LIST) {
+                        if (current.viewMode in setOf(ViewMode.LIST, ViewMode.COMPACT_LIST, ViewMode.DETAILED_LIST)) {
                             FileList(
                                 entries = current.entries,
                                 thumbnails = thumbnails,
+                                mode = current.viewMode,
+                                showThumbnails = current.thumbnailMode == ThumbnailMode.SHOW,
                                 selectedIds = selectedIds,
                                 cutIds = cutIds,
                                 onClick = { entry -> if (selectionActive) operationsViewModel.toggleSelection(entry) else viewModel.openEntry(entry) },
@@ -327,6 +330,8 @@ fun BrowserScreen(
                             FileGrid(
                                 entries = current.entries,
                                 thumbnails = thumbnails,
+                                thumbnailGrid = current.viewMode == ViewMode.THUMBNAIL_GRID,
+                                showThumbnails = current.thumbnailMode == ThumbnailMode.SHOW,
                                 selectedIds = selectedIds,
                                 cutIds = cutIds,
                                 onClick = { entry -> if (selectionActive) operationsViewModel.toggleSelection(entry) else viewModel.openEntry(entry) },
@@ -482,6 +487,21 @@ fun BrowserScreen(
             onRetry = operationsViewModel::retry,
         )
     }
+    if (showViewSort) {
+        ViewSortSheet(
+            viewMode = viewMode,
+            thumbnailMode = thumbnailMode,
+            sort = sort,
+            showHidden = showHidden,
+            onDismiss = { showViewSort = false },
+            onViewMode = viewModel::setViewMode,
+            onThumbnailMode = viewModel::setThumbnailMode,
+            onSortField = viewModel::setSortField,
+            onToggleSortDirection = viewModel::toggleSortDirection,
+            onShowHidden = { if (it != showHidden) viewModel.toggleHidden() },
+            onFoldersFirst = viewModel::setFoldersFirst,
+        )
+    }
 }
 
 @Composable
@@ -490,14 +510,13 @@ private fun BrowserTopBar(
     canUp: Boolean,
     canBack: Boolean,
     canForward: Boolean,
-    viewMode: ViewMode,
     operationCount: Int,
     onExit: () -> Unit,
     onBack: () -> Unit,
     onForward: () -> Unit,
     onUp: () -> Unit,
     onRefresh: () -> Unit,
-    onToggleView: (ViewMode) -> Unit,
+    onOpenViewSort: () -> Unit,
     onOpenOperations: () -> Unit,
     onOpenSearch: () -> Unit,
     onMenu: () -> Unit,
@@ -506,18 +525,13 @@ private fun BrowserTopBar(
         title = { Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         navigationIcon = {
             IconButton(onClick = if (canBack) onBack else onExit) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.home))
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(if (canBack) R.string.back else R.string.home))
             }
         },
         actions = {
             if (canUp) IconButton(onClick = onUp) { Icon(Icons.Default.ArrowUpward, contentDescription = stringResource(R.string.navigate_up)) }
             if (canForward) IconButton(onClick = onForward) { Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = stringResource(R.string.navigate_forward)) }
-            IconButton(onClick = { onToggleView(viewMode) }) {
-                Icon(
-                    if (viewMode == ViewMode.LIST) Icons.Default.GridView else Icons.AutoMirrored.Filled.List,
-                    contentDescription = if (viewMode == ViewMode.LIST) stringResource(R.string.grid_view) else stringResource(R.string.list_view),
-                )
-            }
+            IconButton(onClick = onOpenViewSort) { Icon(Icons.Default.Tune, contentDescription = stringResource(R.string.view_and_sort)) }
             IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.refresh)) }
             IconButton(onClick = onOpenSearch) { Icon(Icons.Default.Search, contentDescription = stringResource(R.string.search)) }
             IconButton(onClick = onOpenOperations) {
@@ -615,6 +629,8 @@ private fun BreadcrumbBar(crumbs: List<Breadcrumb>, onClick: (BrowserLocation) -
 private fun FileList(
     entries: List<FileEntry>,
     thumbnails: ThumbnailRepository,
+    mode: ViewMode,
+    showThumbnails: Boolean,
     selectedIds: Set<String>,
     cutIds: Set<String>,
     onClick: (FileEntry) -> Unit,
@@ -623,25 +639,34 @@ private fun FileList(
     LazyColumn(Modifier.fillMaxSize()) {
         items(entries, key = { it.id }) { entry ->
             val selected = entry.id in selectedIds
+            val compact = mode == ViewMode.COMPACT_LIST
             Surface(color = if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent) {
                 Row(
                     Modifier
                         .fillMaxWidth()
                         .alpha(if (entry.reference.opaqueId in cutIds) 0.55f else 1f)
                         .combinedClickable(onClick = { onClick(entry) }, onLongClick = { onLongClick(entry) })
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                        .heightIn(min = 48.dp)
+                        .padding(horizontal = 12.dp, vertical = if (compact) 3.dp else 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Box(contentAlignment = Alignment.BottomEnd) {
-                        FileThumbnail(entry, thumbnails, 52)
+                        FileThumbnail(entry, thumbnails, if (compact) 34 else 42, showThumbnails)
                         if (selected) Icon(Icons.Default.CheckCircle, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
                     }
-                    Column(Modifier.weight(1f).padding(start = 12.dp)) {
-                        Text(entry.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(metadata(entry), style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Column(Modifier.weight(1f).padding(start = 10.dp)) {
+                        Text(entry.name, style = if (compact) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (!compact) Text(metadata(entry), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    if (mode == ViewMode.DETAILED_LIST) {
+                        Column(horizontalAlignment = Alignment.End, modifier = Modifier.padding(start = 8.dp)) {
+                            Text(entry.modifiedAtMillis?.let(Formatters::dateTime) ?: "—", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(fileTypeLabel(entry.type), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
                 }
             }
+            HorizontalDivider(modifier = Modifier.padding(start = if (compact) 56.dp else 64.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
         }
     }
 }
@@ -650,13 +675,15 @@ private fun FileList(
 private fun FileGrid(
     entries: List<FileEntry>,
     thumbnails: ThumbnailRepository,
+    thumbnailGrid: Boolean,
+    showThumbnails: Boolean,
     selectedIds: Set<String>,
     cutIds: Set<String>,
     onClick: (FileEntry) -> Unit,
     onLongClick: (FileEntry) -> Unit,
 ) {
     LazyVerticalGrid(
-        columns = GridCells.Adaptive(112.dp),
+        columns = GridCells.Adaptive(if (thumbnailGrid) 116.dp else 96.dp),
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(8.dp),
     ) {
@@ -672,7 +699,7 @@ private fun FileGrid(
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Box(Modifier.fillMaxWidth().aspectRatio(1f), contentAlignment = Alignment.Center) {
-                        FileThumbnail(entry, thumbnails, 88)
+                        FileThumbnail(entry, thumbnails, if (thumbnailGrid) 104 else 72, showThumbnails)
                         if (selected) Icon(Icons.Default.CheckCircle, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.align(Alignment.BottomEnd).size(22.dp))
                     }
                     Text(entry.name, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
@@ -683,13 +710,60 @@ private fun FileGrid(
 }
 
 @Composable
-private fun FileThumbnail(entry: FileEntry, repository: ThumbnailRepository, size: Int) {
+private fun FileThumbnail(entry: FileEntry, repository: ThumbnailRepository, size: Int, showThumbnail: Boolean) {
     var bitmap by remember(entry.thumbnailKey, size) { mutableStateOf<android.graphics.Bitmap?>(null) }
-    LaunchedEffect(entry.thumbnailKey, size) { bitmap = repository.load(entry, size * 2, size * 2) }
+    LaunchedEffect(entry.thumbnailKey, size, showThumbnail) { bitmap = if (showThumbnail) repository.load(entry, size * 2, size * 2) else null }
     val modifier = Modifier.size(size.dp).clip(MaterialTheme.shapes.small)
     if (bitmap != null) Image(bitmap!!.asImageBitmap(), null, modifier, contentScale = ContentScale.Crop)
     else Icon(fileIcon(entry.type), null, modifier = modifier.padding(10.dp))
 }
+
+@Composable
+private fun ViewSortSheet(
+    viewMode: ViewMode,
+    thumbnailMode: ThumbnailMode,
+    sort: com.zz.filemanager.core.model.SortConfiguration,
+    showHidden: Boolean,
+    onDismiss: () -> Unit,
+    onViewMode: (ViewMode) -> Unit,
+    onThumbnailMode: (ThumbnailMode) -> Unit,
+    onSortField: (SortField) -> Unit,
+    onToggleSortDirection: () -> Unit,
+    onShowHidden: (Boolean) -> Unit,
+    onFoldersFirst: (Boolean) -> Unit,
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        LazyColumn(contentPadding = PaddingValues(bottom = 28.dp)) {
+            item { SheetTitle(stringResource(R.string.view)) }
+            items(ViewMode.entries, key = { "view:${it.name}" }) { mode ->
+                ListItem(
+                    headlineContent = { Text(viewModeLabel(mode)) },
+                    leadingContent = { Icon(if (mode in setOf(ViewMode.GRID, ViewMode.THUMBNAIL_GRID)) Icons.Default.GridView else Icons.AutoMirrored.Filled.List, null) },
+                    trailingContent = { RadioButton(viewMode == mode, null) },
+                    modifier = Modifier.clickable { onViewMode(mode) },
+                )
+            }
+            item { HorizontalDivider(); SheetTitle(stringResource(R.string.thumbnail_behavior)) }
+            items(ThumbnailMode.entries, key = { "thumb:${it.name}" }) { mode ->
+                ListItem(
+                    headlineContent = { Text(stringResource(if (mode == ThumbnailMode.SHOW) R.string.show_thumbnails else R.string.icon_only)) },
+                    trailingContent = { RadioButton(thumbnailMode == mode, null) },
+                    modifier = Modifier.clickable { onThumbnailMode(mode) },
+                )
+            }
+            item { HorizontalDivider(); SheetTitle(stringResource(R.string.sort)) }
+            items(SortField.entries, key = { "sort:${it.name}" }) { field ->
+                ListItem(headlineContent = { Text(sortLabel(field)) }, trailingContent = { RadioButton(sort.field == field, null) }, modifier = Modifier.clickable { onSortField(field) })
+            }
+            item { ListItem(headlineContent = { Text(stringResource(R.string.sort_direction)) }, supportingContent = { Text(stringResource(if (sort.direction == SortDirection.ASCENDING) R.string.ascending else R.string.descending)) }, modifier = Modifier.clickable(onClick = onToggleSortDirection)) }
+            item { HorizontalDivider(); SheetTitle(stringResource(R.string.others)) }
+            item { ListItem(headlineContent = { Text(stringResource(R.string.show_hidden)) }, trailingContent = { Switch(showHidden, onShowHidden) }) }
+            item { ListItem(headlineContent = { Text(stringResource(R.string.folders_first)) }, trailingContent = { Switch(sort.foldersFirst, onFoldersFirst) }) }
+        }
+    }
+}
+
+@Composable private fun SheetTitle(text: String) { Text(text, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp)) }
 
 @Composable
 private fun DeleteConfirmationDialog(selected: List<FileEntry>, onDismiss: () -> Unit, onConfirm: () -> Unit) {
@@ -968,10 +1042,22 @@ private fun sortLabel(field: SortField): String = when (field) {
     SortField.DATE_MODIFIED -> stringResource(R.string.sort_date)
     SortField.SIZE -> stringResource(R.string.sort_size)
     SortField.TYPE -> stringResource(R.string.sort_type)
+    SortField.EXTENSION -> stringResource(R.string.sort_extension)
 }
 
 @Composable
+private fun viewModeLabel(mode: ViewMode): String = stringResource(when (mode) {
+    ViewMode.LIST -> R.string.list_view
+    ViewMode.COMPACT_LIST -> R.string.compact_list
+    ViewMode.GRID -> R.string.grid_view
+    ViewMode.THUMBNAIL_GRID -> R.string.thumbnail_grid
+    ViewMode.DETAILED_LIST -> R.string.detailed_list
+})
+
+@Composable
 private fun metadata(entry: FileEntry): String = when {
+    entry.isDirectory && entry.childCount != null && entry.sizeBytes != null -> "${entry.childCount} ${stringResource(R.string.items)} • ${Formatters.bytes(entry.sizeBytes)}"
+    entry.isDirectory && entry.childCount != null -> "${entry.childCount} ${stringResource(R.string.items)}"
     entry.isDirectory -> stringResource(R.string.folder)
     entry.sizeBytes != null && entry.modifiedAtMillis != null -> "${Formatters.bytes(entry.sizeBytes)} • ${Formatters.dateTime(entry.modifiedAtMillis)}"
     entry.sizeBytes != null -> Formatters.bytes(entry.sizeBytes)

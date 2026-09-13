@@ -32,6 +32,7 @@ data class InstalledAppInfo(
     val baseApkPath: String,
     val splitApkPaths: List<String>,
     val baseApkSizeBytes: Long?,
+    val totalApkSizeBytes: Long? = baseApkSizeBytes,
     val isSystemApp: Boolean,
     val icon: Drawable?,
 ) {

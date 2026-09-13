@@ -1,8 +1,8 @@
-name: Android Step 5 CI
+name: Android Step 6 CI
 
 on:
   push:
-    branches: [ main, 'step1/**', 'step2/**', 'step3/**', 'step4/**', 'step5/**', 'hardening/**' ]
+    branches: [ main, 'step1/**', 'step2/**', 'step3/**', 'step4/**', 'step5/**', 'step6/**', 'hardening/**' ]
   pull_request:
     branches: [ main ]
 
@@ -10,13 +10,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: android-step5-${{ github.workflow }}-${{ github.ref }}
+  group: android-step6-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  certify-step5-api35:
+  certify-step6-api35:
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 75
     env:
       STEP5_PROTOCOL_INTEROP_REQUIRED: '1'
       STEP5_PROTOCOL_USER: step5
@@ -32,6 +32,13 @@ jobs:
       STEP5_SFTP_PORT: '2222'
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Record exact certification head
+        run: |
+          echo "STEP6_EXACT_HEAD=$(git rev-parse HEAD)"
+          echo "STEP6_EXACT_TREE=$(git rev-parse 'HEAD^{tree}')"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -111,12 +118,12 @@ jobs:
           wait_port 127.0.0.1 2121 FTP
           wait_port 127.0.0.1 2122 FTPS
 
-      - name: Build, unit test, lint, release compile and instrumentation compile
+      - name: Build, unit test, lint, release, instrumentation and benchmark compile
         run: |
           chmod +x ./gradlew
-          ./gradlew clean assembleDebug testDebugUnitTest lintDebug assembleRelease assembleDebugAndroidTest --stacktrace
+          ./gradlew clean assembleDebug testDebugUnitTest lintDebug assembleRelease assembleDebugAndroidTest :benchmark:assembleBenchmark --stacktrace
 
-      - name: Enforce Step 5 JVM certification tests and zero skips
+      - name: Enforce Step 6 JVM certification tests and zero skips
         if: always()
         shell: bash
         run: |
@@ -164,12 +171,26 @@ jobs:
               'nativeIdsSurviveRenameAndMove',
               'pagingAndMultipleAccountsAreNamespaced',
               'resumeTokenUsesLongBeyondThirtyGiBWithoutOverflow',
+              'hundredThousandEntriesUseBoundedPartialSnapshotSchedule',
+              'hundredThousandMetadataEntriesSortWithLongSafeSizes',
+              'professionalViewModesAndThumbnailPolicyAreComplete',
+              'composeRenderingDoesNotStartStorageScansOrNetworkCalls',
+              'baselineProfileCoversPrimaryJourneys',
+              'credentialsAndAuthorizationHeadersAreRedacted',
+              'credentialsInsideUrlsAreRedacted',
+              'timeoutGetsStableUserMessage',
+              'traversalVariantsNeverNormalizeOutsideArchiveRoot',
+              'generatedSafeNamesRemainLeavesAndKeepBothPreservesExtension',
+              'separatorsNulAndReservedLeavesAreAlwaysRejected',
+              'releaseManifestHasOnlyTheLauncherExportedAndDisablesCredentialBackup',
+              'releaseDoesNotOptIntoGlobalCleartextOrWriteUriSharing',
+              'fileProviderIsPrivateAndEveryGrantIsTemporary',
           }
           missing = sorted(required - seen)
-          print('STEP5_JVM_TOTALS ' + ' '.join(f'{k}={v}' for k, v in totals.items()))
-          print(f'STEP5_REQUIRED_JVM seen={len(required) - len(missing)} required={len(required)}')
+          print('STEP6_JVM_TOTALS ' + ' '.join(f'{k}={v}' for k, v in totals.items()))
+          print(f'STEP6_REQUIRED_JVM seen={len(required) - len(missing)} required={len(required)}')
           if missing:
-              raise SystemExit('Missing mandatory Step 5 JVM tests: ' + ', '.join(missing))
+              raise SystemExit('Missing mandatory Step 6 JVM tests: ' + ', '.join(missing))
           if totals['failures'] or totals['errors']:
               raise SystemExit(f"Failed JVM tests detected: failures={totals['failures']} errors={totals['errors']}")
           if totals['skipped']:
@@ -180,7 +201,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: jvm-lint-protocol-reports
+          name: step6-jvm-lint-protocol-reports
           path: |
             app/build/test-results/testDebugUnitTest/
             app/build/reports/tests/testDebugUnitTest/
@@ -195,7 +216,7 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Run API 35 instrumentation tests
+      - name: Run API 35 instrumentation, screenshots and macrobenchmarks
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
@@ -206,9 +227,9 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: |
             chmod +x ./gradlew
-            ./gradlew connectedDebugAndroidTest --stacktrace
+            ./gradlew connectedDebugAndroidTest :benchmark:connectedBenchmarkAndroidTest --stacktrace
 
-      - name: Enforce Step 5 instrumentation certification tests and zero skips
+      - name: Enforce Step 6 instrumentation certification tests and zero skips
         if: always()
         shell: bash
         run: |
@@ -217,6 +238,7 @@ jobs:
           import xml.etree.ElementTree as ET
 
           reports = list(Path('app/build/outputs/androidTest-results').rglob('*.xml'))
+          reports += list(Path('benchmark/build/outputs/androidTest-results').rglob('*.xml'))
           if not reports:
               raise SystemExit('No instrumentation test XML reports were produced.')
 
@@ -235,12 +257,20 @@ jobs:
 
           required = {
               'directCloudOAuthLifecycleConnectRefreshDisconnectAndRevokeIsComplete',
+              'step6DenseHomeLightGoldenStateIsNonBlank',
+              'step6NavigationDrawerGoldenStateIsNonBlank',
+              'step6DenseHomeDarkGoldenStateIsNonBlank',
+              'step6LargeFontKeepsPrimaryActionsReachable',
+              'step6ViewSortSheetSupportsAllProfessionalModes',
+              'step6BrowserGoldenStateIsNonBlank',
+              'coldStartupAndHomeFrameTiming',
+              'generate',
           }
           missing = sorted(required - seen)
-          print('STEP5_INSTRUMENTATION_TOTALS ' + ' '.join(f'{k}={v}' for k, v in totals.items()))
-          print(f'STEP5_REQUIRED_INSTRUMENTATION seen={len(required) - len(missing)} required={len(required)}')
+          print('STEP6_INSTRUMENTATION_TOTALS ' + ' '.join(f'{k}={v}' for k, v in totals.items()))
+          print(f'STEP6_REQUIRED_INSTRUMENTATION seen={len(required) - len(missing)} required={len(required)}')
           if missing:
-              raise SystemExit('Missing mandatory Step 5 instrumentation tests: ' + ', '.join(missing))
+              raise SystemExit('Missing mandatory Step 6 instrumentation tests: ' + ', '.join(missing))
           if totals['failures'] or totals['errors']:
               raise SystemExit(f"Failed instrumentation tests detected: failures={totals['failures']} errors={totals['errors']}")
           if totals['skipped']:
@@ -251,10 +281,13 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: instrumentation-api35-reports
+          name: step6-instrumentation-benchmark-api35-reports
           path: |
             app/build/reports/androidTests/connected/
             app/build/outputs/androidTest-results/connected/
+            benchmark/build/reports/androidTests/connected/
+            benchmark/build/outputs/androidTest-results/connected/
+            benchmark/build/outputs/connected_android_test_additional_output/
           if-no-files-found: ignore
 
       - name: Stop disposable protocol servers

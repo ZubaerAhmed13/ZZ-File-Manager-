@@ -28,6 +28,7 @@ class ThumbnailRepository(private val context: Context) {
         val maxKb = minOf(32 * 1024, max(4 * 1024, memoryClassMb * 1024 / 8))
         cache = object : LruCache<String, Bitmap>(maxKb) { override fun sizeOf(key: String, value: Bitmap): Int = max(1, value.byteCount / 1024) }
     }
+    fun clearMemoryCache() = cache.evictAll()
     suspend fun load(entry: FileEntry, width: Int, height: Int): Bitmap? {
         if (entry.type != FileEntryType.IMAGE && entry.type != FileEntryType.VIDEO) return null
         val key = "${entry.thumbnailKey ?: entry.id}:$width:$height"
