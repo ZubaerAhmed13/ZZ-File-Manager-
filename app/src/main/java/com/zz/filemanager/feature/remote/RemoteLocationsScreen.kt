@@ -2,9 +2,9 @@
 
 package com.zz.filemanager.feature.remote
 
-import android.app.Activity
 import android.net.Uri
 import android.view.WindowManager
+import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -343,7 +343,7 @@ private fun ConnectionEditorDialog(
     onDismiss: () -> Unit,
     onSave: (NetworkConnection, CharArray?, ByteArray?, CharArray?) -> Unit,
 ) {
-    val activity = LocalContext.current as? Activity
+    val activity = LocalActivity.current
     DisposableEffect(activity) {
         activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         onDispose { activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE) }
