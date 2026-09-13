@@ -6,9 +6,9 @@ Branch: `step6/performance-security-ui-certification`
 
 Approved Step 5 base: `9c5e5261c2e9953e4df84e0091931626782b8314` (tree `a6ae0ab5be4fe046f4363df76b995698baf27ac1`)
 
-Final Step 6 SHA: pending canonical exact-head run
+Certified Step 6 implementation SHA: `a5727f39a42195fffbf05260012c2dfaf8be372c`
 
-Final tree SHA: pending canonical exact-head run
+Certified implementation tree SHA: `6ea832162484034e2071fb0bace030bd16a98392`
 
 ## Summary
 
@@ -20,20 +20,22 @@ Security: manifest/backup/export policy, read-only URI sharing, secure credentia
 
 Accessibility: semantic labels/headings/full-row actions, 48 dp rows, text-backed states, both palettes, and a 1.3 font-scale state.
 
-Regression status: Steps 1–5 pending canonical CI; every Step 5 required marker remains enforced.
+Regression status: Steps 1–5 passed the canonical exact-head workflow; every Step 5 required marker remained enforced.
 
-JVM: total/failed/skipped pending.
+JVM: 171 total, 0 failed, 0 errors, 0 skipped; 36/36 mandatory markers present.
 
-Instrumentation: total/failed/skipped pending.
+Instrumentation and benchmark: 49 total, 0 failed, 0 errors, 0 skipped; 9/9 mandatory markers present.
 
-Screenshot/golden: structural render probes configured; result pending. Checked-in pixel goldens remain a blocker.
+Screenshot/golden: light, dark, drawer, browser, and large-font structural render probes passed on API 35. Checked-in pixel-comparison goldens remain a blocker.
 
-Benchmarks: cold startup/frame timing and profile generation configured; result pending.
+Benchmarks: five-iteration cold startup/frame timing and baseline-profile generation passed on the hosted API 35 emulator. The benchmark library's `EMULATOR` environment advisory is narrowly suppressed; test execution is not skipped. Hosted-emulator results are certification evidence, not physical-device performance thresholds.
 
-Workflow: `Android Step 6 CI`; run number/ID/exact head/result pending.
+Workflow: `Android Step 6 CI`; canonical implementation run #329, ID `34749435750`, exact head `a5727f39a42195fffbf05260012c2dfaf8be372c`, exact tree `6ea832162484034e2071fb0bace030bd16a98392`, conclusion `success`.
 
-Known limitations: local Gradle cannot resolve Google/Maven dependencies in the restricted workspace network; checked-in pixel goldens remain open; hosted emulator benchmarks are not physical thresholds; TalkBack/2.0 font/RTL/foldable/tablet/removable media/real cloud/network/codec/memory/thermal/battery/soak remain Step 7.
+Artifacts: `step6-jvm-lint-protocol-reports` and `step6-instrumentation-benchmark-api35-reports` were uploaded by the canonical run.
+
+Known limitations: checked-in pixel-comparison goldens remain open; hosted emulator benchmarks are not physical thresholds; TalkBack/2.0 font/RTL/foldable/tablet/removable media/real cloud/network/codec/memory/thermal/battery/soak remain Step 7.
 
 Physical-device certification: Deferred to Step 7.
 
-STEP 6 NOT READY — BLOCKERS REMAIN
+STEP 6 NOT READY — CHECKED-IN PIXEL GOLDENS REMAIN
