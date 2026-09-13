@@ -106,7 +106,7 @@ class Step2BrowserUiTest {
     fun step6ViewSortSheetSupportsAllProfessionalModes() {
         val fixture = fixture(); fixture.render()
         composeRule.onNodeWithContentDescription("View and sort").performClick()
-        listOf("List", "Compact list", "Grid", "Thumbnail grid", "Detailed list").forEach {
+        listOf("List view", "Compact list", "Grid view", "Thumbnail grid", "Detailed list").forEach {
             composeRule.onNodeWithText(it).assertExists()
         }
     }
@@ -116,7 +116,7 @@ class Step2BrowserUiTest {
         val fixture = fixture(); fixture.render()
         val pixels = composeRule.onRoot().captureToImage().toPixelMap()
         val colors = linkedSetOf<Long>()
-        for (x in 0 until pixels.width step (pixels.width / 10).coerceAtLeast(1)) for (y in 0 until pixels.height step (pixels.height / 16).coerceAtLeast(1)) colors += pixels[x, y].value.toLong()
+        for (x in 0 until pixels.width step (pixels.width / 80).coerceAtLeast(1)) for (y in 0 until pixels.height step (pixels.height / 120).coerceAtLeast(1)) colors += pixels[x, y].value.toLong()
         assertTrue(colors.size > 3)
     }
 

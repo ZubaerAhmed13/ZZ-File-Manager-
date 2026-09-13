@@ -27,6 +27,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -218,7 +219,7 @@ private data class QuickTile(val label: String, val icon: ImageVector, val metri
 
 @Composable private fun QuickAccessTile(tile: QuickTile, modifier: Modifier = Modifier) {
     Surface(modifier.padding(vertical = 3.dp).height(82.dp), color = MaterialTheme.colorScheme.surfaceContainerLow, shape = MaterialTheme.shapes.small) {
-        Column(Modifier.fillMaxSize().clickable(enabled = tile.enabled, role = Role.Button, onClick = tile.onClick).padding(8.dp, 9.dp), verticalArrangement = Arrangement.SpaceBetween) {
+        Column(Modifier.fillMaxSize().clickable(enabled = tile.enabled, role = Role.Button, onClick = tile.onClick).testTag("home-quick-${tile.label}").padding(8.dp, 9.dp), verticalArrangement = Arrangement.SpaceBetween) {
             Icon(tile.icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(25.dp))
             Column { Text(tile.label, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis); Text(tile.metric ?: stringResource(R.string.metric_unavailable), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1) }
         }
