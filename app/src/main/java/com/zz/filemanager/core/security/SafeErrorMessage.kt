@@ -10,7 +10,7 @@ object SafeErrorMessage {
         Regex("(?i)(authorization\\s*[:=]\\s*)([^\\s,;]+)"),
         Regex("(?i)((?:password|passwd|token|refresh_token|client_secret|passphrase)\\s*[:=]\\s*)([^\\s,;]+)"),
         Regex("(?i)(bearer\\s+)[A-Za-z0-9._~+/-]+=*"),
-        Regex("(?i)(https?://[^:/\\s]+:)[^@/\\s]+@"),
+        Regex("(?i)(https?://[^:/\\s]+:)[^@/\\s]+(?=@)"),
     )
 
     fun from(error: Throwable, fallback: String = "The operation could not be completed."): String {
